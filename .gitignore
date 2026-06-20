@@ -1,0 +1,15 @@
+.env
+compose.env
+apps/dashboard/web/bootstrap.json
+**/.dart_tool/
+**/.packages
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/pubspec.lock
+*.iml
+.idea/
+.vscode/
+
+# Flutter SDK — separate repo: https://github.com/YOUR_ORG/scout_logger_plus
+packages/scout_logger_plus/

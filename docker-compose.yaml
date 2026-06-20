@@ -1,0 +1,44 @@
+services:
+  db:
+    image: docker.io/library/postgres:16
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scout}
+      POSTGRES_DB: ${POSTGRES_DB:-scout}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # No host port — server reaches db via internal network. Avoids conflict with
+    # other Postgres on the host (e.g. old logplatform on :5432).
+    # For local `dart run` + container db, use docker-compose.dev.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scout} -d ${POSTGRES_DB:-scout}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-8080}
+      DB_HOST: db
+      DB_PORT: 5432
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
+      GEO_ENABLED: ${GEO_ENABLED:-true}
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+
+volumes:
+  pgdata:

@@ -1,0 +1,10 @@
+name: scout_models
+description: Shared DTOs for scout-logger server and dashboard.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  meta: ^1.16.0

@@ -1,0 +1,5 @@
+# Optional: expose Postgres on localhost for `dart run` on the host (not used on Hetzner deploy).
+services:
+  db:
+    ports:
+      - "127.0.0.1:${DB_PORT:-5433}:5432"

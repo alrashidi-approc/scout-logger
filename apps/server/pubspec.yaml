@@ -1,0 +1,20 @@
+name: scout_server
+description: Scout Logger HTTP server (Dart + Shelf + PostgreSQL).
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  shelf_static: ^1.1.3
+  postgres: ^3.4.5
+  crypto: ^3.0.6
+  scout_models:
+    path: ../../packages/scout_models
+
+dev_dependencies:
+  lints: ^5.1.1
+  test: ^1.25.8
