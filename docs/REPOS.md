@@ -4,7 +4,7 @@ This project is split into **two repos**:
 
 | Repo | Contents | GitHub (set yours) |
 |------|----------|-------------------|
-| **scout-logger** | Server, dashboard, deploy, `packages/scout_models` | `github.com/YOUR_ORG/scout-logger` |
+| **scout-logger** | Server, dashboard, deploy, `packages/scout_models` | See [README.md](../README.md) and [apps/server/README.md](../apps/server/README.md) |
 | **scout_logger_plus** | Flutter SDK + example app | `github.com/YOUR_ORG/scout_logger_plus` |
 
 The platform repo **does not track** `packages/scout_logger_plus/` (see root `.gitignore`). The SDK is published from its own repository.

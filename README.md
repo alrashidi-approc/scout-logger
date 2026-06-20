@@ -2,128 +2,169 @@
 
 Dart server + PostgreSQL + Flutter Web dashboard for mobile observability.
 
-**Flutter SDK:** separate repo — [`scout_logger_plus`](https://github.com/YOUR_ORG/scout_logger_plus) (not in this git tree). See [docs/REPOS.md](docs/REPOS.md).
+| Repo | Contents |
+|------|----------|
+| **This repo** | Server, dashboard, deploy, `packages/scout_models` |
+| **[scout_logger_plus](https://github.com/YOUR_ORG/scout_logger_plus)** | Flutter SDK ([separate GitHub repo](docs/REPOS.md)) |
 
-**One config file:** copy `.env.example` → `.env` at the repo root. No `--dart-define`.
+**Setup:** copy [`.env.example`](.env.example) → `.env` at the repo root. No `--dart-define`.
+
+---
+
+## What you get
+
+- **Ingest API** — mobile apps send errors, logs, sessions, network events
+- **Dashboard** — issues, events, geography, product analytics (funnels, retention, sessions)
+- **Sessions** — app visit duration, screen trails, breadcrumb replays
+- **Geo** — country from device locale (fallback: request IP)
+- **Deploy** — one-command rsync + Podman to your VPS
+
+The Flutter SDK is **not** in this repo. See [scout_logger_plus](https://github.com/YOUR_ORG/scout_logger_plus).
+
+---
 
 ## Stack
 
-- **Server:** Dart Shelf (`apps/server`) — reads root `.env` on startup
-- **Dashboard:** Flutter Web — loads API settings from `GET /api/dashboard/config`
-- **Shared models:** `packages/scout_models` — ingest event taxonomy (server + SDK)
-- **DB:** PostgreSQL 16
-- **Mobile SDK:** [`scout_logger_plus`](https://github.com/YOUR_ORG/scout_logger_plus) — separate GitHub repo
+| Component | Path |
+|-----------|------|
+| Server | [`apps/server`](apps/server) |
+| Dashboard | `apps/dashboard` |
+| Shared models | `packages/scout_models` |
+| Database | PostgreSQL 16 — `apps/server/lib/db/migrations/` |
+| Dev scripts | `./dev`, `scripts/` |
 
-## Local dev (no upload)
+---
 
-Use a **local** `.env` (different from server if you want):
+## Local development
 
-```env
-PORT=8080
-PUBLIC_URL=http://localhost:8080
-DATABASE_URL=postgres://scout:YOUR_PASSWORD@localhost:5433/scout
-DASHBOARD_API_KEY=dev-key
-POSTGRES_USER=scout
-POSTGRES_PASSWORD=YOUR_PASSWORD
-POSTGRES_DB=scout
-DB_PORT=5433
+### 1. Configure
+
+```bash
+cp .env.example .env
+# edit .env — set POSTGRES_PASSWORD, DASHBOARD_API_KEY, PUBLIC_URL
 ```
 
-### Fast loop (recommended)
+`PUBLIC_URL` must match how you reach the server locally (host + port). The dashboard and mobile DSNs are built from this value.
 
-**Terminal 1 — DB + API:**
+### 2. Run
+
+**Terminal 1 — database + API:**
 
 ```bash
 ./dev server
 ```
 
-**One-time — build dashboard static files for the server:**
+**One-time — build dashboard static files:**
 
 ```bash
 cd apps/dashboard && flutter build web
 ```
 
-Open **http://localhost:8080/scout/dashboard/**
+Open **`${PUBLIC_URL}/scout/dashboard/`** (from your `.env`).
 
-**Terminal 2 — hot reload UI (optional):**
+**Terminal 2 — dashboard hot reload (optional):**
 
 ```bash
 ./dev dashboard
 ```
 
-**Test ingest without the mobile app:**
+**Test ingest without a mobile app:**
 
 ```bash
 ./dev test
-# paste sk_live_... from dashboard after creating a project
+# paste the DSN shown in the dashboard after creating a project
 ```
 
-### Full stack like production (Docker)
+### 3. Docker (production-like)
 
 ```bash
 ./dev docker
 ```
 
-Same as Hetzner: Postgres + server in containers. Dashboard at `http://localhost:8080/scout/dashboard/` after `flutter build web`.
-
-### What to run before `./deploy`
-
-Only when local looks good:
-
-```bash
-./dev server          # verify API + dashboard
-./dev test            # verify ingest → Issues appear
-./deploy              # ship to Hetzner
-```
-
-Skip dashboard rebuild on deploy if unchanged: `SKIP_DASHBOARD_BUILD=1 ./deploy`
+Then build the dashboard as above and open the same dashboard URL.
 
 ---
 
-## Environment (`.env`)
+## Dashboard
+
+Create a project first — the dashboard shows a **DSN** for your Flutter app.
+
+| Tab | Purpose |
+|-----|---------|
+| **Overview** | Events, errors, crashes, sessions, trends, releases |
+| **Analytics** | Funnels, retention, release comparison, session replays |
+| **Issues** | Grouped errors / crashes / network failures |
+| **Events** | Live event stream with full payload |
+| **Geography** | Country breakdown |
+
+---
+
+## Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `DATABASE_URL` | Postgres connection for the server |
-| `DASHBOARD_API_KEY` | Protects `/api/*` (dashboard uses this via `/api/dashboard/config`) |
-| `PUBLIC_URL` | DSN host + dashboard bootstrap for `flutter run` |
+| `PUBLIC_URL` | Public base URL (`http(s)://host:port`) — used for DSN + dashboard |
 | `PORT` / `HOST` | HTTP bind |
-| `POSTGRES_*` / `DB_PORT` | Docker Compose database service |
+| `DASHBOARD_API_KEY` | Protects `/api/*` |
+| `DASHBOARD_WEB_PATH` | Dashboard path (default `scout/dashboard`) |
+| `POSTGRES_*` / `DB_PORT` | Database (Docker dev uses `DB_PORT`) |
+| `HETZNER_HOST` / `HETZNER_DIR` | Deploy target (optional) |
+
+**Never commit `.env`** — passwords, API keys, and ingest secrets belong only on the server and in app `.env` files.
+
+---
 
 ## API
 
-| Auth | Endpoint | Purpose |
-|------|----------|---------|
-| Bearer ingest key | `POST /v1/events/batch` | Client ingest |
-| `X-API-Key` | `GET/POST /api/projects` | Admin |
-| none | `GET /api/dashboard/config` | Dashboard bootstrap |
-| `X-API-Key` | `GET /api/projects/:id/*` | Dashboard reads |
+### Ingest (mobile SDK)
 
-## DSN
+| Auth | Endpoint |
+|------|----------|
+| Bearer `sk_live_…` | `POST /v1/events/batch` |
 
-After creating a project in the dashboard:
+### Dashboard
 
-`https://<ingest_key>@<host>:<port>/<project_id>`
+| Auth | Endpoint |
+|------|----------|
+| — | `GET /api/dashboard/config` |
+| `X-API-Key` | `GET/POST /api/projects` |
+| `X-API-Key` | `GET /api/projects/:id/overview` |
+| `X-API-Key` | `GET /api/projects/:id/issues` |
+| `X-API-Key` | `GET /api/projects/:id/events` |
+| `X-API-Key` | `GET /api/projects/:id/geo` |
+| `X-API-Key` | `GET /api/projects/:id/analytics/*` |
+| `X-API-Key` | `GET /api/projects/:id/sessions` |
 
-### Flutter app (`scout_logger_plus`)
+Health check: `GET /health`
 
-Published from a **separate repository**. Add to your app:
+---
+
+## Mobile apps (Flutter)
+
+SDK repo: **[scout_logger_plus](https://github.com/YOUR_ORG/scout_logger_plus)**
+
+1. Create a project in the dashboard and **copy the DSN**.
+2. Add the SDK to your app and put the DSN in `.env`:
 
 ```yaml
+# app pubspec.yaml
 dependencies:
   scout_logger_plus:
     git:
       url: https://github.com/YOUR_ORG/scout_logger_plus.git
   dio: ^5.9.0
-  flutter_dotenv: ^5.1.0
-```
 
-Quick start:
+flutter:
+  assets:
+    - .env
+```
 
 ```dart
 import 'package:scout_logger_plus/scout_logger_plus.dart';
 
-await Scout.init(dotenv.env['SCOUT_DSN']!);
+WidgetsFlutterBinding.ensureInitialized();
+await Scout.initFromEnv(); // reads SCOUT_DSN from .env
+
 apiDio.attachScout();
 runApp(ScoutApp(builder: (observers) => MaterialApp(
   navigatorObservers: observers,
@@ -131,67 +172,90 @@ runApp(ScoutApp(builder: (observers) => MaterialApp(
 )));
 ```
 
-Full integration guide: [scout_logger_plus README](https://github.com/YOUR_ORG/scout_logger_plus/blob/main/README.md)
+DSN format (generated by the dashboard — **copy as-is**):
 
-**Export SDK repo from this tree** (if you still have `packages/scout_logger_plus` locally):
-
-```bash
-./scripts/export-sdk-repo.sh ../scout_logger_plus
+```
+http://sk_live_<key>@<host>:<port>/<project_id>
 ```
 
-See [docs/REPOS.md](docs/REPOS.md) for two-repo setup.
+The port is required. The SDK redacts keys and sensitive network data before events are stored.
+
+Full integration guide: [scout_logger_plus README](https://github.com/YOUR_ORG/scout_logger_plus/blob/main/README.md)
 
 ---
 
-## Deploy to Hetzner (one command)
+## Deploy
 
 Add to `.env`:
 
 ```env
-HETZNER_HOST=root@46.62.217.25
+HETZNER_HOST=root@your-server
 HETZNER_DIR=/opt/scout-logger
 PUBLIC_URL=https://logs.yourdomain.com
 ```
 
-First time on the server (once): SSH in and ensure Podman works:
+On the VPS (once): install Podman / podman-compose.
+
+From your machine:
 
 ```bash
-ssh root@YOUR_IP
-apt update && apt install -y podman podman-compose
-systemctl enable --now podman.socket
-```
-
-From your Mac (SSH key recommended — run once: `ssh-copy-id root@YOUR_IP`):
-
-```bash
+ssh-copy-id root@your-server   # once, if using keys
 ./deploy
 ```
 
-If manual SSH works but deploy fails, your key may not be on the server yet. The old script used `BatchMode=yes` (no password prompts). Fix:
+`./deploy` builds the dashboard, rsyncs this repo (excluding the SDK folder), uploads `.env`, and starts containers.
 
-```bash
-ssh-copy-id root@46.62.217.25
-./deploy
+| Command | Purpose |
+|---------|---------|
+| `./deploy` | Full deploy |
+| `SKIP_DASHBOARD_BUILD=1 ./deploy` | Skip Flutter rebuild |
+| `ssh … 'cd $HETZNER_DIR && bash scripts/compose.sh logs -f server'` | Tail server logs |
+
+Open firewall for SSH and your `PORT`.
+
+---
+
+## Migrations
+
+Applied automatically on server start:
+
+| File | Adds |
+|------|------|
+| `001_initial.sql` | Projects, events, issues, releases |
+| `002_app_sessions.sql` | App visit sessions |
+| `003_analytics_indexes.sql` | Session query index |
+
+After pulling server changes: restart `./dev server` or redeploy.
+
+---
+
+## Repository layout
+
+```
+apps/server/          Dart ingest + dashboard API
+apps/dashboard/       Flutter Web UI
+packages/scout_models/  Shared event taxonomy
+scripts/              deploy, compose, dev helpers
+docs/REPOS.md         Two-repo setup (platform + SDK)
 ```
 
-Or set `HETZNER_SSH_KEY=~/.ssh/your_key` in `.env` if you use a different private key.
-
-This will:
-
-1. Build Flutter dashboard
-2. `rsync` the project to `HETZNER_DIR`
-3. Upload `.env`
-4. Run `podman compose up -d --build` on the server
-5. Smoke-test `/health` and `/scout/dashboard/`
-
-**Skip dashboard rebuild:** `SKIP_DASHBOARD_BUILD=1 ./deploy`
-
-**Server logs:**
+Export the SDK for a separate GitHub repo:
 
 ```bash
-ssh root@YOUR_IP 'cd /opt/scout-logger && bash scripts/compose.sh logs -f server'
+SCOUT_PLATFORM_REPO=https://github.com/YOUR_ORG/scout-logger.git \
+  ./scripts/export-sdk-repo.sh ../scout_logger_plus
 ```
 
-**Firewall:** open TCP `22` (SSH) and `${PORT}` (default **8081** while old logplatform uses 8080), or use Cloudflare Tunnel.
+---
 
-**Port 8080 busy?** Old logplatform still runs there. Use `PORT=8081` in `.env` until cutover, then stop `/opt/logplatform` and switch to `8080`.
+## Troubleshooting
+
+| Problem | Check |
+|---------|--------|
+| Dashboard blank | Run `flutter build web` in `apps/dashboard` |
+| DSN timeout in app | DSN must include port — copy full string from dashboard |
+| `401` on dashboard API | `DASHBOARD_API_KEY` matches between `.env` and server |
+| No events | `./dev test` with DSN from dashboard; check `./dev server` logs |
+| Analytics empty | Need navigation + session events from SDK |
+
+Server details: [`apps/server/README.md`](apps/server/README.md)

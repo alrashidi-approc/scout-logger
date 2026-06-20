@@ -32,6 +32,7 @@ rsync -a --delete \
   "${SRC}/" "${TARGET}/"
 
 cat > "${TARGET}/.gitignore" <<'EOF'
+.env
 .dart_tool/
 .packages
 build/
@@ -62,6 +63,7 @@ dependencies:
   devicelocale: ^0.8.1
   device_info_plus: ^11.5.0
   dio: ^5.9.0
+  flutter_dotenv: ^5.2.1
   go_router: ^14.6.2
   meta: ^1.16.0
   package_info_plus: ^8.3.0
