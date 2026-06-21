@@ -856,4 +856,51 @@ class ScoutStore {
       );
     }
   }
+
+  Future<Map<String, dynamic>> getProjectSettings(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Project not found');
+    final raw = rows.first[0];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    return ProjectRemoteConfig.fromSettings(settings).toClientResponse();
+  }
+
+  Future<Map<String, dynamic>> getClientConfig(String projectId) async => getProjectSettings(projectId);
+
+  Future<int> getConfigVersion(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named("SELECT COALESCE((settings->>'configVersion')::int, 1) FROM projects WHERE id = @id"),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) return 1;
+    return rows.first[0] as int? ?? 1;
+  }
+
+  Future<Map<String, dynamic>> updateProjectSettings(String projectId, Map<String, dynamic> patch) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id FOR UPDATE'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Project not found');
+    final raw = rows.first[0];
+    final current = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final prev = ProjectRemoteConfig.fromSettings(current);
+    final merged = prev.sdk.mergePatch(patch);
+    final next = ProjectRemoteConfig(
+      configVersion: prev.configVersion + 1,
+      updatedAt: DateTime.now().toUtc().toIso8601String(),
+      sdk: merged,
+    );
+    await conn.execute(
+      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
+      parameters: {'id': projectId, 'settings': jsonEncode(next.toSettingsJson())},
+    );
+    return next.toClientResponse();
+  }
 }

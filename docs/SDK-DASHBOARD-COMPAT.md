@@ -29,6 +29,7 @@ import 'package:scout_models/scout_models.dart';
 | `taxonomy.dart` | `ingestTypeFor`, `kEventLevels`, `kErrorCategories` |
 | `navigation.dart` | `NavTransition`, `screenTrailStep`, `parseNavTransition` |
 | `ingest.dart` | `IngestEvent`, `BatchIngestRequest` |
+| `sdk_config.dart` | `ProjectSdkConfig`, `ProjectRemoteConfig`, `normalizeStatusCodes` |
 
 ---
 
@@ -212,6 +213,20 @@ For failed/slow HTTP calls, send `type: network` (or `level: error`, `category: 
 
 Dashboard builds human-readable network summary from this block.
 
+### Ignore HTTP status codes
+
+Skip expected failures (e.g. **401** on token refresh) — no network event and no breadcrumb:
+
+```dart
+await Scout.init(dsn, options: const ScoutOptions(
+  networkIgnoreStatusCodes: {401, 403},
+));
+```
+
+Or configure remotely in dashboard **Settings → Ignore HTTP status codes** (see §16). Valid codes: `100–599`.
+
+When a response status matches the ignore list, `recordNetwork()` returns early before enqueue.
+
 ---
 
 ## 7. Session events
@@ -314,15 +329,41 @@ Map to payload:
 
 ## 10. Init & DSN
 
-Dashboard project DSN format: `{PUBLIC_URL}/v1/events/batch` with ingest key `sk_live_...`.
+Dashboard DSN format (copy as-is from **Projects → DSN**):
+
+```
+https://sk_live_...@your-host:8080/project_id
+```
+
+Parsed into: ingest key, base URL, project id. Batch path is always `/v1/events/batch`.
 
 ```dart
 await Scout.initFromEnv(); // reads SCOUT_DSN from .env
 // or
-await Scout.init(dsn: 'http://localhost:8080/v1/events/batch?key=sk_live_...');
+await Scout.init('https://sk_live_...@localhost:8080/your_project_id');
 ```
 
-Optional: `ScoutEnv` / flush interval / enable in debug.
+DSN is **identity + auth only** — runtime knobs (log levels, network ignore codes, etc.) come from remote config (§16) or local `ScoutOptions`.
+
+```dart
+const ScoutOptions(
+  environment: 'production',       // or SCOUT_ENVIRONMENT in .env
+  useRemoteConfig: true,           // fetch dashboard Settings on init / resume (default)
+  enabledLevels: {ScoutLevel.error, ScoutLevel.warning},
+  networkIgnoreStatusCodes: {401},
+  networkSlowThresholdMs: 3000,    // null = disable slow flag
+  networkCaptureBodies: true,
+  trackNavigation: true,
+  enableFlutterHooks: true,
+  debug: false,
+);
+```
+
+Opt out of remote config:
+
+```dart
+ScoutOptions(useRemoteConfig: false)
+```
 
 ---
 
@@ -333,6 +374,8 @@ Suggested layout in **scout_logger_plus**:
 | File | Responsibility |
 |------|----------------|
 | `lib/scout.dart` | Public API: init, captureException, log, setUser, setContext |
+| `lib/scout_options.dart` | Local options + `withRemote()` merge |
+| `lib/remote_config_client.dart` | `GET /v1/client/config` |
 | `lib/screen_trail.dart` | Trail buffer + **navigationType** on each step |
 | `lib/session_tracker.dart` | Session id, heartbeats, summary counts |
 | `lib/device_collector.dart` | Device map for payload |
@@ -360,6 +403,7 @@ Suggested layout in **scout_logger_plus**:
 | Analytics funnels | Distinct `screenTrail[].route` values across sessions |
 | Sessions replay | `type: session` + `screenTrail` + `summary` |
 | Users / Geo | `user.id`, optional `device.countryCode`; server adds IP geo |
+| Project Settings (SDK tab) | Remote config via `GET /v1/client/config` (§16) |
 
 ---
 
@@ -387,9 +431,10 @@ cd apps/dashboard && flutter build web
 
 1. **Payload envelope** — user, device, screen, message, stack, level, category, release  
 2. **screenTrail + navigationType** — timeline navigation badges  
-3. **Network interceptor** — network tab + issues  
-4. **Session heartbeats + summary** — analytics sessions  
-5. **Crash binding + queue** — reliability  
+3. **Network interceptor** — network tab + issues (+ ignore status codes)  
+4. **Remote SDK config** — fetch + merge on init/resume (§16)  
+5. **Session heartbeats + summary** — analytics sessions  
+6. **Crash binding + queue** — reliability  
 
 ---
 
@@ -399,9 +444,134 @@ cd apps/dashboard && flutter build web
 |------|------|
 | Navigation contract | `packages/scout_models/lib/src/navigation.dart` |
 | Event types / levels | `packages/scout_models/lib/src/taxonomy.dart` |
+| Remote SDK config schema | `packages/scout_models/lib/src/sdk_config.dart` |
+| Client config route | `apps/server/lib/routes/client_config_routes.dart` |
+| Project settings store | `apps/server/lib/store/scout_store.dart` → `getProjectSettings`, `updateProjectSettings` |
+| Dashboard settings UI | `apps/dashboard/lib/screens/project_settings_screen.dart` |
 | Dashboard payload parser | `apps/dashboard/lib/utils/event_view.dart` |
 | Timeline UI | `apps/dashboard/lib/widgets/event_detail_widgets.dart` → `BreadcrumbTrail` |
 | Session timeline merge | `apps/server/lib/store/analytics_store.dart` → `_mergeTrail` |
 | Export SDK to own repo | `scripts/export-sdk-repo.sh` |
 
 When `scout_models` changes, bump the git ref in **scout_logger_plus** `pubspec.yaml` and re-export the SDK repo.
+
+---
+
+## 16. Remote SDK config (dashboard-controlled)
+
+Ops can tune SDK behavior per project from the dashboard without shipping a new app build. Settings are stored in `projects.settings` (JSONB) and fetched by the mobile client using the same ingest key as the DSN.
+
+### Architecture
+
+```
+Dashboard  →  PATCH /api/projects/:id/settings   (JWT auth)
+Mobile SDK →  GET  /v1/client/config             (Bearer sk_live_…)
+Server     →  projects.settings JSONB
+```
+
+DSN does **not** embed config — only server URL, project id, and ingest key.
+
+### Client endpoint
+
+**`GET /v1/client/config`**  
+**Auth:** `Authorization: Bearer sk_live_...`
+
+Response:
+
+```json
+{
+  "ok": true,
+  "configVersion": 3,
+  "updatedAt": "2026-06-21T20:00:00Z",
+  "sdk": {
+    "enabledLevels": ["error", "warning"],
+    "enableFlutterHooks": true,
+    "trackNavigation": true,
+    "networkCaptureBodies": false,
+    "networkSlowThresholdMs": 3000,
+    "networkIgnoreStatusCodes": [401, 403]
+  }
+}
+```
+
+Ingest `202` responses also include `configVersion` so the SDK can detect changes later.
+
+### Dashboard endpoints
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/api/projects/:id/settings` | JWT | Read current config |
+| `PATCH` | `/api/projects/:id/settings` | JWT (write) | Update config, bumps `configVersion` |
+
+PATCH body:
+
+```json
+{
+  "sdk": {
+    "enabledLevels": ["error", "warning"],
+    "enableFlutterHooks": true,
+    "trackNavigation": true,
+    "networkCaptureBodies": false,
+    "networkSlowThresholdMs": 3000,
+    "networkIgnoreStatusCodes": [401]
+  }
+}
+```
+
+Dashboard UI: project sidebar → **Settings** (`/p/:projectId/settings`).
+
+### Shared schema (`scout_models`)
+
+Types: `ProjectSdkConfig`, `ProjectRemoteConfig` in `sdk_config.dart`.
+
+| Field | Type | Default | SDK effect |
+|-------|------|---------|------------|
+| `enabledLevels` | `string[]` | all four levels | Drop events below unchecked levels in `_record()` |
+| `enableFlutterHooks` | `bool` | `true` | `FlutterError.onError` + platform crash handler |
+| `trackNavigation` | `bool` | `true` | Screen trail + nav observer |
+| `networkCaptureBodies` | `bool` | `true` | Request/response bodies in network events |
+| `networkSlowThresholdMs` | `int` | `3000` | Flag slow requests (`500–60000`) |
+| `networkIgnoreStatusCodes` | `int[]` | `[]` | Skip network logging for these HTTP codes |
+
+Validation helpers: `normalizeEnabledLevels`, `normalizeStatusCodes`, `clampSlowThreshold`.
+
+### SDK implementation checklist
+
+- [ ] **`RemoteConfigClient`** — `GET /v1/client/config` via private ingest Dio
+- [ ] **Fetch on init** — before queue starts, merge into `ScoutOptions` via `withRemote()`
+- [ ] **Refresh on resume** — compare `configVersion`, re-merge when newer
+- [ ] **`useRemoteConfig`** — local opt-out (`false` skips fetch)
+- [ ] **Fail-open** — if fetch fails, use local/code defaults; do not disable Scout
+- [ ] **`enabledLevels`** — honor in `_record()` (already gates log/capture calls)
+- [ ] **`networkIgnoreStatusCodes`** — early return in `recordNetwork()` when status matches
+
+### Merge precedence
+
+| Layer | Source |
+|-------|--------|
+| 1 | Code defaults (`ScoutOptions` const) |
+| 2 | Remote config from dashboard (when `useRemoteConfig: true`) |
+| 3 | Local-only fields always stay local: `environment`, `release`, redaction lists, `flushInterval`, DSN |
+
+Remote wins for the six `sdk` fields above. Local `useRemoteConfig: false` disables remote entirely.
+
+### Local override example
+
+```dart
+await Scout.init(dsn, options: const ScoutOptions(
+  useRemoteConfig: true,
+  networkIgnoreStatusCodes: {401}, // used until remote loads; then remote wins
+));
+```
+
+### Verify remote config
+
+1. Dashboard → project → **Settings**
+2. Uncheck **INFO** log level, add **401** to ignore codes → **Save**
+3. Relaunch app (or background → foreground)
+4. `Scout.instance.options.enabledLevels` should exclude `info`
+5. API call returning 401 should not appear under **Events**
+
+### Export note
+
+When exporting **scout_logger_plus** to its own repo, ensure `pubspec.yaml` pins a `scout_models` ref that includes `sdk_config.dart`, and document §16 in the exported README (or link back to this file).

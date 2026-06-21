@@ -8,6 +8,7 @@ import 'middleware/auth_middleware.dart';
 import 'middleware/http_utils.dart';
 import 'routes/api_routes.dart';
 import 'routes/auth_routes.dart';
+import 'routes/client_config_routes.dart';
 import 'routes/ingest_routes.dart';
 import 'routes/web_routes.dart';
 import 'services/email_service.dart';
@@ -40,6 +41,7 @@ Handler createApp({
   router.get('/', (_) => Response.found('${config.dashboardUrlPath}/'));
   router.get('/scout', (_) => Response.found('${config.dashboardUrlPath}/'));
   router.post('/v1/events/batch', ingestRoutes(store, geo));
+  router.get('/v1/client/config', clientConfigRoutes(store));
 
   router.get('/api/dashboard/config', (_) {
     return Response.ok(

@@ -295,5 +295,32 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/settings', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      try {
+        final settings = await store.getProjectSettings(id);
+        return Response.ok(jsonEncode({'ok': true, 'settings': settings}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError {
+        return jsonErr('Project not found', status: 404);
+      }
+    });
+  });
+
+  router.patch('/projects/<id>/settings', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      try {
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final settings = await store.updateProjectSettings(id, body);
+        return Response.ok(jsonEncode({'ok': true, 'settings': settings}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError {
+        return jsonErr('Project not found', status: 404);
+      }
+    });
+  });
+
   return router.call;
 }

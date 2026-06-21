@@ -247,6 +247,22 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['session']);
   }
 
+  Future<Map<String, dynamic>> fetchProjectSettings(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/settings'), headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['settings']);
+  }
+
+  Future<Map<String, dynamic>> updateProjectSettings(String projectId, Map<String, dynamic> body) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/settings'),
+      headers: _headers,
+      body: jsonEncode(body),
+    );
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['settings']);
+  }
+
   void _ok(http.Response res) {
     if (res.statusCode >= 200 && res.statusCode < 300) return;
     throw Exception('API ${res.statusCode}: ${res.body}');

@@ -168,16 +168,23 @@ class WorldMapPanelState extends State<WorldMapPanel> {
   }
 
   void _focusActive() {
-    final codes = [
-      for (final p in widget.points)
-        if (_usersForPoint(p) > 0) (p['country'] as String).toLowerCase(),
-    ];
-    if (codes.isEmpty) return;
-    if (codes.length == 1) {
-      _focusCountries(codes, tight: true);
-    } else {
-      _focusCountries(codes, tight: false);
+    final top = _topTrafficCode();
+    if (top == null) return;
+    _focusCountries([top], tight: true);
+  }
+
+  String? _topTrafficCode() {
+    Map<String, dynamic>? best;
+    var bestUsers = 0;
+    for (final p in widget.points) {
+      final u = _usersForPoint(p);
+      if (u > bestUsers) {
+        bestUsers = u;
+        best = p;
+      }
     }
+    final code = best?['country'] as String?;
+    return code != null && code.length == 2 ? code.toLowerCase() : null;
   }
 
   void _focusCountries(List<String> codes, {required bool tight}) {
@@ -211,15 +218,17 @@ class WorldMapPanelState extends State<WorldMapPanel> {
       maxY = math.max(maxY, pos.height);
     }
 
-    final pad = tight ? 70.0 : 120.0;
-    final bw = math.max(maxX - minX + pad, 90.0);
-    final bh = math.max(maxY - minY + pad, 70.0);
+    final single = coords.length == 1;
+    final pad = tight ? (single ? 36.0 : 70.0) : 120.0;
+    final bw = math.max(maxX - minX + pad, single ? 48.0 : 90.0);
+    final bh = math.max(maxY - minY + pad, single ? 40.0 : 70.0);
     final cx = (minX + maxX) / 2;
     final cy = (minY + maxY) / 2;
 
     final scaleX = vw / (bw * fitScale);
     final scaleY = vh / (bh * fitScale);
-    final scale = math.min(math.min(scaleX, scaleY), 14.0).clamp(tight ? 2.5 : 1.6, 14.0);
+    final minScale = tight ? (single ? 5.0 : 2.5) : 1.6;
+    final scale = math.min(math.min(scaleX, scaleY), 14.0).clamp(minScale, 14.0);
 
     final offsetX = (vw - _attrs.mapWidth * fitScale) / 2;
     final offsetY = (vh - _attrs.mapHeight * fitScale) / 2;
@@ -307,7 +316,7 @@ class WorldMapPanelState extends State<WorldMapPanel> {
                           const SizedBox(height: 6),
                           _ZoomBtn(icon: Icons.remove, tooltip: 'Zoom out', onPressed: () => _zoomBy(0.8)),
                           const SizedBox(height: 6),
-                          _ZoomBtn(icon: Icons.center_focus_strong, tooltip: 'Fit active region', onPressed: _focusActive),
+                          _ZoomBtn(icon: Icons.center_focus_strong, tooltip: 'Center top country', onPressed: _focusActive),
                         ],
                       ),
                     ),

@@ -31,6 +31,7 @@ class _DashboardShellState extends State<DashboardShell> {
     (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),
     (Icons.list_alt_outlined, Icons.list_alt, 'Events'),
     (Icons.public_outlined, Icons.public, 'Geography'),
+    (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
 
   @override
@@ -76,6 +77,7 @@ class _DashboardShellState extends State<DashboardShell> {
     if (path.contains('/issues')) return 4;
     if (path.contains('/events')) return 5;
     if (path.contains('/geo')) return 6;
+    if (path.contains('/settings')) return 7;
     return 0;
   }
 
@@ -90,6 +92,7 @@ class _DashboardShellState extends State<DashboardShell> {
       4 => '/p/$id/issues',
       5 => '/p/$id/events',
       6 => '/p/$id/geo',
+      7 => '/p/$id/settings',
       _ => '/projects',
     };
     if (i > 0 && id == null) return;

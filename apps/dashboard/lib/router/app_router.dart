@@ -9,6 +9,7 @@ import '../screens/geo_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
 import '../screens/overview_screen.dart';
+import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/sessions_screen.dart';
@@ -171,6 +172,10 @@ GoRouter createRouter() {
               projectId: state.pathParameters['projectId']!,
               initialPeriod: PeriodFilter.parse(state.uri.queryParameters),
             ),
+          ),
+          GoRoute(
+            path: '/p/:projectId/settings',
+            builder: (_, state) => ProjectSettingsScreen(projectId: state.pathParameters['projectId']!),
           ),
         ],
       ),

@@ -36,9 +36,11 @@ Handler ingestRoutes(ScoutStore store, GeoEnricher geo) {
         enrichment: enrichment,
       );
 
+      final configVersion = await store.getConfigVersion(project['projectId'] as String);
+
       return Response(
         202,
-        body: jsonEncode({'ok': true, ...result}),
+        body: jsonEncode({'ok': true, 'configVersion': configVersion, ...result}),
         headers: {'Content-Type': 'application/json'},
       );
     } on FormatException catch (e) {
