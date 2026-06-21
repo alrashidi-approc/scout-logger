@@ -178,7 +178,7 @@ class EventFlowDiagram extends StatelessWidget {
 
   Widget _nodeBox(_Node n) => Container(
         padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
+        decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Icon(n.icon, size: 14, color: AppTheme.primary),
@@ -219,8 +219,20 @@ class InfoSection extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       clipBehavior: Clip.antiAlias,
+      color: AppTheme.panel,
       child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        data: Theme.of(context).copyWith(
+          dividerColor: Colors.transparent,
+          listTileTheme: const ListTileThemeData(iconColor: AppTheme.primary, textColor: AppTheme.text),
+          expansionTileTheme: ExpansionTileThemeData(
+            backgroundColor: AppTheme.panel,
+            collapsedBackgroundColor: AppTheme.panel,
+            iconColor: AppTheme.muted,
+            collapsedIconColor: AppTheme.muted,
+            textColor: AppTheme.text,
+            collapsedTextColor: AppTheme.text,
+          ),
+        ),
         child: ExpansionTile(
           initiallyExpanded: initiallyExpanded,
           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -352,8 +364,12 @@ class JsonPanel extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.border)),
-      child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFF334155), height: 1.5)),
+      decoration: BoxDecoration(
+        color: AppTheme.panelElevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
     );
   }
 }
@@ -392,7 +408,7 @@ class BreadcrumbTrail extends StatelessWidget {
               child: Container(
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: const Color(0xFFF1F5F9), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
+                decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600))),
@@ -529,7 +545,7 @@ class NetworkReadablePanel extends StatelessWidget {
 
   static Widget _flowBox(IconData icon, String title, String summary, String? sub) => Container(
         padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(color: const Color(0xFFF8FAFC), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
+        decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Icon(icon, size: 14, color: AppTheme.primary),
@@ -537,7 +553,7 @@ class NetworkReadablePanel extends StatelessWidget {
             Text(title, style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontWeight: FontWeight.w700)),
           ]),
           const SizedBox(height: 8),
-          Text(summary, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700), maxLines: 3, overflow: TextOverflow.ellipsis),
+          Text(summary, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.text), maxLines: 3, overflow: TextOverflow.ellipsis),
           if (sub != null) ...[
             const SizedBox(height: 4),
             Text(sub, style: const TextStyle(fontSize: 11, color: AppTheme.muted), maxLines: 2, overflow: TextOverflow.ellipsis),

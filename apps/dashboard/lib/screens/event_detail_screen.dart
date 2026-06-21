@@ -90,10 +90,9 @@ class _EventDetailScreenState extends State<EventDetailScreen> with SingleTicker
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Flexible(
-          child: SingleChildScrollView(
-            padding: pageInsets(context, top: 16),
-            child: Column(
+        SingleChildScrollView(
+          padding: pageInsets(context, top: 16),
+          child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Wrap(
@@ -131,7 +130,6 @@ class _EventDetailScreenState extends State<EventDetailScreen> with SingleTicker
               ],
             ),
           ),
-        ),
         Material(
           color: Theme.of(context).scaffoldBackgroundColor,
           child: TabBar(
@@ -150,14 +148,17 @@ class _EventDetailScreenState extends State<EventDetailScreen> with SingleTicker
           ),
         ),
         Expanded(
-          child: TabBarView(
-            controller: _tabs,
-            children: [
-              _OverviewTab(v: v, related: related, projectId: pid, pad: pad, storageKey: 'overview'),
-              _TimelineTab(v: v, pad: pad, storageKey: 'timeline'),
-              _TechnicalTab(v: v, pad: pad, storageKey: 'technical'),
-              _RawTab(v: v, pad: pad, storageKey: 'raw'),
-            ],
+          child: ColoredBox(
+            color: AppTheme.bg,
+            child: TabBarView(
+              controller: _tabs,
+              children: [
+                _OverviewTab(v: v, related: related, projectId: pid, pad: pad, storageKey: 'overview'),
+                _TimelineTab(v: v, pad: pad, storageKey: 'timeline'),
+                _TechnicalTab(v: v, pad: pad, storageKey: 'technical'),
+                _RawTab(v: v, pad: pad, storageKey: 'raw'),
+              ],
+            ),
           ),
         ),
       ],
