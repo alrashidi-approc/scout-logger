@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:postgres/postgres.dart';
 
 import '../db/scout_db.dart';
+import '../util/dates.dart';
 
 /// Product analytics queries — funnels, retention, releases, session timelines.
 class AnalyticsStore {
@@ -12,17 +13,18 @@ class AnalyticsStore {
 
   Future<List<String>> distinctRoutes(String projectId, {int days = 30}) async {
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT DISTINCT step->>'route' AS route
         FROM events, jsonb_array_elements(payload->'screenTrail') AS step
         WHERE project_id = @pid
-          AND occurred_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
+          AND occurred_at >= @since::timestamptz
           AND step->>'route' IS NOT NULL AND step->>'route' != ''
         ORDER BY route
         LIMIT 200
       '''),
-      parameters: {'pid': projectId, 'days': days},
+      parameters: {'pid': projectId, 'since': since},
     );
     return rows.map((r) => r[0] as String).toList();
   }
@@ -31,6 +33,7 @@ class AnalyticsStore {
     if (steps.isEmpty) return {'steps': [], 'totalSessions': 0};
 
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT session_id, payload->'screenTrail' AS trail
@@ -39,13 +42,13 @@ class AnalyticsStore {
           FROM events
           WHERE project_id = @pid
             AND session_id IS NOT NULL
-            AND occurred_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
+            AND occurred_at >= @since::timestamptz
             AND jsonb_typeof(payload->'screenTrail') = 'array'
             AND jsonb_array_length(payload->'screenTrail') > 0
           ORDER BY session_id, jsonb_array_length(payload->'screenTrail') DESC, occurred_at DESC
         ) t
       '''),
-      parameters: {'pid': projectId, 'days': days},
+      parameters: {'pid': projectId, 'since': since},
     );
 
     final trails = <List<String>>[];
@@ -82,13 +85,14 @@ class AnalyticsStore {
 
   Future<Map<String, dynamic>> retention(String projectId, {int weeks = 8}) async {
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(weeks * 7);
     final rows = await conn.execute(
       Sql.named('''
         WITH cohorts AS (
           SELECT user_id, date_trunc('week', first_seen_at AT TIME ZONE 'utc')::date AS cohort_week
           FROM user_first_seen
           WHERE project_id = @pid
-            AND first_seen_at >= (now() AT TIME ZONE 'utc') - make_interval(weeks => @weeks)
+            AND first_seen_at >= @since::timestamptz
         ),
         activity AS (
           SELECT user_id, date_trunc('week', occurred_at AT TIME ZONE 'utc')::date AS active_week
@@ -105,7 +109,7 @@ class AnalyticsStore {
         GROUP BY c.cohort_week, period
         ORDER BY c.cohort_week, period
       '''),
-      parameters: {'pid': projectId, 'weeks': weeks},
+      parameters: {'pid': projectId, 'since': since},
     );
 
     final cohortSizes = <String, int>{};
@@ -135,6 +139,7 @@ class AnalyticsStore {
 
   Future<List<Map<String, dynamic>>> releaseComparison(String projectId, {int days = 30}) async {
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days);
     final rows = await conn.execute(
       Sql.named('''
         WITH session_release AS (
@@ -148,7 +153,7 @@ class AnalyticsStore {
           FROM app_sessions s
           JOIN session_release sr ON sr.session_id = s.id
           WHERE s.project_id = @pid AND s.ended_at IS NOT NULL
-            AND s.started_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
+            AND s.started_at >= @since::timestamptz
           GROUP BY sr.release
         )
         SELECT
@@ -163,12 +168,12 @@ class AnalyticsStore {
         LEFT JOIN session_stats ss ON ss.release = e.release
         WHERE e.project_id = @pid
           AND e.release IS NOT NULL
-          AND e.occurred_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
+          AND e.occurred_at >= @since::timestamptz
         GROUP BY e.release, ss.sessions, ss.avg_ms
         ORDER BY events DESC
         LIMIT 20
       '''),
-      parameters: {'pid': projectId, 'days': days},
+      parameters: {'pid': projectId, 'since': since},
     );
 
     return rows.map((r) {
@@ -189,6 +194,7 @@ class AnalyticsStore {
 
   Future<List<Map<String, dynamic>>> listSessions(String projectId, {int days = 7, int limit = 50}) async {
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms,
@@ -203,11 +209,11 @@ class AnalyticsStore {
           ORDER BY occurred_at DESC LIMIT 1
         ) end_ev ON true
         WHERE s.project_id = @pid
-          AND s.started_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
+          AND s.started_at >= @since::timestamptz
         ORDER BY s.started_at DESC
         LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'days': days, 'lim': limit},
+      parameters: {'pid': projectId, 'since': since, 'lim': limit},
     );
 
     return rows.map((r) {
@@ -316,5 +322,399 @@ class AnalyticsStore {
       }
     }
     return value;
+  }
+
+  /// Full KPI bundle for the Statistics dashboard page.
+  Future<Map<String, dynamic>> projectStats(String projectId, {int days = 7}) async {
+    final conn = await db.connect();
+    final period = days.clamp(1, 90);
+    final since = utcTimestampDaysAgo(period);
+    final prevStart = utcTimestampDaysAgo(period * 2);
+    final prevEnd = since;
+
+    Future<List<dynamic>> metrics(String from, {String? before}) async {
+      final rows = before == null
+          ? await conn.execute(
+              Sql.named('''
+            SELECT
+              COUNT(*)::int,
+              COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+              COUNT(*) FILTER (WHERE type = 'crash')::int,
+              COUNT(*) FILTER (WHERE type = 'network')::int,
+              COUNT(*) FILTER (WHERE type = 'session')::int,
+              COUNT(*) FILTER (WHERE type = 'span')::int,
+              COUNT(*) FILTER (WHERE type = 'log')::int,
+              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int,
+              COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
+            FROM events
+            WHERE project_id = @pid AND occurred_at >= @from::timestamptz
+          '''),
+              parameters: {'pid': projectId, 'from': from},
+            )
+          : await conn.execute(
+              Sql.named('''
+            SELECT
+              COUNT(*)::int,
+              COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+              COUNT(*) FILTER (WHERE type = 'crash')::int,
+              COUNT(*) FILTER (WHERE type = 'network')::int,
+              COUNT(*) FILTER (WHERE type = 'session')::int,
+              COUNT(*) FILTER (WHERE type = 'span')::int,
+              COUNT(*) FILTER (WHERE type = 'log')::int,
+              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int,
+              COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
+            FROM events
+            WHERE project_id = @pid
+              AND occurred_at >= @from::timestamptz
+              AND occurred_at < @before::timestamptz
+          '''),
+              parameters: {'pid': projectId, 'from': from, 'before': before},
+            );
+      return rows.first;
+    }
+
+    final cur = await metrics(since);
+    final prev = await metrics(prevStart, before: prevEnd);
+
+    final sessions = await conn.execute(
+      Sql.named('''
+        SELECT
+          COUNT(*)::int,
+          AVG(duration_ms)::int,
+          COUNT(*) FILTER (WHERE ended_at IS NOT NULL)::int
+        FROM app_sessions
+        WHERE project_id = @pid
+          AND started_at >= @since::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+    final sess = sessions.first;
+
+    final crashSessions = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(DISTINCT session_id)::int
+        FROM events
+        WHERE project_id = @pid AND type = 'crash' AND session_id IS NOT NULL
+          AND occurred_at >= @since::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final openIssues = await conn.execute(
+      Sql.named('SELECT COUNT(*)::int FROM issues WHERE project_id = @pid AND status = \'open\''),
+      parameters: {'pid': projectId},
+    );
+
+    final byType = await conn.execute(
+      Sql.named('''
+        SELECT type, COUNT(*)::int FROM events
+        WHERE project_id = @pid
+          AND occurred_at >= @since::timestamptz
+        GROUP BY type ORDER BY COUNT(*) DESC
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final byPlatform = await conn.execute(
+      Sql.named('''
+        SELECT platform, COUNT(*)::int FROM events
+        WHERE project_id = @pid AND platform IS NOT NULL
+          AND occurred_at >= @since::timestamptz
+        GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 8
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final trend = await conn.execute(
+      Sql.named('''
+        SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int,
+               SUM(unique_users)::int
+        FROM daily_stats
+        WHERE project_id = @pid AND date >= @fromDate::date
+        GROUP BY date ORDER BY date
+      '''),
+      parameters: {'pid': projectId, 'fromDate': utcDateDaysAgo(period - 1)},
+    );
+
+    int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
+    double delta(num current, num previous) =>
+        previous == 0 ? (current == 0 ? 0.0 : 100.0) : ((current - previous) / previous * 100);
+
+    final totalSessions = n(sess[0]);
+    final crashed = n(crashSessions.first[0]);
+    final events = n(cur[0]);
+    final errors = n(cur[1]);
+
+    return {
+      'days': period,
+      'events': n(cur[0]),
+      'errors': n(cur[1]),
+      'crashes': n(cur[2]),
+      'networkEvents': n(cur[3]),
+      'sessionEvents': n(cur[4]),
+      'spans': n(cur[5]),
+      'logs': n(cur[6]),
+      'uniqueUsers': n(cur[7]),
+      'uniqueSessions': n(cur[8]),
+      'completedSessions': n(totalSessions),
+      'avgSessionDurationMs': sess[1] == null ? null : n(sess[1]),
+      'openIssues': n(openIssues.first[0]),
+      'crashFreeRatePct': totalSessions == 0 ? 100.0 : ((totalSessions - crashed) / totalSessions * 100),
+      'errorRatePct': events == 0 ? 0.0 : (errors / events * 100),
+      'deltas': {
+        'events': delta(n(cur[0]), n(prev[0])),
+        'errors': delta(n(cur[1]), n(prev[1])),
+        'crashes': delta(n(cur[2]), n(prev[2])),
+        'uniqueUsers': delta(n(cur[7]), n(prev[7])),
+      },
+      'byType': byType.map((r) => {'type': r[0], 'count': r[1]}).toList(),
+      'byPlatform': byPlatform.map((r) => {'platform': r[0], 'count': r[1]}).toList(),
+      'dailyTrend': trend
+          .map((r) => {
+                'date': (r[0] as DateTime).toIso8601String().substring(0, 10),
+                'events': r[1],
+                'errors': r[2],
+                'crashes': r[3],
+                'users': r[4],
+              })
+          .toList(),
+    };
+  }
+
+  /// Extended breakdowns for unified dashboard (peak hours, top endpoints/screens, etc.).
+  Future<Map<String, dynamic>> dashboardInsights(String projectId, {int days = 7}) async {
+    final conn = await db.connect();
+    final period = days.clamp(1, 90);
+    final since = utcTimestampDaysAgo(period);
+
+    final usersAffected = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(DISTINCT user_id)::int
+        FROM events
+        WHERE project_id = @pid AND user_id IS NOT NULL
+          AND type IN ('error', 'network', 'crash')
+          AND occurred_at >= @since::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final peakEvents = await conn.execute(
+      Sql.named('''
+        SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
+        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final peakErrors = await conn.execute(
+      Sql.named('''
+        SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND type IN ('error', 'network', 'crash')
+          AND occurred_at >= @since::timestamptz
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final hourly = await conn.execute(
+      Sql.named('''
+        SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS h,
+               COUNT(*)::int,
+               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int
+        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        GROUP BY 1 ORDER BY 1
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final endpoints = await conn.execute(
+      Sql.named('''
+        SELECT payload->'network'->>'url' AS endpoint, COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+          AND payload->'network'->>'url' IS NOT NULL
+          AND (
+            type IN ('error', 'crash') OR
+            type = 'network' OR
+            (payload->'network'->>'statusCode') ~ '^[0-9]+\$' AND (payload->'network'->>'statusCode')::int >= 400
+          )
+        GROUP BY endpoint ORDER BY 2 DESC LIMIT 10
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final screens = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(payload->'screen'->>'currentRoute', ''), 'unknown') AS screen, COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND type = 'crash' AND occurred_at >= @since::timestamptz
+        GROUP BY screen ORDER BY 2 DESC LIMIT 10
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final byEnv = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(environment, ''), 'unknown') AS environment, COUNT(*)::int
+        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        GROUP BY environment ORDER BY 2 DESC
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final byRelease = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(release, ''), 'unknown') AS release,
+               COUNT(*)::int,
+               COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+               COUNT(*) FILTER (WHERE type = 'crash')::int
+        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        GROUP BY release ORDER BY 2 DESC LIMIT 12
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    final byDeploy = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(
+          NULLIF(payload->'custom'->>'deployment', ''),
+          NULLIF(payload->'custom'->>'deploymentTag', ''),
+          NULLIF(payload->'custom'->>'deployTag', '')
+        ) AS tag, COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+          AND COALESCE(
+            NULLIF(payload->'custom'->>'deployment', ''),
+            NULLIF(payload->'custom'->>'deploymentTag', ''),
+            NULLIF(payload->'custom'->>'deployTag', '')
+          ) IS NOT NULL
+        GROUP BY tag ORDER BY 2 DESC LIMIT 10
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
+
+    return {
+      'usersAffectedByErrors': n(usersAffected.first[0]),
+      'peakHour': peakEvents.isEmpty ? null : n(peakEvents.first[0]),
+      'peakHourEvents': peakEvents.isEmpty ? 0 : n(peakEvents.first[1]),
+      'peakErrorHour': peakErrors.isEmpty ? null : n(peakErrors.first[0]),
+      'peakErrorHourCount': peakErrors.isEmpty ? 0 : n(peakErrors.first[1]),
+      'hourlyActivity': hourly.map((r) => {'hour': r[0], 'events': r[1], 'errors': r[2]}).toList(),
+      'topFailingEndpoints': endpoints.map((r) => {'endpoint': r[0], 'count': r[1]}).toList(),
+      'topCrashScreens': screens.map((r) => {'screen': r[0], 'count': r[1]}).toList(),
+      'byEnvironment': byEnv.map((r) => {'environment': r[0], 'count': r[1]}).toList(),
+      'eventsByRelease': byRelease.map((r) => {'release': r[0], 'count': r[1], 'errors': r[2], 'crashes': r[3]}).toList(),
+      'byDeployment': byDeploy.map((r) => {'tag': r[0], 'count': r[1]}).toList(),
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> listUsers(String projectId, {int days = 30, int limit = 100}) async {
+    final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days.clamp(1, 90));
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT user_id,
+               MIN(occurred_at) AS first_seen,
+               MAX(occurred_at) AS last_seen,
+               COUNT(*)::int,
+               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
+        FROM events
+        WHERE project_id = @pid AND user_id IS NOT NULL
+          AND occurred_at >= @since::timestamptz
+        GROUP BY user_id
+        ORDER BY MAX(occurred_at) DESC
+        LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'since': since, 'lim': limit},
+    );
+    return rows
+        .map((r) => {
+              'userId': r[0],
+              'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
+              'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'eventCount': r[3],
+              'errorCount': r[4],
+              'sessionCount': r[5],
+            })
+        .toList();
+  }
+
+  Future<Map<String, dynamic>?> getUser(String projectId, String userId, {int days = 30}) async {
+    final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days.clamp(1, 90));
+    final stats = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(*)::int,
+               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+               COUNT(*) FILTER (WHERE type = 'crash')::int,
+               MIN(occurred_at),
+               MAX(occurred_at),
+               MAX(country)
+        FROM events
+        WHERE project_id = @pid AND user_id = @uid AND occurred_at >= @since::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, 'since': since},
+    );
+    if (stats.isEmpty || stats.first[0] == 0) return null;
+
+    final sessions = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(*)::int FROM app_sessions
+        WHERE project_id = @pid AND user_id = @uid AND started_at >= @since::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, 'since': since},
+    );
+
+    final recent = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, message, release, platform, environment, app_version,
+               payload->'screen'->>'currentRoute' AS route,
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category,
+               payload->>'level' AS level
+        FROM events
+        WHERE project_id = @pid AND user_id = @uid
+        ORDER BY occurred_at DESC LIMIT 20
+      '''),
+      parameters: {'pid': projectId, 'uid': userId},
+    );
+
+    final s = stats.first;
+    return {
+      'userId': userId,
+      'days': days,
+      'eventCount': s[0],
+      'errorCount': s[1],
+      'crashCount': s[2],
+      'firstSeenAt': (s[3] as DateTime).toUtc().toIso8601String(),
+      'lastSeenAt': (s[4] as DateTime).toUtc().toIso8601String(),
+      'topCountry': s[5],
+      'sessionCount': sessions.first[0],
+      'recentEvents': recent
+          .map((r) => {
+                'id': r[0],
+                'type': r[1],
+                'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+                'message': r[3],
+                'release': r[4],
+                'platform': r[5],
+                'environment': r[6],
+                'appVersion': r[7],
+                'route': r[8],
+                'deviceName': r[9],
+                'networkUrl': r[10],
+                'statusCode': r[11]?.toString(),
+                'category': r[12],
+                'level': r[13],
+              })
+          .toList(),
+    };
   }
 }

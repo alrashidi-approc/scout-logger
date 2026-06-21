@@ -6,6 +6,8 @@ import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_card.dart';
 import '../widgets/level_badge.dart';
+import '../utils/nav.dart';
+import '../utils/responsive.dart';
 import '../widgets/page_header.dart';
 
 class IssueDetailScreen extends StatefulWidget {
@@ -61,8 +63,13 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
 
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: 16, bottom: pagePad(context)),
       children: [
+        TextButton.icon(
+          onPressed: () => popOrGo(context, '/p/${widget.projectId}/issues'),
+          icon: const Icon(Icons.arrow_back, size: 18),
+          label: const Text('Back'),
+        ),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           LevelBadge(type: issue['type'] as String? ?? 'error'),
           const SizedBox(width: 12),
@@ -115,7 +122,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
         const SizedBox(height: 12),
         ...events.map((e) => EventCard(
               event: e,
-              onTap: () => context.go('/p/${widget.projectId}/events/${e['id']}'),
+              onTap: () => context.push('/p/${widget.projectId}/events/${e['id']}'),
             )),
       ],
     );

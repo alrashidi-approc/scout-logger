@@ -62,40 +62,41 @@ class DetailRow extends StatelessWidget {
 }
 
 class FlowStrip extends StatelessWidget {
-  const FlowStrip({super.key, required this.items});
+  const FlowStrip({super.key, required this.items, this.embedded = false});
 
   final List<FlowItem> items;
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {
     final visible = items.where((i) => i.value.isNotEmpty && i.value != '—').toList();
     if (visible.isEmpty) return const SizedBox.shrink();
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: LayoutBuilder(builder: (context, c) {
-          if (c.maxWidth < 640) {
-            return Column(
-              children: [
-                for (var i = 0; i < visible.length; i++) ...[
-                  if (i > 0) const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Icon(Icons.arrow_downward, size: 14, color: AppTheme.muted)),
-                  _FlowTile(item: visible[i]),
-                ],
-              ],
-            );
-          }
-          return Row(
-            children: [
-              for (var i = 0; i < visible.length; i++) ...[
-                if (i > 0) const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: Icon(Icons.arrow_forward, size: 16, color: AppTheme.muted)),
-                Expanded(child: _FlowTile(item: visible[i])),
-              ],
+    final inner = LayoutBuilder(builder: (context, c) {
+      if (c.maxWidth < 560) {
+        return Column(
+          children: [
+            for (var i = 0; i < visible.length; i++) ...[
+              if (i > 0) const Padding(padding: EdgeInsets.symmetric(vertical: 4), child: Icon(Icons.arrow_downward, size: 14, color: AppTheme.muted)),
+              _FlowTile(item: visible[i]),
             ],
-          );
-        }),
-      ),
-    );
+          ],
+        );
+      }
+      return Row(
+        children: [
+          for (var i = 0; i < visible.length; i++) ...[
+            if (i > 0) const Padding(padding: EdgeInsets.symmetric(horizontal: 6), child: Icon(Icons.arrow_forward, size: 16, color: AppTheme.muted)),
+            Expanded(child: _FlowTile(item: visible[i])),
+          ],
+        ],
+      );
+    });
+
+    if (embedded) {
+      return Padding(padding: const EdgeInsets.all(10), child: inner);
+    }
+    return Card(child: Padding(padding: const EdgeInsets.all(16), child: inner));
   }
 }
 
@@ -115,7 +116,7 @@ class _FlowTile extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppTheme.primarySoft,
+        color: AppTheme.panelElevated,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppTheme.border),
       ),

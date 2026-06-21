@@ -7,5 +7,10 @@ import 'theme/app_theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppConfig.load();
-  runApp(MaterialApp.router(title: 'Scout Logger', theme: AppTheme.light(), routerConfig: createRouter()));
+  runApp(MaterialApp.router(
+    title: 'Scout Logger',
+    theme: AppTheme.dark(),
+    routerConfig: createRouter(),
+    restorationScopeId: 'scout-dashboard',
+  ));
 }

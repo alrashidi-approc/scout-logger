@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/responsive.dart';
 
 class PageHeader extends StatelessWidget {
   const PageHeader({super.key, required this.title, this.subtitle, this.actions});
@@ -11,19 +12,19 @@ class PageHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final compact = MediaQuery.sizeOf(context).width < Breakpoints.mobile;
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: AppTheme.text)),
-            if (subtitle != null) ...[
-              const SizedBox(height: 6),
-              Text(subtitle!, style: const TextStyle(color: AppTheme.muted, fontSize: 14)),
-            ],
-          ]),
-        ),
-        if (actions != null) ...actions!,
+        Text(title, style: TextStyle(fontSize: compact ? 20 : 26, fontWeight: FontWeight.w800, color: AppTheme.text)),
+        if (subtitle != null) ...[
+          const SizedBox(height: 4),
+          Text(subtitle!, style: TextStyle(color: AppTheme.muted, fontSize: compact ? 12 : 13)),
+        ],
+        if (actions != null && actions!.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Wrap(spacing: 4, runSpacing: 4, children: actions!),
+        ],
       ],
     );
   }

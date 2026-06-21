@@ -7,9 +7,10 @@ import '../utils/event_view.dart';
 import 'level_badge.dart';
 
 class EventErrorHeader extends StatelessWidget {
-  const EventErrorHeader({super.key, required this.view});
+  const EventErrorHeader({super.key, required this.view, this.timeLabel});
 
   final EventView view;
+  final String? timeLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -17,16 +18,20 @@ class EventErrorHeader extends StatelessWidget {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: accent.withValues(alpha: 0.22)),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [accent.withValues(alpha: 0.08), accent.withValues(alpha: 0.02)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: accent.withValues(alpha: 0.2)),
       ),
       child: IntrinsicHeight(
         child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Container(width: 4, decoration: BoxDecoration(color: accent, borderRadius: const BorderRadius.horizontal(left: Radius.circular(12)))),
+          Container(width: 5, decoration: BoxDecoration(color: accent, borderRadius: const BorderRadius.horizontal(left: Radius.circular(16)))),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(16),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
                   LevelBadge(type: view.type, level: view.level),
@@ -35,8 +40,12 @@ class EventErrorHeader extends StatelessWidget {
                   if (view.platform != '—') _chip(view.platform, AppTheme.muted),
                   if (view.release != '—') _chip(view.release, AppTheme.muted),
                 ]),
-                const SizedBox(height: 12),
-                Text(view.message, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, height: 1.35)),
+                const SizedBox(height: 14),
+                Text(view.message, style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 600 ? 16 : 18, fontWeight: FontWeight.w800, height: 1.35)),
+                if (timeLabel != null) ...[
+                  const SizedBox(height: 10),
+                  Text(timeLabel!, style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
+                ],
               ]),
             ),
           ),
@@ -62,6 +71,58 @@ class EventErrorHeader extends StatelessWidget {
       );
 }
 
+class EventQuickFacts extends StatelessWidget {
+  const EventQuickFacts({super.key, required this.view, this.onSessionTap, this.onUserTap, this.onCountryTap});
+
+  final EventView view;
+  final VoidCallback? onSessionTap;
+  final VoidCallback? onUserTap;
+  final VoidCallback? onCountryTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        if (view.userId != '—') _fact(Icons.person_outline, 'User', view.userId, onUserTap),
+        if (view.sessionId != '—') _fact(Icons.play_circle_outline, 'Session', view.sessionId.length > 12 ? '${view.sessionId.substring(0, 12)}…' : view.sessionId, onSessionTap),
+        if (view.country != '—') _fact(Icons.public, 'Location', view.city != '—' ? '${view.city}, ${view.country}' : view.country, onCountryTap),
+        if (view.route != '—') _fact(Icons.route_outlined, 'Screen', view.route, null),
+        if (view.statusCode.isNotEmpty) _fact(Icons.http, 'Status', view.statusCode, null),
+        if (view.network.isNotEmpty && view.network['durationMs'] != null)
+          _fact(Icons.timer_outlined, 'Duration', '${view.network['durationMs']} ms', null),
+      ],
+    );
+  }
+
+  Widget _fact(IconData icon, String label, String value, VoidCallback? onTap) {
+    final card = Container(
+      constraints: const BoxConstraints(minWidth: 140, maxWidth: 200),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.panelElevated,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, size: 16, color: AppTheme.primary),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 8),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13), maxLines: 2, overflow: TextOverflow.ellipsis),
+      ]),
+    );
+    if (onTap == null) return card;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(12), child: card),
+    );
+  }
+}
+
 class EventFlowDiagram extends StatelessWidget {
   const EventFlowDiagram({super.key, required this.view});
 
@@ -81,7 +142,7 @@ class EventFlowDiagram extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: AppTheme.primarySoft.withValues(alpha: 0.5),
+        color: AppTheme.primary.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: AppTheme.border),
       ),
@@ -125,7 +186,7 @@ class EventFlowDiagram extends StatelessWidget {
             Text(n.title, style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontWeight: FontWeight.w700)),
           ]),
           const SizedBox(height: 6),
-          Text(n.value, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+          Text(n.value, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.text)),
         ]),
       );
 }
@@ -338,7 +399,7 @@ class BreadcrumbTrail extends StatelessWidget {
                     if (type != null)
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(color: AppTheme.primarySoft, borderRadius: BorderRadius.circular(999)),
+                        decoration: BoxDecoration(color: AppTheme.primary.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(999)),
                         child: Text(type, style: const TextStyle(fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.w700)),
                       ),
                   ]),

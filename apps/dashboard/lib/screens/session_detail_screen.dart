@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_detail_widgets.dart';
+import '../utils/nav.dart';
+import '../utils/responsive.dart';
 import '../widgets/page_header.dart';
 
 class SessionDetailScreen extends StatefulWidget {
@@ -61,15 +62,13 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(28, 20, 28, 40),
+        padding: pageInsets(context, top: 16, bottom: pagePad(context)),
         children: [
-          Row(children: [
-            TextButton.icon(
-              onPressed: () => context.go('/p/${widget.projectId}/analytics'),
-              icon: const Icon(Icons.arrow_back, size: 18),
-              label: const Text('Analytics'),
-            ),
-          ]),
+          TextButton.icon(
+            onPressed: () => popOrGo(context, '/p/${widget.projectId}/sessions'),
+            icon: const Icon(Icons.arrow_back, size: 18),
+            label: const Text('Back'),
+          ),
           PageHeader(
             title: 'Session replay',
             subtitle: started != null ? DateFormat('EEEE, MMM d · HH:mm').format(started.toLocal()) : widget.sessionId,

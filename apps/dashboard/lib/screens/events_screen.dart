@@ -3,12 +3,25 @@ import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
+import '../widgets/filter_bar.dart';
+import '../utils/responsive.dart';
 import '../widgets/page_header.dart';
 
 class EventsScreen extends StatefulWidget {
-  const EventsScreen({super.key, required this.projectId});
+  const EventsScreen({
+    super.key,
+    required this.projectId,
+    this.initialType,
+    this.initialDays,
+    this.initialQuery,
+    this.initialCountry,
+  });
 
   final String projectId;
+  final String? initialType;
+  final int? initialDays;
+  final String? initialQuery;
+  final String? initialCountry;
 
   @override
   State<EventsScreen> createState() => _EventsScreenState();
@@ -19,12 +32,29 @@ class _EventsScreenState extends State<EventsScreen> {
   List<Map<String, dynamic>> _events = [];
   bool _loading = true;
   String? _error;
-  String? _typeFilter;
+  late String? _typeFilter;
+  late int? _days;
+  late String _search;
+  String? _country;
 
   @override
   void initState() {
     super.initState();
+    _typeFilter = widget.initialType;
+    _days = widget.initialDays;
+    _search = widget.initialQuery ?? '';
+    _country = widget.initialCountry;
     _load();
+  }
+
+  void _syncUrl() {
+    final q = <String, String>{};
+    if (_typeFilter != null) q['type'] = _typeFilter!;
+    if (_days != null) q['days'] = '$_days';
+    if (_search.isNotEmpty) q['q'] = _search;
+    if (_country != null) q['country'] = _country!;
+    final uri = Uri(path: '/p/${widget.projectId}/events', queryParameters: q.isEmpty ? null : q);
+    context.go(uri.toString());
   }
 
   Future<void> _load() async {
@@ -33,7 +63,13 @@ class _EventsScreenState extends State<EventsScreen> {
       _error = null;
     });
     try {
-      final events = await _api.fetchEvents(widget.projectId, type: _typeFilter);
+      final events = await _api.fetchEvents(
+        widget.projectId,
+        type: _typeFilter,
+        days: _days,
+        q: _search.isEmpty ? null : _search,
+        country: _country,
+      );
       if (mounted) setState(() {
         _events = events;
         _loading = false;
@@ -46,34 +82,42 @@ class _EventsScreenState extends State<EventsScreen> {
     }
   }
 
+  void _applyFilters({String? type, bool setType = false, int? days, String? search, String? country, bool clearCountry = false}) {
+    setState(() {
+      if (setType) _typeFilter = type;
+      if (days != null) _days = days;
+      if (search != null) _search = search;
+      if (country != null) _country = country;
+      if (clearCountry) _country = null;
+    });
+    _syncUrl();
+    _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(28, 28, 28, 0),
+          padding: pageInsets(context, top: pagePad(context)),
           child: PageHeader(
             title: 'Events',
-            subtitle: 'Live stream of ingested telemetry',
+            subtitle: '${_events.length} events${_days != null ? ' · last $_days days' : ''}',
             actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(28, 16, 28, 0),
-          child: Wrap(
-            spacing: 8,
-            children: [
-              FilterChip(label: const Text('All'), selected: _typeFilter == null, onSelected: (_) {
-                _typeFilter = null;
-                _load();
-              }),
-              for (final t in ['error', 'crash', 'network', 'session', 'span', 'log'])
-                FilterChip(label: Text(t), selected: _typeFilter == t, onSelected: (_) {
-                  _typeFilter = t;
-                  _load();
-                }),
-            ],
+          padding: pageInsets(context, top: 12),
+          child: FilterBar(
+            days: _days ?? 7,
+            onDaysChanged: (d) => _applyFilters(days: d),
+            searchHint: 'Search message…',
+            searchValue: _search,
+            onSearch: (q) => _applyFilters(search: q),
+            typeOptions: const [null, 'errors', 'error', 'crash', 'network', 'session', 'span', 'log'],
+            typeSelected: _typeFilter,
+            onTypeSelected: (t) => _applyFilters(type: t, setType: true),
           ),
         ),
         Expanded(
@@ -82,15 +126,16 @@ class _EventsScreenState extends State<EventsScreen> {
               : _error != null
                   ? ErrorPanel(message: _error!, onRetry: _load)
                   : _events.isEmpty
-                      ? const EmptyState(icon: Icons.inbox_outlined, title: 'No events', subtitle: 'Send a test event with ./dev test')
+                      ? const EmptyState(icon: Icons.inbox_outlined, title: 'No events', subtitle: 'Try adjusting filters or send a test event')
                       : RefreshIndicator(
                           onRefresh: _load,
                           child: ListView.builder(
-                            padding: const EdgeInsets.all(28),
+                            key: PageStorageKey('events-${widget.projectId}'),
+                            padding: pageInsets(context, top: 12, bottom: pagePad(context)),
                             itemCount: _events.length,
                             itemBuilder: (_, i) => EventCard(
                               event: _events[i],
-                              onTap: () => context.go('/p/${widget.projectId}/events/${_events[i]['id']}'),
+                              onTap: () => context.push('/p/${widget.projectId}/events/${_events[i]['id']}'),
                             ),
                           ),
                         ),

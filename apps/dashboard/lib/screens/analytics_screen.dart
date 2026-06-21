@@ -7,9 +7,10 @@ import '../theme/app_theme.dart';
 import '../widgets/page_header.dart';
 
 class AnalyticsScreen extends StatefulWidget {
-  const AnalyticsScreen({super.key, required this.projectId});
+  const AnalyticsScreen({super.key, required this.projectId, this.initialTab});
 
   final String projectId;
+  final String? initialTab;
 
   @override
   State<AnalyticsScreen> createState() => _AnalyticsScreenState();
@@ -31,6 +32,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
   @override
   void initState() {
     super.initState();
+    final tab = widget.initialTab;
+    if (tab == 'sessions') _tabs.index = 3;
+    else if (tab == 'releases') _tabs.index = 2;
+    else if (tab == 'retention') _tabs.index = 1;
     _load();
   }
 
@@ -415,7 +420,7 @@ class _SessionsTab extends StatelessWidget {
         return Card(
           child: InkWell(
             borderRadius: BorderRadius.circular(12),
-            onTap: () => context.go('/p/$projectId/analytics/sessions/${s['id']}'),
+            onTap: () => context.push('/p/$projectId/sessions/${s['id']}'),
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Row(children: [

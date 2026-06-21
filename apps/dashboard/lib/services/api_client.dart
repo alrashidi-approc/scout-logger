@@ -9,7 +9,19 @@ List<Map<String, dynamic>> jsonListMaps(dynamic value) {
   return [for (final item in value) Map<String, dynamic>.from(item as Map)];
 }
 
-Map<String, dynamic> jsonMap(dynamic value) => Map<String, dynamic>.from(value as Map);
+Map<String, dynamic> jsonMap(dynamic value) {
+  if (value is Map) return Map<String, dynamic>.from(value);
+  return {};
+}
+
+double? jsonNum(dynamic value) => value is num ? value.toDouble() : double.tryParse('$value');
+
+int? jsonInt(dynamic value) => value is int ? value : value is num ? value.toInt() : int.tryParse('$value');
+
+String jsonPct(dynamic value, {String fallback = '0'}) {
+  final n = jsonNum(value);
+  return n == null ? fallback : n.toStringAsFixed(1);
+}
 
 class ScoutApi {
   ScoutApi({http.Client? client}) : _client = client ?? http.Client();
@@ -45,14 +57,55 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['project']);
   }
 
-  Future<Map<String, dynamic>> fetchOverview(String projectId) async {
-    final res = await _client.get(_uri('/api/projects/$projectId/overview'), headers: _headers);
+  Future<Map<String, dynamic>> fetchOverview(String projectId, {int days = 1}) async {
+    final uri = _uri('/api/projects/$projectId/overview').replace(queryParameters: {'days': '$days'});
+    final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['overview']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchIssues(String projectId) async {
-    final res = await _client.get(_uri('/api/projects/$projectId/issues'), headers: _headers);
+  Future<Map<String, dynamic>> fetchDashboard(String projectId, {int days = 7}) async {
+    final uri = _uri('/api/projects/$projectId/dashboard').replace(queryParameters: {'days': '$days'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['dashboard']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchUsers(String projectId, {int days = 30, int limit = 100}) async {
+    final uri = _uri('/api/projects/$projectId/users').replace(queryParameters: {'days': '$days', 'limit': '$limit'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonListMaps((jsonDecode(res.body) as Map)['users']);
+  }
+
+  Future<Map<String, dynamic>> fetchUser(String projectId, String userId, {int days = 30}) async {
+    final uri = _uri('/api/projects/$projectId/users/$userId').replace(queryParameters: {'days': '$days'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['user']);
+  }
+
+  Future<Map<String, dynamic>> fetchStats(String projectId, {int days = 7}) async {
+    final uri = _uri('/api/projects/$projectId/stats').replace(queryParameters: {'days': '$days'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['stats']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchIssues(
+    String projectId, {
+    String? type,
+    String? status,
+    String? q,
+    int? days,
+  }) async {
+    final params = <String, String>{};
+    if (type != null) params['type'] = type;
+    if (status != null) params['status'] = status;
+    if (q != null && q.isNotEmpty) params['q'] = q;
+    if (days != null) params['days'] = '$days';
+    final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params.isEmpty ? null : params);
+    final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['issues']);
   }
@@ -63,8 +116,19 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['issue']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchEvents(String projectId, {String? type}) async {
-    final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: type != null ? {'type': type} : null);
+  Future<List<Map<String, dynamic>>> fetchEvents(
+    String projectId, {
+    String? type,
+    String? q,
+    String? country,
+    int? days,
+  }) async {
+    final params = <String, String>{};
+    if (type != null) params['type'] = type;
+    if (q != null && q.isNotEmpty) params['q'] = q;
+    if (country != null) params['country'] = country;
+    if (days != null) params['days'] = '$days';
+    final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params.isEmpty ? null : params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['events']);

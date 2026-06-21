@@ -5,6 +5,7 @@ import 'package:scout_models/scout_models.dart';
 
 import '../db/scout_db.dart';
 import '../services/geo_enricher.dart';
+import '../util/dates.dart';
 import '../util/ids.dart';
 
 class ScoutStore {
@@ -316,16 +317,27 @@ class ScoutStore {
     return id;
   }
 
-  Future<List<Map<String, dynamic>>> listIssues(String projectId, {int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> listIssues(
+    String projectId, {
+    int limit = 100,
+    String? type,
+    String? status,
+    String? q,
+    int? days,
+  }) async {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, fingerprint, type, title, status, event_count, affected_users,
                first_seen_at, last_seen_at, top_country
         FROM issues WHERE project_id = @pid
+          AND (@type::text IS NULL OR type = @type::text)
+          AND (@status::text IS NULL OR status = @status::text)
+          AND (@q::text IS NULL OR title ILIKE '%' || @q::text || '%')
+          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
         ORDER BY last_seen_at DESC LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'lim': limit},
+      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'status': status, 'q': q, 'since': sinceTimestamp(days)},
     );
     return rows
         .map((r) => {
@@ -429,25 +441,38 @@ class ScoutStore {
     return event;
   }
 
-  Future<List<Map<String, dynamic>>> listEvents(String projectId, {int limit = 50, String? type}) async {
+  Future<List<Map<String, dynamic>>> listEvents(
+    String projectId, {
+    int limit = 100,
+    String? type,
+    String? q,
+    String? country,
+    int? days,
+  }) async {
     final conn = await db.connect();
-    final rows = type != null
-        ? await conn.execute(
-            Sql.named('''
-              SELECT id, type, occurred_at, issue_id, user_id, release, country, message
-              FROM events WHERE project_id = @pid AND type = @type
-              ORDER BY occurred_at DESC LIMIT @lim
-            '''),
-            parameters: {'pid': projectId, 'type': type, 'lim': limit},
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
+               platform, environment, app_version,
+               payload->'screen'->>'currentRoute' AS route,
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category,
+               payload->>'level' AS level
+        FROM events WHERE project_id = @pid
+          AND (
+            @type::text IS NULL
+            OR (@type::text = 'errors' AND type IN ('error', 'network'))
+            OR (@type::text <> 'errors' AND type = @type::text)
           )
-        : await conn.execute(
-            Sql.named('''
-              SELECT id, type, occurred_at, issue_id, user_id, release, country, message
-              FROM events WHERE project_id = @pid
-              ORDER BY occurred_at DESC LIMIT @lim
-            '''),
-            parameters: {'pid': projectId, 'lim': limit},
-          );
+          AND (@q::text IS NULL OR message ILIKE '%' || @q::text || '%')
+          AND (@country::text IS NULL OR country = @country::text)
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+        ORDER BY occurred_at DESC LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'q': q, 'country': country, 'since': sinceTimestamp(days)},
+    );
     return rows
         .map((r) => {
               'id': r[0],
@@ -458,26 +483,38 @@ class ScoutStore {
               'release': r[5],
               'country': r[6],
               'message': r[7],
+              'platform': r[8],
+              'environment': r[9],
+              'appVersion': r[10],
+              'route': r[11],
+              'deviceName': r[12],
+              'networkUrl': r[13],
+              'statusCode': r[14]?.toString(),
+              'category': r[15],
+              'level': r[16],
             })
         .toList();
   }
 
-  Future<Map<String, dynamic>> projectOverview(String projectId) async {
+  Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1}) async {
     final conn = await db.connect();
     final project = await getProject(projectId);
     if (project == null) throw ArgumentError('Project not found');
 
-    final today = DateTime.now().toUtc().toIso8601String().substring(0, 10);
+    final since = utcTimestampDaysAgo(days);
+
     final stats = await conn.execute(
       Sql.named('''
         SELECT
-          COUNT(*) FILTER (WHERE occurred_at >= @day::date)::int,
-          COUNT(*) FILTER (WHERE occurred_at >= @day::date AND type IN ('error','network'))::int,
-          COUNT(*) FILTER (WHERE occurred_at >= @day::date AND type = 'crash')::int,
-          COUNT(DISTINCT user_id) FILTER (WHERE occurred_at >= @day::date AND user_id IS NOT NULL)::int
-        FROM events WHERE project_id = @pid
+          COUNT(*)::int,
+          COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+          COUNT(*) FILTER (WHERE type = 'crash')::int,
+          COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int
+        FROM events
+        WHERE project_id = @pid
+          AND occurred_at >= @since::timestamptz
       '''),
-      parameters: {'pid': projectId, 'day': today},
+      parameters: {'pid': projectId, 'since': since},
     );
     final s = stats.first;
 
@@ -494,16 +531,17 @@ class ScoutStore {
               AND started_at >= (now() AT TIME ZONE 'utc') - interval '30 minutes'),
           (SELECT AVG(duration_ms)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
-              AND started_at >= @day::date),
+              AND started_at >= @since::timestamptz),
           (SELECT COUNT(*)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
-              AND started_at >= @day::date),
+              AND started_at >= @since::timestamptz),
           COUNT(DISTINCT user_id) FILTER (
-            WHERE user_id IS NOT NULL AND occurred_at >= (now() AT TIME ZONE 'utc') - interval '7 days'
+            WHERE user_id IS NOT NULL
+              AND occurred_at >= @since::timestamptz
           )::int
         FROM events WHERE project_id = @pid
       '''),
-      parameters: {'pid': projectId, 'day': today},
+      parameters: {'pid': projectId, 'since': since},
     );
     final sess = sessions.first;
 
@@ -511,10 +549,11 @@ class ScoutStore {
       Sql.named('''
         SELECT country, COUNT(*)::int AS c
         FROM events
-        WHERE project_id = @pid AND country IS NOT NULL AND occurred_at >= (now() AT TIME ZONE 'utc') - interval '7 days'
+        WHERE project_id = @pid AND country IS NOT NULL
+          AND occurred_at >= @since::timestamptz
         GROUP BY country ORDER BY c DESC LIMIT 10
       '''),
-      parameters: {'pid': projectId},
+      parameters: {'pid': projectId, 'since': since},
     );
 
     final releases = await conn.execute(
@@ -525,27 +564,29 @@ class ScoutStore {
       parameters: {'pid': projectId},
     );
 
+    final trendDays = days > 14 ? days : 14;
     final trend = await conn.execute(
       Sql.named('''
         SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int
         FROM daily_stats
-        WHERE project_id = @pid AND date >= (current_date - 13)
+        WHERE project_id = @pid AND date >= @fromDate::date
         GROUP BY date ORDER BY date
       '''),
-      parameters: {'pid': projectId},
+      parameters: {'pid': projectId, 'fromDate': utcDateDaysAgo(trendDays - 1)},
     );
 
     return {
       'project': project,
-      'eventsToday': s[0],
-      'errorsToday': s[1],
-      'crashesToday': s[2],
-      'uniqueUsersToday': s[3],
-      'activeSessions': sess[0],
-      'avgSessionDurationMs': sess[1],
-      'sessionsCompletedToday': sess[2],
-      'uniqueUsers7d': sess[3],
-      'openIssues': openIssues.first[0],
+      'days': days,
+      'eventsToday': _i(s[0]),
+      'errorsToday': _i(s[1]),
+      'crashesToday': _i(s[2]),
+      'uniqueUsersToday': _i(s[3]),
+      'activeSessions': _i(sess[0]),
+      'avgSessionDurationMs': sess[1] == null ? null : _i(sess[1]),
+      'sessionsCompletedToday': _i(sess[2]),
+      'uniqueUsers7d': _i(sess[3]),
+      'openIssues': _i(openIssues.first[0]),
       'topCountries': countries.map((r) => {'country': r[0], 'count': r[1]}).toList(),
       'dailyTrend': trend
           .map((r) => {
@@ -569,17 +610,22 @@ class ScoutStore {
 
   Future<List<Map<String, dynamic>>> geoBreakdown(String projectId, {int days = 7}) async {
     final conn = await db.connect();
+    final since = utcTimestampDaysAgo(days);
     final rows = await conn.execute(
       Sql.named('''
-        SELECT country, COUNT(*)::int
+        SELECT country,
+               COUNT(*)::int,
+               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::int
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
-          AND occurred_at >= (now() AT TIME ZONE 'utc') - make_interval(days => @days)
-        GROUP BY country ORDER BY COUNT(*) DESC
+          AND occurred_at >= @since::timestamptz
+        GROUP BY country
+        ORDER BY COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') DESC,
+                 COUNT(*) DESC
       '''),
-      parameters: {'pid': projectId, 'days': days},
+      parameters: {'pid': projectId, 'since': since},
     );
-    return rows.map((r) => {'country': r[0], 'count': r[1]}).toList();
+    return rows.map((r) => {'country': r[0], 'count': r[1], 'users': r[2]}).toList();
   }
 
   Future<List<Map<String, dynamic>>> _issueGeo(Connection conn, String projectId, String issueId) async {
@@ -636,6 +682,8 @@ class ScoutStore {
     }
     return value;
   }
+
+  int _i(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
 
   Future<void> _trackAppSession(
     Connection conn, {
