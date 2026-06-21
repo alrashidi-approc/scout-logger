@@ -24,6 +24,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _issue;
   bool _loading = true;
+  bool _updating = false;
   String? _error;
 
   @override
@@ -51,6 +52,27 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     }
   }
 
+  Future<void> _setStatus(String status) async {
+    setState(() => _updating = true);
+    try {
+      final issue = await _api.updateIssueStatus(widget.projectId, widget.issueId, status);
+      if (mounted) {
+        setState(() {
+          _issue = issue;
+          _updating = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(status == 'resolved' ? 'Issue marked resolved' : 'Issue reopened')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _updating = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const LoadingView();
@@ -59,6 +81,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     final issue = _issue!;
     final events = jsonListMaps(issue['events']);
     final geo = jsonListMaps(issue['geoBreakdown']);
+    final status = issue['status'] as String? ?? 'open';
     final first = DateTime.tryParse(issue['firstSeenAt'] as String? ?? '');
     final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
 
@@ -89,6 +112,20 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             ]),
           ),
           IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+          if (status == 'open')
+            FilledButton.icon(
+              onPressed: _updating ? null : () => _setStatus('resolved'),
+              icon: _updating
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.check_circle_outline, size: 18),
+              label: const Text('Resolve'),
+            )
+          else if (status == 'resolved')
+            OutlinedButton.icon(
+              onPressed: _updating ? null : () => _setStatus('open'),
+              icon: const Icon(Icons.replay, size: 18),
+              label: const Text('Reopen'),
+            ),
         ]),
         const SizedBox(height: 24),
         Wrap(

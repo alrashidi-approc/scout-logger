@@ -14,7 +14,9 @@ class EventCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final type = event['type'] as String? ?? 'error';
+    final level = (event['level'] as String?)?.toLowerCase();
     final category = event['category'] as String?;
+    final effectiveLevel = level ?? (type == 'log' || type == 'span' ? 'info' : 'error');
     final occurred = DateTime.tryParse(event['occurredAt'] as String? ?? '');
     final time = occurred != null ? DateFormat('MMM d, yyyy · HH:mm:ss').format(occurred.toLocal()) : '—';
     final title = event['message']?.toString() ?? type;
@@ -24,8 +26,7 @@ class EventCard extends StatelessWidget {
     final url = event['networkUrl']?.toString() ?? '';
     final status = event['statusCode']?.toString() ?? '';
     final env = event['environment']?.toString() ?? '—';
-    final isError = type == 'error' || type == 'crash' || type == 'network';
-    final accent = type == 'crash' ? AppTheme.error : type == 'network' ? AppTheme.warning : AppTheme.error;
+    final errorFocus = effectiveLevel == 'error' || type == 'crash';
     final compact = MediaQuery.sizeOf(context).width < 720;
 
     final endpointLabel = url.isEmpty ? null : (status.isNotEmpty ? '$url ($status)' : url);
@@ -46,60 +47,90 @@ class EventCard extends StatelessWidget {
     return Container(
       margin: EdgeInsets.only(bottom: compact ? 10 : 12),
       decoration: BoxDecoration(
-        color: AppTheme.panel,
+        color: errorFocus ? AppTheme.error.withValues(alpha: 0.06) : AppTheme.panel,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: isError ? accent.withValues(alpha: 0.35) : AppTheme.border),
+        border: Border.all(
+          color: errorFocus ? AppTheme.error.withValues(alpha: 0.55) : AppTheme.border,
+          width: errorFocus ? 1.5 : 1,
+        ),
       ),
       clipBehavior: Clip.antiAlias,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-              child: Row(children: [
-                Text(time, style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontWeight: FontWeight.w600)),
-                const Spacer(),
-                const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
-              ]),
-            ),
-            Container(
-              margin: const EdgeInsets.fromLTRB(10, 8, 10, 0),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: isError ? accent.withValues(alpha: 0.08) : AppTheme.panelElevated,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: isError ? accent.withValues(alpha: 0.2) : AppTheme.border),
-              ),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Wrap(spacing: 6, runSpacing: 6, children: [
-                  LevelBadge(type: type, level: event['level'] as String?, compact: true),
-                  if (category != null && category.isNotEmpty) _pill(category.toUpperCase(), AppTheme.muted),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (errorFocus)
+                Container(width: 4, color: AppTheme.error),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                    child: Row(children: [
+                      Text(time, style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
+                    ]),
+                  ),
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: errorFocus ? AppTheme.error.withValues(alpha: 0.1) : AppTheme.panelElevated,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: errorFocus ? AppTheme.error.withValues(alpha: 0.25) : AppTheme.border,
+                      ),
+                    ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Wrap(spacing: 6, runSpacing: 6, children: [
+                        LevelBadge(level: effectiveLevel, type: type, compact: true),
+                        LevelBadge(type: type, compact: true, transportOnly: true),
+                        if (category != null && category.isNotEmpty)
+                          _pill(category.toUpperCase(), AppTheme.muted),
+                      ]),
+                      const SizedBox(height: 10),
+                      Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          color: errorFocus ? AppTheme.error : AppTheme.text,
+                          height: 1.3,
+                        ),
+                      ),
+                      if (pills.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(spacing: 6, runSpacing: 6, children: pills.map((p) => _pill(p, AppTheme.muted)).toList()),
+                      ],
+                    ]),
+                  ),
+                  if (flow.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: AppTheme.panelElevated,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: FlowStrip(items: flow, embedded: true),
+                      ),
+                    ),
+                  ],
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                    child: Text('Environment: $env', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+                  ),
                 ]),
-                const SizedBox(height: 10),
-                Text(title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppTheme.text, height: 1.3)),
-                if (pills.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Wrap(spacing: 6, runSpacing: 6, children: pills.map((p) => _pill(p, AppTheme.muted)).toList()),
-                ],
-              ]),
-            ),
-            if (flow.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.border)),
-                  child: FlowStrip(items: flow, embedded: true),
-                ),
               ),
             ],
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-              child: Text('Environment: $env', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
-            ),
-          ]),
+          ),
         ),
       ),
     );
@@ -107,7 +138,11 @@ class EventCard extends StatelessWidget {
 
   static Widget _pill(String label, Color color) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(6), border: Border.all(color: AppTheme.border)),
+        decoration: BoxDecoration(
+          color: AppTheme.panelElevated,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.border),
+        ),
         child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: color)),
       );
 }
@@ -125,10 +160,15 @@ class IssueCard extends StatelessWidget {
     final lastLabel = last != null ? DateFormat.yMMMd().add_jm().format(last.toLocal()) : '—';
     final status = issue['status'] as String? ?? 'open';
     final compact = MediaQuery.sizeOf(context).width < 600;
+    final resolved = status == 'resolved';
 
     return Container(
       margin: EdgeInsets.only(bottom: compact ? 8 : 10),
-      decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.border)),
+      decoration: BoxDecoration(
+        color: AppTheme.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: resolved ? AppTheme.success.withValues(alpha: 0.35) : AppTheme.border),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
@@ -145,7 +185,7 @@ class IssueCard extends StatelessWidget {
                   _meta(Icons.repeat, '${issue['eventCount']} events'),
                   _meta(Icons.public, issue['topCountry'] as String? ?? '—'),
                   _meta(Icons.schedule, lastLabel),
-                  if (status != 'open') _meta(Icons.flag_outlined, status),
+                  _meta(Icons.flag_outlined, status, color: resolved ? AppTheme.success : AppTheme.muted),
                 ]),
               ]),
             ),
@@ -156,12 +196,12 @@ class IssueCard extends StatelessWidget {
     );
   }
 
-  Widget _meta(IconData icon, String text) => Row(
+  Widget _meta(IconData icon, String text, {Color? color}) => Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: AppTheme.muted),
+          Icon(icon, size: 14, color: color ?? AppTheme.muted),
           const SizedBox(width: 4),
-          Text(text, style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+          Text(text, style: TextStyle(fontSize: 12, color: color ?? AppTheme.muted)),
         ],
       );
 }

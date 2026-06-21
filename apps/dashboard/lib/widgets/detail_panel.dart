@@ -156,10 +156,10 @@ class CodePanel extends StatelessWidget {
       child: Container(
         width: double.infinity,
         constraints: BoxConstraints(maxHeight: maxHeight),
-        decoration: BoxDecoration(color: const Color(0xFF0F172A), borderRadius: BorderRadius.circular(8)),
+        decoration: BoxDecoration(color: AppTheme.codeBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(14),
-          child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFFE2E8F0), height: 1.5)),
+          child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
         ),
       ),
     );

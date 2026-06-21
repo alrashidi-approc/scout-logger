@@ -65,6 +65,21 @@ if [[ ! -f "${ROOT}/apps/dashboard/build/web/index.html" ]]; then
   exit 1
 fi
 
+if [[ "${SKIP_SERVER_BUILD:-0}" != "1" ]]; then
+  if ! command -v dart >/dev/null 2>&1; then
+    echo "Dart not found. Install Flutter/Dart or set SKIP_SERVER_BUILD=1 (builds on VPS — slow)"
+    exit 1
+  fi
+  echo "==> Building server binary for Linux (local cross-compile)..."
+  "${ROOT}/scripts/build-server.sh"
+else
+  echo "==> Skipping local server build (SKIP_SERVER_BUILD=1 — VPS will compile; may hang on pub get)"
+  if [[ ! -f "${ROOT}/apps/server/server" ]]; then
+    echo "Missing apps/server/server — run without SKIP_SERVER_BUILD=1"
+    exit 1
+  fi
+fi
+
 RSYNC_EXCLUDES=(
   --exclude .git
   --exclude .ship
@@ -101,14 +116,14 @@ else
   bash scripts/compose.sh down 2>/dev/null || true
 fi
 bash scripts/compose.sh up -d --build
-for i in \$(seq 1 30); do
+for i in \$(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     curl -fsS -o /dev/null -w "dashboard:%{http_code}\n" "http://127.0.0.1:${PORT}/${DASHBOARD_WEB_PATH}/"
     exit 0
   fi
   sleep 1
 done
-echo "Server did not become healthy within 30s"
+echo "Server did not become healthy within 60s"
 bash scripts/compose.sh ps
 bash scripts/compose.sh logs --tail=60 server
 if bash scripts/compose.sh logs --tail=20 server 2>&1 | grep -q 'password authentication failed'; then

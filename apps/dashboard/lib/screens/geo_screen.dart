@@ -4,16 +4,18 @@ import 'package:go_router/go_router.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/country_centroids.dart';
+import '../utils/date_range.dart';
 import '../utils/geo_regions.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 import '../widgets/world_map.dart';
 
 class GeoScreen extends StatefulWidget {
-  const GeoScreen({super.key, required this.projectId, this.initialDays = 7});
+  const GeoScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7)});
 
   final String projectId;
-  final int initialDays;
+  final PeriodFilter initialPeriod;
 
   @override
   State<GeoScreen> createState() => _GeoScreenState();
@@ -21,10 +23,12 @@ class GeoScreen extends StatefulWidget {
 
 class _GeoScreenState extends State<GeoScreen> {
   final _api = ScoutApi();
+  final _mapKey = GlobalKey<WorldMapPanelState>();
   List<Map<String, dynamic>> _geo = [];
   bool _loading = true;
   String? _error;
-  late int _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
+
   @override
   void initState() {
     super.initState();
@@ -37,7 +41,7 @@ class _GeoScreenState extends State<GeoScreen> {
       _error = null;
     });
     try {
-      final geo = await _api.fetchGeo(widget.projectId, days: _days);
+      final geo = await _api.fetchGeo(widget.projectId, period: _period);
       if (mounted) setState(() {
         _geo = geo;
         _loading = false;
@@ -50,15 +54,17 @@ class _GeoScreenState extends State<GeoScreen> {
     }
   }
 
-  void _setDays(int d) {
-    _days = d;
-    context.go('/p/${widget.projectId}/geo?days=$d');
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    context.go(Uri(path: '/p/${widget.projectId}/geo', queryParameters: p.toQuery()).toString());
     _load();
   }
 
   void _onCountryTap(String code, int count) {
-    context.go('/p/${widget.projectId}/events?country=${code.toUpperCase()}&days=$_days');
+    context.go(Uri(path: '/p/${widget.projectId}/events', queryParameters: _period.mergeQuery({'country': code.toUpperCase()})).toString());
   }
+
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
 
   @override
   Widget build(BuildContext context) {
@@ -74,11 +80,13 @@ class _GeoScreenState extends State<GeoScreen> {
       children: [
         PageHeader(
           title: 'Geography',
-          subtitle: 'Users by country · ${periodLabel(_days)}',
+          subtitle: 'Users by country',
+          period: _period,
+          onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
         ),
         const SizedBox(height: 16),
-        FilterBar(days: _days, onDaysChanged: _setDays),
+        FilterBar(period: _period, onPeriodChanged: _setPeriod),
         const SizedBox(height: 20),
         if (_geo.isEmpty)
           const EmptyState(
@@ -87,15 +95,34 @@ class _GeoScreenState extends State<GeoScreen> {
             subtitle: 'Country comes from device locale on each event (IP is fallback).',
           )
         else ...[
+          if (regions.isNotEmpty)
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final r in regions)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        label: Text('${r['label']} · ${r['users']} users'),
+                        onPressed: () => _mapKey.currentState?.focusRegion(r['id'] as String),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (regions.isNotEmpty) const SizedBox(height: 12),
           WorldMapPanel(
+            key: _mapKey,
             points: _geo,
             height: 520,
             showMarkers: true,
+            autoFocus: true,
             onCountryTap: _onCountryTap,
           ),
           const SizedBox(height: 20),
           Text(
-            '$totalUsers users · $totalEvents events · ${regions.length} active regions · ${_geo.length} countries · pinch or use +/- to zoom',
+            '$totalUsers users · $totalEvents events · ${regions.length} active regions · ${_geo.length} countries',
             style: const TextStyle(color: AppTheme.muted, fontSize: 13),
           ),
           const SizedBox(height: 16),
@@ -123,7 +150,7 @@ class _GeoScreenState extends State<GeoScreen> {
     final region = regionById(regionForCountry(code)).label;
 
     return InkWell(
-      onTap: () => context.go('/p/${widget.projectId}/events?country=$code&days=$_days'),
+      onTap: () => context.go(Uri(path: '/p/${widget.projectId}/events', queryParameters: _period.mergeQuery({'country': code})).toString()),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(children: [
@@ -132,8 +159,8 @@ class _GeoScreenState extends State<GeoScreen> {
             width: 40,
             height: 40,
             alignment: Alignment.center,
-            decoration: BoxDecoration(color: const Color(0xFF2E3439), borderRadius: BorderRadius.circular(8)),
-            child: Text(code, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: Color(0xFFC2CDD8))),
+            decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
+            child: Text(code, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: AppTheme.text)),
           ),
           const SizedBox(width: 16),
           Expanded(
@@ -147,7 +174,7 @@ class _GeoScreenState extends State<GeoScreen> {
               const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(value: share, minHeight: 6, backgroundColor: AppTheme.border, color: const Color(0xFF4F5961)),
+                child: LinearProgressIndicator(value: share, minHeight: 6, backgroundColor: AppTheme.border, color: AppTheme.primary),
               ),
             ]),
           ),

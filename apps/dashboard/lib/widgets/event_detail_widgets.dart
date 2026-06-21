@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:scout_models/scout_models.dart';
 
 import '../theme/app_theme.dart';
 import '../utils/event_view.dart';
@@ -221,30 +222,127 @@ class InfoSection extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       color: AppTheme.panel,
       child: Theme(
-        data: Theme.of(context).copyWith(
-          dividerColor: Colors.transparent,
-          listTileTheme: const ListTileThemeData(iconColor: AppTheme.primary, textColor: AppTheme.text),
-          expansionTileTheme: ExpansionTileThemeData(
-            backgroundColor: AppTheme.panel,
-            collapsedBackgroundColor: AppTheme.panel,
-            iconColor: AppTheme.muted,
-            collapsedIconColor: AppTheme.muted,
-            textColor: AppTheme.text,
-            collapsedTextColor: AppTheme.text,
-          ),
-        ),
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
           initiallyExpanded: initiallyExpanded,
           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          backgroundColor: AppTheme.panel,
+          collapsedBackgroundColor: AppTheme.panel,
+          iconColor: AppTheme.muted,
+          collapsedIconColor: AppTheme.muted,
+          shape: const Border(),
+          collapsedShape: const Border(),
           leading: Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: AppTheme.primary.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
             child: Icon(icon, size: 18, color: AppTheme.primary),
           ),
-          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-          subtitle: subtitle != null ? Text(subtitle!, style: const TextStyle(color: AppTheme.muted, fontSize: 12)) : null,
+          title: Text(title,
+              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+          subtitle: subtitle != null
+              ? Text(subtitle!,
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 12))
+              : null,
           children: [child],
+        ),
+      ),
+    );
+  }
+}
+
+/// Top-level accordion group (replaces tab panels).
+class EventDetailGroup extends StatefulWidget {
+  const EventDetailGroup({
+    super.key,
+    required this.title,
+    required this.icon,
+    required this.children,
+    this.subtitle,
+    this.initiallyExpanded = false,
+  });
+
+  final String title;
+  final String? subtitle;
+  final IconData icon;
+  final List<Widget> children;
+  final bool initiallyExpanded;
+
+  @override
+  State<EventDetailGroup> createState() => _EventDetailGroupState();
+}
+
+class _EventDetailGroupState extends State<EventDetailGroup> {
+  late bool _open = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      clipBehavior: Clip.antiAlias,
+      color: AppTheme.panelElevated,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            InkWell(
+              onTap: () => setState(() => _open = !_open),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primary.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(widget.icon, size: 20, color: AppTheme.primary),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(widget.title,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w800, fontSize: 16)),
+                          if (widget.subtitle != null) ...[
+                            const SizedBox(height: 2),
+                            Text(widget.subtitle!,
+                                style: const TextStyle(
+                                    color: AppTheme.muted, fontSize: 12)),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      _open ? Icons.expand_less : Icons.expand_more,
+                      color: AppTheme.muted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            AnimatedCrossFade(
+              firstChild: const SizedBox.shrink(),
+              secondChild: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: widget.children,
+                ),
+              ),
+              crossFadeState:
+                  _open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+              duration: const Duration(milliseconds: 200),
+              sizeCurve: Curves.easeOut,
+            ),
+          ],
         ),
       ),
     );
@@ -316,26 +414,26 @@ class StackTracePanel extends StatelessWidget {
     final lines = stack.split('\n').where((l) => l.trim().isNotEmpty).toList();
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
+        color: AppTheme.codeBg,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF334155)),
+        border: Border.all(color: AppTheme.border),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: const BoxDecoration(color: Color(0xFF1E293B), borderRadius: BorderRadius.vertical(top: Radius.circular(9))),
+          decoration: BoxDecoration(color: AppTheme.codeHeader, borderRadius: const BorderRadius.vertical(top: Radius.circular(9))),
           child: Row(children: [
-            const Icon(Icons.terminal, size: 16, color: Color(0xFF94A3B8)),
+            Icon(Icons.terminal, size: 16, color: AppTheme.muted),
             const SizedBox(width: 8),
-            Text('${lines.length} frame${lines.length == 1 ? '' : 's'}', style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontWeight: FontWeight.w600)),
+            Text('${lines.length} frame${lines.length == 1 ? '' : 's'}', style: TextStyle(color: AppTheme.muted, fontSize: 12, fontWeight: FontWeight.w600)),
             const Spacer(),
             TextButton.icon(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: stack));
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Stack trace copied')));
               },
-              icon: const Icon(Icons.copy, size: 14, color: Color(0xFF94A3B8)),
-              label: const Text('Copy', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12)),
+              icon: Icon(Icons.copy, size: 14, color: AppTheme.muted),
+              label: Text('Copy', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
             ),
           ]),
         ),
@@ -344,7 +442,7 @@ class StackTracePanel extends StatelessWidget {
           padding: const EdgeInsets.all(14),
           child: SelectableText(
             lines.asMap().entries.map((e) => '#${e.key}  ${e.value}').join('\n'),
-            style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Color(0xFFE2E8F0), height: 1.55),
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.55),
           ),
         ),
       ]),
@@ -381,51 +479,106 @@ class BreadcrumbTrail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (items.isEmpty) return const Text('No screen trail recorded', style: TextStyle(color: AppTheme.muted));
+    if (items.isEmpty) {
+      return const Text('No screen trail recorded', style: TextStyle(color: AppTheme.muted));
+    }
+    final missingNav = items.any((s) => s['hasNavigationType'] != true);
     return Column(
-      children: items.asMap().entries.map((entry) {
-        final i = entry.key;
-        final step = entry.value;
-        final label = str(step['label']) ?? str(step['name']) ?? str(step['screenName']) ?? str(step['route']) ?? str(step['message']) ?? 'step';
-        final time = str(step['timestamp']) ?? str(step['at']) ?? str(step['time']);
-        final type = str(step['type']) ?? str(step['action']);
-        return IntrinsicHeight(
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            SizedBox(
-              width: 28,
-              child: Column(children: [
-                Container(
-                  width: 22,
-                  height: 22,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(color: AppTheme.primary.withValues(alpha: 0.15), shape: BoxShape.circle, border: Border.all(color: AppTheme.primary)),
-                  child: Text('${i + 1}', style: const TextStyle(fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.w700)),
-                ),
-                if (i < items.length - 1) Expanded(child: Container(width: 2, color: AppTheme.border)),
-              ]),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (missingNav)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppTheme.warning.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppTheme.warning.withValues(alpha: 0.35)),
             ),
-            Expanded(
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    Expanded(child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600))),
-                    if (type != null)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(color: AppTheme.primary.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(999)),
-                        child: Text(type, style: const TextStyle(fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.w700)),
-                      ),
-                  ]),
-                  if (time != null) Text(_fmtTime(time), style: const TextStyle(color: AppTheme.muted, fontSize: 11)),
+            child: const Text(
+              'Navigation type (push / pop / replace) is missing on some steps. '
+              'Update scout_logger_plus to send navigationType on each screenTrail item '
+              '(see packages/scout_models navigation.dart).',
+              style: TextStyle(color: AppTheme.warning, fontSize: 12, height: 1.4),
+            ),
+          ),
+        ...items.asMap().entries.map((entry) {
+          final i = entry.key;
+          final step = entry.value;
+          final label = str(step['label']) ??
+              str(step['name']) ??
+              str(step['screenName']) ??
+              str(step['route']) ??
+              str(step['message']) ??
+              'step';
+          final route = str(step['route']);
+          final time = str(step['timestamp']) ?? str(step['at']) ?? str(step['time']);
+          final nav = parseNavTransition(step);
+          final duration = step['durationMs'];
+          return IntrinsicHeight(
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              SizedBox(
+                width: 28,
+                child: Column(children: [
+                  Container(
+                    width: 22,
+                    height: 22,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppTheme.primary.withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: AppTheme.primary),
+                    ),
+                    child: Text('${i + 1}',
+                        style: const TextStyle(
+                            fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.w700)),
+                  ),
+                  if (i < items.length - 1)
+                    Expanded(child: Container(width: 2, color: AppTheme.border)),
                 ]),
               ),
-            ),
-          ]),
-        );
-      }).toList(),
+              Expanded(
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.panelElevated,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.border),
+                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+                            if (route != null && route != label)
+                              Text(route,
+                                  style: const TextStyle(
+                                      color: AppTheme.muted, fontSize: 11, fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ),
+                      _NavBadge(nav: nav),
+                    ]),
+                    if (time != null || duration != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        [
+                          if (time != null) _fmtTime(time),
+                          if (duration != null) '${duration}ms on screen',
+                        ].join(' · '),
+                        style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                      ),
+                    ],
+                  ]),
+                ),
+              ),
+            ]),
+          );
+        }),
+      ],
     );
   }
 
@@ -436,6 +589,46 @@ class BreadcrumbTrail extends StatelessWidget {
       return iso;
     }
   }
+}
+
+class _NavBadge extends StatelessWidget {
+  const _NavBadge({required this.nav});
+
+  final NavTransition nav;
+
+  @override
+  Widget build(BuildContext context) {
+    final known = nav.isKnown;
+    final color = known ? AppTheme.primary : AppTheme.muted;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: known ? 0.15 : 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(_icon(nav), size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            known ? nav.label.toUpperCase() : 'NO NAV',
+            style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static IconData _icon(NavTransition nav) => switch (nav) {
+        NavTransition.push => Icons.arrow_forward,
+        NavTransition.pop => Icons.arrow_back,
+        NavTransition.replace => Icons.swap_horiz,
+        NavTransition.remove => Icons.close,
+        NavTransition.go => Icons.route,
+        NavTransition.unknown => Icons.help_outline,
+      };
 }
 
 class NetworkReadablePanel extends StatelessWidget {

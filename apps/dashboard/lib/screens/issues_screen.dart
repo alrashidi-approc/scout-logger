@@ -4,8 +4,10 @@ import 'package:go_router/go_router.dart';
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
-import '../utils/responsive.dart';
 import '../widgets/page_header.dart';
+import '../utils/date_range.dart';
+import '../utils/responsive.dart';
+import '../widgets/period_picker.dart';
 
 class IssuesScreen extends StatefulWidget {
   const IssuesScreen({
@@ -13,14 +15,14 @@ class IssuesScreen extends StatefulWidget {
     required this.projectId,
     this.initialType,
     this.initialStatus,
-    this.initialDays,
+    this.initialPeriod = const PeriodFilter.days(30),
     this.initialQuery,
   });
 
   final String projectId;
   final String? initialType;
   final String? initialStatus;
-  final int? initialDays;
+  final PeriodFilter initialPeriod;
   final String? initialQuery;
 
   @override
@@ -34,7 +36,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
   String? _error;
   late String? _typeFilter = widget.initialType;
   late String? _statusFilter = widget.initialStatus;
-  late int? _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
   late String _search = widget.initialQuery ?? '';
 
   @override
@@ -47,7 +49,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
     final q = <String, String>{};
     if (_typeFilter != null) q['type'] = _typeFilter!;
     if (_statusFilter != null) q['status'] = _statusFilter!;
-    if (_days != null) q['days'] = '$_days';
+    q.addAll(_period.toQuery());
     if (_search.isNotEmpty) q['q'] = _search;
     context.go(Uri(path: '/p/${widget.projectId}/issues', queryParameters: q.isEmpty ? null : q).toString());
   }
@@ -62,7 +64,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         widget.projectId,
         type: _typeFilter,
         status: _statusFilter,
-        days: _days,
+        period: _period,
         q: _search.isEmpty ? null : _search,
       );
       if (mounted) setState(() {
@@ -77,16 +79,18 @@ class _IssuesScreenState extends State<IssuesScreen> {
     }
   }
 
-  void _apply({String? type, String? status, int? days, String? search, bool reloadType = false, bool reloadStatus = false}) {
+  void _apply({String? type, String? status, PeriodFilter? period, String? search, bool reloadType = false, bool reloadStatus = false}) {
     setState(() {
       if (reloadType) _typeFilter = type;
       if (reloadStatus) _statusFilter = status;
-      if (days != null) _days = days;
+      if (period != null) _period = period;
       if (search != null) _search = search;
     });
     _syncUrl();
     _load();
   }
+
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: (p) => _apply(period: p));
 
   @override
   Widget build(BuildContext context) {
@@ -98,14 +102,16 @@ class _IssuesScreenState extends State<IssuesScreen> {
           child: PageHeader(
             title: 'Issues',
             subtitle: '${_issues.length} grouped errors and crashes',
+            period: _period,
+            onPeriodTap: _openPeriodPicker,
             actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
           ),
         ),
         Padding(
           padding: pageInsets(context, top: 12),
           child: FilterBar(
-            days: _days ?? 30,
-            onDaysChanged: (d) => _apply(days: d),
+            period: _period,
+            onPeriodChanged: (p) => _apply(period: p),
             searchHint: 'Search issue title…',
             searchValue: _search,
             onSearch: (q) => _apply(search: q),

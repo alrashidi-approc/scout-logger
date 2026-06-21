@@ -4,6 +4,7 @@ import 'package:scout_server/app.dart';
 import 'package:scout_server/config/server_config.dart';
 import 'package:scout_server/db/scout_db.dart';
 import 'package:scout_server/store/analytics_store.dart';
+import 'package:scout_server/services/key_cipher.dart';
 import 'package:scout_server/store/scout_store.dart';
 import 'package:shelf/shelf_io.dart';
 
@@ -14,11 +15,14 @@ Future<void> main() async {
     await runMigrations(db);
     await db.ping();
 
-    final store = ScoutStore(db);
+    final store = ScoutStore(db, cipher: KeyCipher(config.encryptionKey));
     final analytics = AnalyticsStore(db);
     final handler = createApp(config: config, store: store, analytics: analytics);
     stdout.writeln('scout-logger listening on ${config.publicUrl}');
     stdout.writeln('Dashboard: ${config.dashboardPublicUrl}');
+    if (config.smtpHost.isEmpty) {
+      stdout.writeln('Email: SMTP not configured — new accounts are verified automatically on signup');
+    }
     await serve(handler, config.host, config.port);
   } catch (e, st) {
     stderr.writeln('scout-logger failed to start: $e');

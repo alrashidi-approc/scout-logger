@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:scout_models/scout_models.dart';
+
 import 'network_readable.dart';
 
 Map<String, dynamic> asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : {};
@@ -71,13 +73,21 @@ class EventView {
     final message = str(step['message']);
     final label = str(step['label']) ?? str(step['name']) ?? screenName ?? message ?? route ?? 'step';
     final at = str(step['timestamp']) ?? str(step['at']) ?? str(step['time']);
+    final nav = parseNavTransition(step);
     return {
       ...step,
       'label': label,
       'name': label,
+      if (route != null) 'route': route,
+      'navigationType': nav.isKnown ? nav.wire : str(step['navigationType']),
+      'navigationLabel': nav.label,
+      'hasNavigationType': nav.isKnown,
       if (at != null) ...{'timestamp': at, 'at': at},
     };
   }
+
+  bool get breadcrumbsMissingNavType =>
+      breadcrumbs.isNotEmpty && breadcrumbs.any((s) => s['hasNavigationType'] != true);
 
   Map<String, dynamic> get overview => asMap(payload['overview']);
   Map<String, dynamic> get context => asMap(payload['context']);
@@ -207,6 +217,8 @@ class EventView {
         if (environment != '—') 'Environment: $environment',
         if (route != '—') 'User was on screen: $route',
         if (breadcrumbs.isNotEmpty) 'Screen trail: ${breadcrumbs.length} steps',
+        if (breadcrumbsMissingNavType)
+          'Note: navigation type (push/pop/…) not recorded — update scout_logger_plus screenTrail',
         if (platform != '—') 'Platform: $platform · $appVersion',
         if (userId != '—') 'User ID: $userId',
         if (country != '—')

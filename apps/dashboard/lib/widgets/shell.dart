@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
+import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 
 class DashboardShell extends StatefulWidget {
@@ -79,22 +81,19 @@ class _DashboardShellState extends State<DashboardShell> {
 
   void _onNav(int i, BuildContext context) {
     final id = widget.projectId;
-    switch (i) {
-      case 0:
-        context.go(id == null ? '/projects' : '/p/$id');
-      case 1:
-        if (id != null) context.go('/p/$id/users');
-      case 2:
-        if (id != null) context.go('/p/$id/sessions');
-      case 3:
-        if (id != null) context.go('/p/$id/analytics');
-      case 4:
-        if (id != null) context.go('/p/$id/issues');
-      case 5:
-        if (id != null) context.go('/p/$id/events');
-      case 6:
-        if (id != null) context.go('/p/$id/geo');
-    }
+    final periodQ = PeriodFilter.queryFromUri(GoRouterState.of(context).uri.queryParameters);
+    final path = switch (i) {
+      0 => id == null ? '/projects' : '/p/$id',
+      1 => '/p/$id/users',
+      2 => '/p/$id/sessions',
+      3 => '/p/$id/analytics',
+      4 => '/p/$id/issues',
+      5 => '/p/$id/events',
+      6 => '/p/$id/geo',
+      _ => '/projects',
+    };
+    if (i > 0 && id == null) return;
+    context.go(Uri(path: path, queryParameters: periodQ).toString());
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       Navigator.of(context).pop();
     }
@@ -118,7 +117,11 @@ class _DashboardShellState extends State<DashboardShell> {
 
     final content = DecoratedBox(
       decoration: const BoxDecoration(
-        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [AppTheme.bg, Color(0xFF0D1117)]),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppTheme.bg, Color(0xFFF1F5F9)],
+        ),
       ),
       child: PageStorage(bucket: _pageBucket, child: widget.child),
     );
@@ -163,7 +166,13 @@ class _DashboardShellState extends State<DashboardShell> {
       body: Row(children: [
         Container(
           width: extended ? 220 : 72,
-          decoration: const BoxDecoration(color: AppTheme.sidebar, border: Border(right: BorderSide(color: AppTheme.border))),
+          decoration: BoxDecoration(
+            color: AppTheme.sidebar,
+            border: Border(right: BorderSide(color: AppTheme.border)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(1, 0)),
+            ],
+          ),
           child: Column(children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
@@ -176,7 +185,7 @@ class _DashboardShellState extends State<DashboardShell> {
                     borderRadius: BorderRadius.circular(10),
                     boxShadow: [BoxShadow(color: AppTheme.primary.withValues(alpha: 0.3), blurRadius: 12)],
                   ),
-                  child: const Icon(Icons.radar, color: AppTheme.bg, size: 22),
+                  child: const Icon(Icons.radar, color: Colors.white, size: 22),
                 ),
                 if (extended) ...[
                   const SizedBox(width: 10),
@@ -225,9 +234,14 @@ class _TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Material(
       color: AppTheme.panel,
+      elevation: 0,
+      shadowColor: Colors.black.withValues(alpha: 0.04),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20, vertical: compact ? 10 : 12),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: AppTheme.border))),
+        decoration: BoxDecoration(
+          color: AppTheme.panel,
+          border: Border(bottom: BorderSide(color: AppTheme.border)),
+        ),
         child: Row(children: [
           if (drawerMode && projectName != null)
             IconButton(onPressed: onMenu, icon: const Icon(Icons.menu, size: 22), tooltip: 'Menu')
@@ -243,8 +257,42 @@ class _TopBar extends StatelessWidget {
                 style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 13 : 14, color: AppTheme.text),
               ),
             ),
-          ] else
+          ]           else
             const Spacer(),
+          if (AuthService.instance.isAdmin && projectName == null)
+            TextButton.icon(
+              onPressed: () => context.go('/admin/users'),
+              icon: const Icon(Icons.admin_panel_settings_outlined, size: 18),
+              label: Text(compact ? '' : 'Team'),
+            ),
+          PopupMenuButton<String>(
+            tooltip: 'Account',
+            onSelected: (v) async {
+              if (v == 'logout') {
+                await AuthService.instance.logout();
+                if (context.mounted) context.go('/login');
+              } else if (v == 'admin') {
+                context.go('/admin/users');
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
+              if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
+              const PopupMenuItem(value: 'logout', child: Text('Sign out')),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: CircleAvatar(
+                radius: compact ? 14 : 16,
+                backgroundColor: AppTheme.primarySoft,
+                child: Text(
+                  AuthService.instance.email.isNotEmpty ? AuthService.instance.email[0].toUpperCase() : '?',
+                  style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
           Container(
             padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 4 : 6),
             decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(20), border: Border.all(color: AppTheme.border)),

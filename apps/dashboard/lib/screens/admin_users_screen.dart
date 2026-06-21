@@ -1,0 +1,124 @@
+import 'package:flutter/material.dart';
+
+import '../services/api_client.dart';
+import '../services/auth_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/page_header.dart';
+
+class AdminUsersScreen extends StatefulWidget {
+  const AdminUsersScreen({super.key});
+
+  @override
+  State<AdminUsersScreen> createState() => _AdminUsersScreenState();
+}
+
+class _AdminUsersScreenState extends State<AdminUsersScreen> {
+  final _api = ScoutApi();
+  List<Map<String, dynamic>> _users = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final users = await _api.fetchAdminUsers();
+      if (mounted) setState(() {
+        _users = users;
+        _loading = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _toggleCreate(Map<String, dynamic> user, bool value) async {
+    try {
+      await _api.updateAdminUser(user['id'] as String, canCreateProjects: value);
+      await _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  Future<void> _toggleAdmin(Map<String, dynamic> user, bool value) async {
+    try {
+      await _api.updateAdminUser(user['id'] as String, globalRole: value ? 'admin' : 'user');
+      await _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const LoadingView();
+    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+
+    return ListView(
+      padding: const EdgeInsets.all(28),
+      children: [
+        const PageHeader(
+          title: 'Team & permissions',
+          subtitle: 'Admins can access everything. Grant “Create projects” so members can add new apps.',
+        ),
+        const SizedBox(height: 20),
+        ..._users.map((u) {
+          final verified = u['emailVerified'] == true;
+          final isAdmin = u['globalRole'] == 'admin';
+          return Card(
+            margin: const EdgeInsets.only(bottom: 10),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(u['email'] as String? ?? '—', style: const TextStyle(fontWeight: FontWeight.w700)),
+                      Text(
+                        '${u['projectCount'] ?? 0} projects · ${verified ? 'Verified' : 'Pending verification'}',
+                        style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                      ),
+                    ]),
+                  ),
+                  if (isAdmin)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(color: AppTheme.primarySoft, borderRadius: BorderRadius.circular(6)),
+                      child: const Text('Admin', style: TextStyle(color: AppTheme.primary, fontSize: 11, fontWeight: FontWeight.w700)),
+                    ),
+                ]),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Admin', style: TextStyle(fontSize: 14)),
+                  subtitle: const Text('Full access to all projects and settings', style: TextStyle(fontSize: 12)),
+                  value: isAdmin,
+                  onChanged: (v) => _toggleAdmin(u, v),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Can create projects', style: TextStyle(fontSize: 14)),
+                  subtitle: const Text('Allow creating new Scout apps / DSN keys', style: TextStyle(fontSize: 12)),
+                  value: isAdmin || u['canCreateProjects'] == true,
+                  onChanged: isAdmin ? null : (v) => _toggleCreate(u, v),
+                ),
+              ]),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+}

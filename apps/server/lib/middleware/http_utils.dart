@@ -16,7 +16,7 @@ Middleware corsMiddleware() => (Handler inner) {
 
 const _corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
   'Access-Control-Allow-Headers': 'Origin, Content-Type, Accept, Authorization, X-API-Key',
 };
 

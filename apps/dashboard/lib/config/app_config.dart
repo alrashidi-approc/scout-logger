@@ -4,9 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 /// Loaded at startup from the server (`/api/dashboard/config`).
-/// Same-origin when served at `/scout/dashboard/`.
 class AppConfig {
-  AppConfig._({required this.apiBaseUrl, required this.apiKey});
+  AppConfig._({required this.apiBaseUrl, required this.authRequired, required this.emailVerification});
 
   static AppConfig? _instance;
 
@@ -17,7 +16,8 @@ class AppConfig {
   }
 
   final String apiBaseUrl;
-  final String apiKey;
+  final bool authRequired;
+  final bool emailVerification;
 
   static Future<void> load() async {
     final origins = <String>[Uri.base.origin];
@@ -38,7 +38,8 @@ class AppConfig {
         final base = json['apiBaseUrl'] as String? ?? '';
         _instance = AppConfig._(
           apiBaseUrl: base.isNotEmpty ? base.replaceAll(RegExp(r'/+$'), '') : origin,
-          apiKey: json['apiKey'] as String? ?? '',
+          authRequired: json['authRequired'] != false,
+          emailVerification: json['emailVerification'] == true,
         );
         return;
       } catch (e) {

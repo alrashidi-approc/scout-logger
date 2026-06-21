@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 # Export packages/scout_logger_plus → standalone GitHub repo directory.
 #
-#   SCOUT_PLATFORM_REPO=https://github.com/YOUR_ORG/scout-logger.git \
+# Local (sibling folders — no GitHub needed yet):
+#   ./scripts/export-sdk-repo.sh ../scout_logger_plus
+#
+# Git dependency (platform repo must exist on GitHub):
+#   SCOUT_MODELS_GIT=1 SCOUT_PLATFORM_REPO=https://github.com/alrashidi-approc/scout-logger.git \
 #     ./scripts/export-sdk-repo.sh ../scout_logger_plus
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${ROOT}/packages/scout_logger_plus"
 TARGET="${1:-${ROOT}/../scout_logger_plus}"
-PLATFORM_REPO="${SCOUT_PLATFORM_REPO:-https://github.com/YOUR_ORG/scout-logger.git}"
+PLATFORM_REPO="${SCOUT_PLATFORM_REPO:-https://github.com/alrashidi-approc/scout-logger.git}"
+USE_GIT="${SCOUT_MODELS_GIT:-0}"
+
+if [[ "$USE_GIT" == "1" ]]; then
+  SCOUT_MODELS_BLOCK="  scout_models:
+    git:
+      url: ${PLATFORM_REPO}
+      path: packages/scout_models"
+else
+  SCOUT_MODELS_BLOCK="  scout_models:
+    path: ../scout-logger/packages/scout_models"
+fi
 
 if [[ ! -d "$SRC/lib" ]]; then
   echo "Missing ${SRC}/lib — run from scout-logger repo with packages/scout_logger_plus present"
@@ -67,10 +82,7 @@ dependencies:
   go_router: ^14.6.2
   meta: ^1.16.0
   package_info_plus: ^8.3.0
-  scout_models:
-    git:
-      url: ${PLATFORM_REPO}
-      path: packages/scout_models
+${SCOUT_MODELS_BLOCK}
   uuid: ^4.5.1
   path_provider: ^2.1.5
 

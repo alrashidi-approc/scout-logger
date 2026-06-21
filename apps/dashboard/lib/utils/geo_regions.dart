@@ -66,27 +66,31 @@ GeoRegion regionById(String id) =>
 
 List<Map<String, dynamic>> aggregateByRegion(List<Map<String, dynamic>> points) {
   final totals = <String, int>{};
+  final userTotals = <String, int>{};
   final countries = <String, List<String>>{};
   for (final p in points) {
     final code = (p['country'] as String? ?? '').toUpperCase();
     if (code.isEmpty) continue;
     final region = regionForCountry(code);
     final count = p['count'] as int? ?? 0;
+    final users = p['users'] as int? ?? count;
     totals[region] = (totals[region] ?? 0) + count;
+    userTotals[region] = (userTotals[region] ?? 0) + users;
     countries.putIfAbsent(region, () => []).add(code);
   }
   return [
     for (final r in geoRegions)
-      if ((totals[r.id] ?? 0) > 0)
+      if ((userTotals[r.id] ?? totals[r.id] ?? 0) > 0)
         {
           'id': r.id,
           'label': r.label,
           'lat': r.lat,
           'lng': r.lng,
-          'count': totals[r.id],
+          'count': totals[r.id] ?? 0,
+          'users': userTotals[r.id] ?? totals[r.id] ?? 0,
           'countries': countries[r.id] ?? [],
         },
-  ]..sort((a, b) => (b['count'] as int).compareTo(a['count'] as int));
+  ]..sort((a, b) => (b['users'] as int).compareTo(a['users'] as int));
 }
 
 String formatGeoCount(int n) {

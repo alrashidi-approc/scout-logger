@@ -23,4 +23,14 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+# Podman publishes ports via FORWARD (routed), not INPUT — both rules are required.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  # shellcheck disable=SC1091
+  set -a && source .env && set +a
+  PORT="${PORT:-8080}"
+  ufw allow "${PORT}/tcp" 2>/dev/null || true
+  ufw route allow "${PORT}/tcp" 2>/dev/null || true
+  echo "==> UFW allow + route allow for tcp/${PORT}"
+fi
+
 echo "==> Server bootstrap OK ($(pwd))"

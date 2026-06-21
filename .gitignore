@@ -1,9 +1,11 @@
 .env
 compose.env
-apps/dashboard/web/bootstrap.json
+dumps/
+# bootstrap.json default is committed; sync-dashboard-bootstrap.sh overwrites for ./dev dashboard
 **/.dart_tool/
 **/.packages
 **/build/
+apps/server/server
 **/.flutter-plugins
 **/.flutter-plugins-dependencies
 **/pubspec.lock

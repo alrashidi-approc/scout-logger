@@ -1,13 +1,24 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
+import 'period_picker.dart';
 
 class PageHeader extends StatelessWidget {
-  const PageHeader({super.key, required this.title, this.subtitle, this.actions});
+  const PageHeader({
+    super.key,
+    required this.title,
+    this.subtitle,
+    this.period,
+    this.onPeriodTap,
+    this.actions,
+  });
 
   final String title;
   final String? subtitle;
+  final PeriodFilter? period;
+  final VoidCallback? onPeriodTap;
   final List<Widget>? actions;
 
   @override
@@ -17,9 +28,17 @@ class PageHeader extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(title, style: TextStyle(fontSize: compact ? 20 : 26, fontWeight: FontWeight.w800, color: AppTheme.text)),
-        if (subtitle != null) ...[
-          const SizedBox(height: 4),
-          Text(subtitle!, style: TextStyle(color: AppTheme.muted, fontSize: compact ? 12 : 13)),
+        if (subtitle != null || period != null) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              if (subtitle != null) Text(subtitle!, style: TextStyle(color: AppTheme.muted, fontSize: compact ? 12 : 13)),
+              if (period != null) PeriodChip(period: period!, onTap: onPeriodTap),
+            ],
+          ),
         ],
         if (actions != null && actions!.isNotEmpty) ...[
           const SizedBox(height: 8),

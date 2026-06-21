@@ -4,15 +4,17 @@ import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 
 class SessionsScreen extends StatefulWidget {
-  const SessionsScreen({super.key, required this.projectId, this.initialDays = 7});
+  const SessionsScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7)});
 
   final String projectId;
-  final int initialDays;
+  final PeriodFilter initialPeriod;
 
   @override
   State<SessionsScreen> createState() => _SessionsScreenState();
@@ -23,7 +25,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
   List<Map<String, dynamic>> _sessions = [];
   bool _loading = true;
   String? _error;
-  late int _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
 
   @override
   void initState() {
@@ -37,7 +39,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
       _error = null;
     });
     try {
-      final sessions = await _api.fetchSessions(widget.projectId, days: _days, limit: 100);
+      final sessions = await _api.fetchSessions(widget.projectId, period: _period, limit: 100);
       if (mounted) setState(() {
         _sessions = sessions;
         _loading = false;
@@ -50,9 +52,9 @@ class _SessionsScreenState extends State<SessionsScreen> {
     }
   }
 
-  void _setDays(int d) {
-    _days = d;
-    context.go('/p/${widget.projectId}/sessions?days=$d');
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    context.go(Uri(path: '/p/${widget.projectId}/sessions', queryParameters: p.toQuery()).toString());
     _load();
   }
 
@@ -63,14 +65,22 @@ class _SessionsScreenState extends State<SessionsScreen> {
     return '${sec ~/ 60}m ${sec % 60}s';
   }
 
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
+
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(
         padding: pageInsets(context, top: pagePad(context)),
-        child: PageHeader(title: 'Sessions', subtitle: '${_sessions.length} sessions · ${periodLabel(_days)}', actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))]),
+        child: PageHeader(
+          title: 'Sessions',
+          subtitle: '${_sessions.length} sessions',
+          period: _period,
+          onPeriodTap: _openPeriodPicker,
+          actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+        ),
       ),
-      Padding(padding: pageInsets(context, top: 12), child: FilterBar(days: _days, onDaysChanged: _setDays)),
+      Padding(padding: pageInsets(context, top: 12), child: FilterBar(period: _period, onPeriodChanged: _setPeriod)),
       Expanded(
         child: _loading
             ? const LoadingView()

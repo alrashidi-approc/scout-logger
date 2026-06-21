@@ -6,16 +6,18 @@ import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 import '../widgets/stat_card.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../widgets/panel.dart';
 import '../widgets/trend_chart.dart';
 
 class StatsScreen extends StatefulWidget {
-  const StatsScreen({super.key, required this.projectId, this.initialDays = 7});
+  const StatsScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7)});
 
   final String projectId;
-  final int initialDays;
+  final PeriodFilter initialPeriod;
 
   @override
   State<StatsScreen> createState() => _StatsScreenState();
@@ -26,7 +28,7 @@ class _StatsScreenState extends State<StatsScreen> {
   Map<String, dynamic>? _data;
   bool _loading = true;
   String? _error;
-  late int _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
 
   @override
   void initState() {
@@ -40,7 +42,7 @@ class _StatsScreenState extends State<StatsScreen> {
       _error = null;
     });
     try {
-      final data = await _api.fetchStats(widget.projectId, days: _days);
+      final data = await _api.fetchStats(widget.projectId, period: _period);
       if (mounted) setState(() {
         _data = data;
         _loading = false;
@@ -53,9 +55,9 @@ class _StatsScreenState extends State<StatsScreen> {
     }
   }
 
-  void _setDays(int d) {
-    _days = d;
-    context.go('/p/${widget.projectId}/stats?days=$d');
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    context.go(Uri(path: '/p/${widget.projectId}', queryParameters: p.toQuery()).toString());
     _load();
   }
 
@@ -64,6 +66,8 @@ class _StatsScreenState extends State<StatsScreen> {
     if (d is! Map) return 0;
     return (d[key] as num?)?.toDouble() ?? 0;
   }
+
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
 
   @override
   Widget build(BuildContext context) {
@@ -83,11 +87,13 @@ class _StatsScreenState extends State<StatsScreen> {
         children: [
           PageHeader(
             title: 'Statistics',
-            subtitle: 'Product KPIs for the ${periodLabel(_days)}',
+            subtitle: 'Product KPIs · ${_period.comparisonLabel()}',
+            period: _period,
+            onPeriodTap: _openPeriodPicker,
             actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
           ),
           const SizedBox(height: 16),
-          FilterBar(days: _days, onDaysChanged: _setDays),
+          FilterBar(period: _period, onPeriodChanged: _setPeriod),
           const SizedBox(height: 20),
           LayoutBuilder(builder: (context, c) {
             final wide = c.maxWidth > 900;
@@ -132,7 +138,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 value: '${d['events']}',
                 icon: Icons.show_chart,
                 delta: _delta('events'),
-                onTap: () => context.go('/p/$pid/events?days=$_days'),
+                onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.toQuery()).toString()),
               ),
               StatCard(
                 label: 'Errors',
@@ -141,7 +147,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 color: AppTheme.error,
                 delta: _delta('errors'),
                 deltaGoodWhenDown: true,
-                onTap: () => context.go('/p/$pid/events?type=errors&days=$_days'),
+                onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'level': 'error', 'type': 'errors'})).toString()),
               ),
               StatCard(
                 label: 'Crashes',
@@ -150,7 +156,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 color: AppTheme.warning,
                 delta: _delta('crashes'),
                 deltaGoodWhenDown: true,
-                onTap: () => context.go('/p/$pid/events?type=crash&days=$_days'),
+                onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString()),
               ),
               StatCard(
                 label: 'Unique users',
@@ -178,7 +184,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 value: '${d['networkEvents']}',
                 icon: Icons.lan_outlined,
                 color: AppTheme.info,
-                onTap: () => context.go('/p/$pid/events?type=network&days=$_days'),
+                onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'network'})).toString()),
               ),
               StatCard(
                 label: 'Open issues',

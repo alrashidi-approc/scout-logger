@@ -4,15 +4,17 @@ import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 
 class UsersScreen extends StatefulWidget {
-  const UsersScreen({super.key, required this.projectId, this.initialDays = 30});
+  const UsersScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(30)});
 
   final String projectId;
-  final int initialDays;
+  final PeriodFilter initialPeriod;
 
   @override
   State<UsersScreen> createState() => _UsersScreenState();
@@ -23,7 +25,7 @@ class _UsersScreenState extends State<UsersScreen> {
   List<Map<String, dynamic>> _users = [];
   bool _loading = true;
   String? _error;
-  late int _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
 
   @override
   void initState() {
@@ -37,7 +39,7 @@ class _UsersScreenState extends State<UsersScreen> {
       _error = null;
     });
     try {
-      final users = await _api.fetchUsers(widget.projectId, days: _days);
+      final users = await _api.fetchUsers(widget.projectId, period: _period);
       if (mounted) setState(() {
         _users = users;
         _loading = false;
@@ -50,20 +52,28 @@ class _UsersScreenState extends State<UsersScreen> {
     }
   }
 
-  void _setDays(int d) {
-    _days = d;
-    context.go('/p/${widget.projectId}/users?days=$d');
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    context.go(Uri(path: '/p/${widget.projectId}/users', queryParameters: p.toQuery()).toString());
     _load();
   }
+
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
 
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(
         padding: pageInsets(context, top: pagePad(context)),
-        child: PageHeader(title: 'Users', subtitle: '${_users.length} active users · ${periodLabel(_days)}', actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))]),
+        child: PageHeader(
+          title: 'Users',
+          subtitle: '${_users.length} active users',
+          period: _period,
+          onPeriodTap: _openPeriodPicker,
+          actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+        ),
       ),
-      Padding(padding: pageInsets(context, top: 12), child: FilterBar(days: _days, onDaysChanged: _setDays)),
+      Padding(padding: pageInsets(context, top: 12), child: FilterBar(period: _period, onPeriodChanged: _setPeriod)),
       Expanded(
         child: _loading
             ? const LoadingView()

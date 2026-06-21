@@ -15,7 +15,10 @@ set -a
 source "$ENV_FILE"
 set +a
 
-PUBLIC_URL="${PUBLIC_URL:-http://localhost:8080}"
+DEV_PORT="${DEV_PORT:-8080}"
+# Local flutter run — never use Hetzner PUBLIC_URL from .env unless explicitly set.
+PUBLIC_URL="${SCOUT_DEV_PUBLIC_URL:-http://localhost:${DEV_PORT}}"
+
 mkdir -p "$(dirname "$OUT")"
 printf '{"publicUrl":"%s"}\n' "$PUBLIC_URL" > "$OUT"
 echo "Wrote $OUT (publicUrl=$PUBLIC_URL)"

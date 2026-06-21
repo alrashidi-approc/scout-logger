@@ -5,13 +5,15 @@ import 'package:scout_models/scout_models.dart';
 
 import '../db/scout_db.dart';
 import '../services/geo_enricher.dart';
+import '../services/key_cipher.dart';
 import '../util/dates.dart';
 import '../util/ids.dart';
 
 class ScoutStore {
-  ScoutStore(this.db);
+  ScoutStore(this.db, {KeyCipher? cipher}) : _cipher = cipher;
 
   final ScoutDb db;
+  final KeyCipher? _cipher;
 
   Future<Map<String, dynamic>?> findProjectByIngestKey(String rawKey) async {
     final conn = await db.connect();
@@ -45,6 +47,7 @@ class ScoutStore {
     final slug = slugify(name);
     final rawKey = generateIngestKey();
     final keyId = newId();
+    final ciphertext = _cipher?.encrypt(rawKey);
 
     await conn.execute(
       Sql.named('INSERT INTO projects (id, name, slug) VALUES (@id, @name, @slug)'),
@@ -52,10 +55,16 @@ class ScoutStore {
     );
     await conn.execute(
       Sql.named('''
-        INSERT INTO ingest_keys (id, project_id, key_hash, label)
-        VALUES (@kid, @pid, @hash, @label)
+        INSERT INTO ingest_keys (id, project_id, key_hash, label, key_ciphertext)
+        VALUES (@kid, @pid, @hash, @label, @cipher)
       '''),
-      parameters: {'kid': keyId, 'pid': id, 'hash': hashIngestKey(rawKey), 'label': 'default'},
+      parameters: {
+        'kid': keyId,
+        'pid': id,
+        'hash': hashIngestKey(rawKey),
+        'label': 'default',
+        'cipher': ciphertext,
+      },
     );
 
     return {
@@ -68,34 +77,101 @@ class ScoutStore {
     };
   }
 
-  Future<List<Map<String, dynamic>>> listProjects() async {
+  Future<List<Map<String, dynamic>>> listProjects({String? userId, bool admin = false}) async {
     final conn = await db.connect();
-    final rows = await conn.execute('''
-      SELECT p.id, p.name, p.slug, p.created_at,
-             (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
-             (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-             (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id)
-      FROM projects p
-      ORDER BY p.created_at DESC
-    ''');
-    return rows
-        .map((r) => {
-              'id': r[0],
-              'name': r[1],
-              'slug': r[2],
-              'createdAt': (r[3] as DateTime).toUtc().toIso8601String(),
-              'eventCount': r[4],
-              'issueCount': r[5],
-              'lastEventAt': r[6] != null ? (r[6] as DateTime).toUtc().toIso8601String() : null,
-            })
-        .toList();
+    final Result rows;
+    if (admin) {
+      rows = await conn.execute('''
+        SELECT p.id, p.name, p.slug, p.created_at,
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id),
+               NULL::text
+        FROM projects p
+        ORDER BY p.created_at DESC
+      ''');
+    } else if (userId != null) {
+      rows = await conn.execute(
+        Sql.named('''
+        SELECT p.id, p.name, p.slug, p.created_at,
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id),
+               m.role
+        FROM projects p
+        INNER JOIN project_memberships m ON m.project_id = p.id AND m.user_id = @uid
+        ORDER BY p.created_at DESC
+      '''),
+        parameters: {'uid': userId},
+      );
+    } else {
+      return [];
+    }
+    return rows.map(_projectRow).toList();
   }
 
-  Future<Map<String, dynamic>?> getProject(String projectId) async {
-    for (final p in await listProjects()) {
-      if (p['id'] == projectId) return p;
+  Map<String, dynamic> _projectRow(ResultRow r) => {
+        'id': r[0],
+        'name': r[1],
+        'slug': r[2],
+        'createdAt': (r[3] as DateTime).toUtc().toIso8601String(),
+        'eventCount': r[4],
+        'issueCount': r[5],
+        'lastEventAt': r[6] != null ? (r[6] as DateTime).toUtc().toIso8601String() : null,
+        if (r.length > 7 && r[7] != null) 'role': r[7],
+      };
+
+  Future<Map<String, dynamic>?> getProjectCredentials(String projectId, {required String publicUrl}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT key_ciphertext FROM ingest_keys
+        WHERE project_id = @pid AND revoked_at IS NULL
+        ORDER BY created_at ASC LIMIT 1
+      '''),
+      parameters: {'pid': projectId},
+    );
+    if (rows.isEmpty) return null;
+    final rawKey = _cipher?.decrypt(rows.first[0] as String?);
+    if (rawKey == null) return {'available': false, 'message': 'Credentials unavailable for legacy keys. Create a new project or contact admin.'};
+    return {
+      'available': true,
+      'ingestKey': rawKey,
+      'dsn': buildDsn(publicUrl: publicUrl, projectId: projectId, rawKey: rawKey),
+    };
+  }
+
+  Future<bool> projectExists(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(Sql.named('SELECT 1 FROM projects WHERE id = @id'), parameters: {'id': projectId});
+    return rows.isNotEmpty;
+  }
+
+  Future<Map<String, dynamic>?> fetchProjectById(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT p.id, p.name, p.slug, p.created_at,
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id)
+        FROM projects p WHERE p.id = @id
+      '''),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) return null;
+    return _projectRow(rows.first);
+  }
+
+  Future<Map<String, dynamic>?> getProject(String projectId, {String? userId, bool admin = false}) async {
+    if (admin) return fetchProjectById(projectId);
+    if (userId != null) {
+      for (final p in await listProjects(userId: userId)) {
+        if (p['id'] == projectId) return p;
+      }
+      return null;
     }
-    return null;
+    return fetchProjectById(projectId);
   }
 
   Future<Map<String, dynamic>> ingestBatch({
@@ -324,8 +400,10 @@ class ScoutStore {
     String? status,
     String? q,
     int? days,
+    TimeWindow? window,
   }) async {
     final conn = await db.connect();
+    final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, fingerprint, type, title, status, event_count, affected_users,
@@ -335,9 +413,10 @@ class ScoutStore {
           AND (@status::text IS NULL OR status = @status::text)
           AND (@q::text IS NULL OR title ILIKE '%' || @q::text || '%')
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
         ORDER BY last_seen_at DESC LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'status': status, 'q': q, 'since': sinceTimestamp(days)},
+      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'status': status, 'q': q, ...timeParams(w)},
     );
     return rows
         .map((r) => {
@@ -393,6 +472,23 @@ class ScoutStore {
     return issue;
   }
 
+  Future<Map<String, dynamic>?> updateIssueStatus(String projectId, String issueId, String status) async {
+    if (!{'open', 'resolved', 'ignored'}.contains(status)) {
+      throw ArgumentError('Invalid status');
+    }
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        UPDATE issues SET status = @status
+        WHERE project_id = @pid AND id = @id
+        RETURNING id
+      '''),
+      parameters: {'pid': projectId, 'id': issueId, 'status': status},
+    );
+    if (rows.isEmpty) return null;
+    return getIssue(projectId, issueId);
+  }
+
   Future<Map<String, dynamic>?> getEvent(String projectId, String eventId) async {
     final conn = await db.connect();
     final rows = await conn.execute(
@@ -445,11 +541,16 @@ class ScoutStore {
     String projectId, {
     int limit = 100,
     String? type,
+    String? level,
+    String? category,
     String? q,
     String? country,
     int? days,
+    TimeWindow? window,
   }) async {
     final conn = await db.connect();
+    final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
+    final kind = type; // query param `type` = transport kind (backward compatible)
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
@@ -462,16 +563,34 @@ class ScoutStore {
                payload->>'level' AS level
         FROM events WHERE project_id = @pid
           AND (
-            @type::text IS NULL
-            OR (@type::text = 'errors' AND type IN ('error', 'network'))
-            OR (@type::text <> 'errors' AND type = @type::text)
+            @kind::text IS NULL
+            OR (@kind::text = 'errors' AND type IN ('error', 'crash', 'network')
+                AND COALESCE(NULLIF(payload->>'level', ''), 'error') = 'error')
+            OR (@kind::text <> 'errors' AND type = @kind::text)
           )
+          AND (
+            @level::text IS NULL
+            OR LOWER(COALESCE(NULLIF(payload->>'level', ''),
+                CASE type WHEN 'log' THEN 'info' WHEN 'span' THEN 'info' ELSE 'error' END
+              )) = LOWER(@level::text)
+          )
+          AND (@category::text IS NULL OR payload->>'category' = @category::text)
           AND (@q::text IS NULL OR message ILIKE '%' || @q::text || '%')
           AND (@country::text IS NULL OR country = @country::text)
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         ORDER BY occurred_at DESC LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'q': q, 'country': country, 'since': sinceTimestamp(days)},
+      parameters: {
+        'pid': projectId,
+        'lim': limit,
+        'kind': kind,
+        'level': level,
+        'category': category,
+        'q': q,
+        'country': country,
+        ...timeParams(w),
+      },
     );
     return rows
         .map((r) => {
@@ -496,12 +615,14 @@ class ScoutStore {
         .toList();
   }
 
-  Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1}) async {
+  Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window}) async {
     final conn = await db.connect();
-    final project = await getProject(projectId);
+    final project = await fetchProjectById(projectId);
     if (project == null) throw ArgumentError('Project not found');
 
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
+    final tp = timeParams(w);
+    final periodDays = w.approximateDays;
 
     final stats = await conn.execute(
       Sql.named('''
@@ -512,9 +633,10 @@ class ScoutStore {
           COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int
         FROM events
         WHERE project_id = @pid
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...tp},
     );
     final s = stats.first;
 
@@ -531,17 +653,20 @@ class ScoutStore {
               AND started_at >= (now() AT TIME ZONE 'utc') - interval '30 minutes'),
           (SELECT AVG(duration_ms)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
-              AND started_at >= @since::timestamptz),
+              AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
+              AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)),
           (SELECT COUNT(*)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
-              AND started_at >= @since::timestamptz),
+              AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
+              AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)),
           COUNT(DISTINCT user_id) FILTER (
             WHERE user_id IS NOT NULL
-              AND occurred_at >= @since::timestamptz
+              AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+              AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           )::int
         FROM events WHERE project_id = @pid
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...tp},
     );
     final sess = sessions.first;
 
@@ -550,10 +675,11 @@ class ScoutStore {
         SELECT country, COUNT(*)::int AS c
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY country ORDER BY c DESC LIMIT 10
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...tp},
     );
 
     final releases = await conn.execute(
@@ -564,20 +690,25 @@ class ScoutStore {
       parameters: {'pid': projectId},
     );
 
-    final trendDays = days > 14 ? days : 14;
+    final trendDays = periodDays > 14 ? periodDays : 14;
+    final trendFrom = w.since != null
+        ? DateTime.parse(w.since!).toUtc().toIso8601String().substring(0, 10)
+        : utcDateDaysAgo(trendDays - 1);
+    final trendUntil = trendUntilDate(w);
     final trend = await conn.execute(
       Sql.named('''
         SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int
         FROM daily_stats
         WHERE project_id = @pid AND date >= @fromDate::date
+          AND (@untilDate::date IS NULL OR date < @untilDate::date)
         GROUP BY date ORDER BY date
       '''),
-      parameters: {'pid': projectId, 'fromDate': utcDateDaysAgo(trendDays - 1)},
+      parameters: {'pid': projectId, 'fromDate': trendFrom, 'untilDate': trendUntil},
     );
 
     return {
       'project': project,
-      'days': days,
+      'days': periodDays,
       'eventsToday': _i(s[0]),
       'errorsToday': _i(s[1]),
       'crashesToday': _i(s[2]),
@@ -608,9 +739,9 @@ class ScoutStore {
     };
   }
 
-  Future<List<Map<String, dynamic>>> geoBreakdown(String projectId, {int days = 7}) async {
+  Future<List<Map<String, dynamic>>> geoBreakdown(String projectId, {int days = 7, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT country,
@@ -618,12 +749,13 @@ class ScoutStore {
                COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::int
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY country
         ORDER BY COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') DESC,
                  COUNT(*) DESC
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
     return rows.map((r) => {'country': r[0], 'count': r[1], 'users': r[2]}).toList();
   }

@@ -4,13 +4,17 @@ import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
+import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 
 class AnalyticsScreen extends StatefulWidget {
-  const AnalyticsScreen({super.key, required this.projectId, this.initialTab});
+  const AnalyticsScreen({super.key, required this.projectId, this.initialTab, this.initialPeriod = const PeriodFilter.days(30)});
 
   final String projectId;
   final String? initialTab;
+  final PeriodFilter initialPeriod;
 
   @override
   State<AnalyticsScreen> createState() => _AnalyticsScreenState();
@@ -28,6 +32,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
   List<Map<String, dynamic>> _sessions = [];
   bool _loading = true;
   String? _error;
+  late PeriodFilter _period = widget.initialPeriod;
 
   @override
   void initState() {
@@ -51,10 +56,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
       _error = null;
     });
     try {
-      final routes = await _api.fetchRoutes(widget.projectId);
+      final routes = await _api.fetchRoutes(widget.projectId, period: _period);
       final retention = await _api.fetchRetention(widget.projectId);
-      final releases = await _api.fetchReleaseComparison(widget.projectId);
-      final sessions = await _api.fetchSessions(widget.projectId);
+      final releases = await _api.fetchReleaseComparison(widget.projectId, period: _period);
+      final sessions = await _api.fetchSessions(widget.projectId, period: _period);
       if (mounted) {
         setState(() {
           _routes = routes;
@@ -77,12 +82,22 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
   Future<void> _runFunnel() async {
     if (_funnelSteps.isEmpty) return;
     try {
-      final funnel = await _api.fetchFunnel(widget.projectId, _funnelSteps);
+      final funnel = await _api.fetchFunnel(widget.projectId, _funnelSteps, period: _period);
       if (mounted) setState(() => _funnel = funnel);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
     }
   }
+
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    final tab = GoRouterState.of(context).uri.queryParameters['tab'];
+    final q = {...p.toQuery(), if (tab != null && tab.isNotEmpty) 'tab': tab};
+    context.go(Uri(path: '/p/${widget.projectId}/analytics', queryParameters: q).toString());
+    _load();
+  }
+
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
 
   @override
   Widget build(BuildContext context) {
@@ -97,8 +112,14 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
           child: PageHeader(
             title: 'Analytics',
             subtitle: 'Funnels, retention, releases, and session replays',
+            period: _period,
+            onPeriodTap: _openPeriodPicker,
             actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
           ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+          child: FilterBar(period: _period, onPeriodChanged: _setPeriod),
         ),
         TabBar(
           controller: _tabs,
@@ -123,7 +144,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
                 onRun: _runFunnel,
               ),
               _RetentionTab(data: _retention),
-              _ReleasesTab(releases: _releases),
+              _ReleasesTab(releases: _releases, period: _period),
               _SessionsTab(projectId: widget.projectId, sessions: _sessions),
             ],
           ),
@@ -332,9 +353,10 @@ class _RetentionTab extends StatelessWidget {
 }
 
 class _ReleasesTab extends StatelessWidget {
-  const _ReleasesTab({required this.releases});
+  const _ReleasesTab({required this.releases, required this.period});
 
   final List<Map<String, dynamic>> releases;
+  final PeriodFilter period;
 
   @override
   Widget build(BuildContext context) {
@@ -352,7 +374,7 @@ class _ReleasesTab extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Release comparison (30 days)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              Text('Release comparison (${period.label()})', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 16),
               ...releases.map((r) {
                 final crash = (r['crashRatePct'] as num?)?.toDouble() ?? 0;

@@ -1,41 +1,78 @@
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
+import 'period_picker.dart';
 
-class DaysFilter extends StatelessWidget {
-  const DaysFilter({super.key, required this.value, required this.onChanged});
+class PeriodFilterBar extends StatelessWidget {
+  const PeriodFilterBar({super.key, required this.value, required this.onChanged});
 
-  final int value;
-  final ValueChanged<int> onChanged;
+  final PeriodFilter value;
+  final ValueChanged<PeriodFilter> onChanged;
 
-  static const options = [1, 7, 14, 30, 90];
+  static const presets = [1, 7, 14, 30, 90];
   static const labels = {1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d'};
+
+  void _openPicker(BuildContext context) => showPeriodPicker(context, current: value, onSelected: onChanged);
 
   @override
   Widget build(BuildContext context) {
+    final customSelected = value.isCustom;
+    final customLabel = customSelected ? value.label() : 'Custom';
+
     return LayoutBuilder(builder: (context, c) {
-      if (c.maxWidth < 420) {
-        return SizedBox(
-          width: c.maxWidth.isFinite ? c.maxWidth : double.infinity,
-          child: DropdownButtonFormField<int>(
-            value: value,
-            isExpanded: true,
-            decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-            items: [for (final d in options) DropdownMenuItem(value: d, child: Text(labels[d]!, style: const TextStyle(fontSize: 13)))],
-            onChanged: (v) { if (v != null) onChanged(v); },
-          ),
+      if (c.maxWidth < 480) {
+        return Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<int?>(
+                value: value.isPreset ? value.days : null,
+                isExpanded: true,
+                decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
+                items: [
+                  for (final d in presets) DropdownMenuItem(value: d, child: Text(labels[d]!, style: const TextStyle(fontSize: 13))),
+                  DropdownMenuItem(value: -1, child: Text(customSelected ? customLabel : 'Custom range…', style: const TextStyle(fontSize: 13))),
+                ],
+                onChanged: (v) {
+                  if (v == null) return;
+                  if (v == -1) {
+                    _openPicker(context);
+                  } else {
+                    onChanged(PeriodFilter.days(v));
+                  }
+                },
+              ),
+            ),
+          ],
         );
       }
+
       return SingleChildScrollView(
         scrollDirection: Axis.horizontal,
-        child: SegmentedButton<int>(
-          segments: [for (final d in options) ButtonSegment(value: d, label: Text(labels[d]!))],
-          selected: {value},
-          onSelectionChanged: (s) => onChanged(s.first),
-          style: ButtonStyle(
-            visualDensity: VisualDensity.compact,
-            textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-          ),
+        child: Row(
+          children: [
+            SegmentedButton<int>(
+              segments: [for (final d in presets) ButtonSegment(value: d, label: Text(labels[d]!))],
+              selected: value.isPreset ? {value.days!} : {},
+              onSelectionChanged: (s) => onChanged(PeriodFilter.days(s.first)),
+              style: ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _openPicker(context),
+              icon: const Icon(Icons.calendar_month, size: 16),
+              label: Text(customLabel, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+              style: OutlinedButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                backgroundColor: customSelected ? AppTheme.primary.withValues(alpha: 0.1) : null,
+                foregroundColor: customSelected ? AppTheme.primary : null,
+                side: BorderSide(color: customSelected ? AppTheme.primary : AppTheme.border),
+              ),
+            ),
+          ],
         ),
       );
     });
@@ -84,25 +121,40 @@ class _SearchFieldState extends State<SearchField> {
 }
 
 class TypeFilterRow extends StatelessWidget {
-  const TypeFilterRow({super.key, required this.options, required this.selected, required this.onSelected});
+  const TypeFilterRow({super.key, required this.options, required this.selected, required this.onSelected, this.label});
 
+  final String? label;
   final List<String?> options;
   final String? selected;
   final ValueChanged<String?> onSelected;
 
+  static const _defaultLabels = {
+    null: 'All',
+    'errors': 'Errors',
+    'error': 'Error',
+    'crash': 'Crash',
+    'network': 'Network',
+    'session': 'Session',
+    'log': 'Log',
+    'span': 'Span',
+    'info': 'Info',
+    'warning': 'Warning',
+    'success': 'Success',
+    'system': 'System',
+    'crashing': 'Crashing',
+    'logic': 'Logic',
+    'ui': 'UI',
+  };
+
   @override
   Widget build(BuildContext context) {
-    return Wrap(
+    final chips = Wrap(
       spacing: 6,
       runSpacing: 6,
       children: options.map((t) {
-        final label = switch (t) {
-          null => 'All',
-          'errors' => 'Errors',
-          String type => type,
-        };
+        final chipLabel = _defaultLabels[t] ?? t!;
         return FilterChip(
-          label: Text(label, style: const TextStyle(fontSize: 12)),
+          label: Text(chipLabel, style: const TextStyle(fontSize: 12)),
           visualDensity: VisualDensity.compact,
           selected: selected == t,
           selectedColor: AppTheme.primary.withValues(alpha: 0.15),
@@ -111,40 +163,66 @@ class TypeFilterRow extends StatelessWidget {
         );
       }).toList(),
     );
+    if (label == null) return chips;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label!, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+        const SizedBox(height: 6),
+        chips,
+      ],
+    );
   }
 }
 
 class FilterBar extends StatelessWidget {
   const FilterBar({
     super.key,
-    this.days,
-    this.onDaysChanged,
+    this.period,
+    this.onPeriodChanged,
     this.searchHint,
     this.searchValue,
     this.onSearch,
     this.typeOptions,
     this.typeSelected,
     this.onTypeSelected,
+    this.levelOptions,
+    this.levelSelected,
+    this.onLevelSelected,
+    this.categoryOptions,
+    this.categorySelected,
+    this.onCategorySelected,
     this.extra,
   });
 
-  final int? days;
-  final ValueChanged<int>? onDaysChanged;
+  final PeriodFilter? period;
+  final ValueChanged<PeriodFilter>? onPeriodChanged;
   final String? searchHint;
   final String? searchValue;
   final ValueChanged<String>? onSearch;
   final List<String?>? typeOptions;
   final String? typeSelected;
   final ValueChanged<String?>? onTypeSelected;
+  final List<String?>? levelOptions;
+  final String? levelSelected;
+  final ValueChanged<String?>? onLevelSelected;
+  final List<String?>? categoryOptions;
+  final String? categorySelected;
+  final ValueChanged<String?>? onCategorySelected;
   final List<Widget>? extra;
 
   @override
   Widget build(BuildContext context) {
     final narrow = MediaQuery.sizeOf(context).width < 600;
     final children = <Widget>[
-      if (days != null && onDaysChanged != null) DaysFilter(value: days!, onChanged: onDaysChanged!),
+      if (period != null && onPeriodChanged != null) PeriodFilterBar(value: period!, onChanged: onPeriodChanged!),
       if (searchHint != null && onSearch != null) SearchField(hint: searchHint!, initialValue: searchValue, onSubmitted: onSearch!),
-      if (typeOptions != null && onTypeSelected != null) TypeFilterRow(options: typeOptions!, selected: typeSelected, onSelected: onTypeSelected!),
+      if (levelOptions != null && onLevelSelected != null)
+        TypeFilterRow(label: 'Level', options: levelOptions!, selected: levelSelected, onSelected: onLevelSelected!),
+      if (typeOptions != null && onTypeSelected != null)
+        TypeFilterRow(label: 'Kind', options: typeOptions!, selected: typeSelected, onSelected: onTypeSelected!),
+      if (categoryOptions != null && onCategorySelected != null)
+        TypeFilterRow(label: 'Category', options: categoryOptions!, selected: categorySelected, onSelected: onCategorySelected!),
       if (extra != null) ...extra!,
     ];
 
@@ -161,5 +239,3 @@ class FilterBar extends StatelessWidget {
     );
   }
 }
-
-String periodLabel(int days) => days == 1 ? 'today' : 'last $days days';

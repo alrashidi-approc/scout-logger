@@ -14,7 +14,8 @@ class EnvFile {
       return EnvFile({...Platform.environment});
     }
     final parsed = _parse(file.readAsStringSync());
-    return EnvFile({...Platform.environment, ...parsed});
+    // Shell exports (e.g. ./dev server) override .env — production values stay in file for deploy.
+    return EnvFile({...parsed, ...Platform.environment});
   }
 
   static File? _findDotEnv() {

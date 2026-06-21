@@ -11,29 +11,30 @@ class AnalyticsStore {
 
   final ScoutDb db;
 
-  Future<List<String>> distinctRoutes(String projectId, {int days = 30}) async {
+  Future<List<String>> distinctRoutes(String projectId, {int days = 30, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT DISTINCT step->>'route' AS route
         FROM events, jsonb_array_elements(payload->'screenTrail') AS step
         WHERE project_id = @pid
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND step->>'route' IS NOT NULL AND step->>'route' != ''
         ORDER BY route
         LIMIT 200
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
     return rows.map((r) => r[0] as String).toList();
   }
 
-  Future<Map<String, dynamic>> funnel(String projectId, List<String> steps, {int days = 30}) async {
+  Future<Map<String, dynamic>> funnel(String projectId, List<String> steps, {int days = 30, TimeWindow? window}) async {
     if (steps.isEmpty) return {'steps': [], 'totalSessions': 0};
 
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT session_id, payload->'screenTrail' AS trail
@@ -42,13 +43,14 @@ class AnalyticsStore {
           FROM events
           WHERE project_id = @pid
             AND session_id IS NOT NULL
-            AND occurred_at >= @since::timestamptz
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
             AND jsonb_typeof(payload->'screenTrail') = 'array'
             AND jsonb_array_length(payload->'screenTrail') > 0
           ORDER BY session_id, jsonb_array_length(payload->'screenTrail') DESC, occurred_at DESC
         ) t
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
 
     final trails = <List<String>>[];
@@ -67,7 +69,7 @@ class AnalyticsStore {
 
     final base = stepCounts.isEmpty ? 0 : stepCounts.first;
     return {
-      'days': days,
+      'days': w.approximateDays,
       'totalSessions': total,
       'steps': [
         for (var i = 0; i < steps.length; i++)
@@ -137,9 +139,10 @@ class AnalyticsStore {
     };
   }
 
-  Future<List<Map<String, dynamic>>> releaseComparison(String projectId, {int days = 30}) async {
+  Future<List<Map<String, dynamic>>> releaseComparison(String projectId, {int days = 30, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
+    final tp = timeParams(w);
     final rows = await conn.execute(
       Sql.named('''
         WITH session_release AS (
@@ -153,7 +156,8 @@ class AnalyticsStore {
           FROM app_sessions s
           JOIN session_release sr ON sr.session_id = s.id
           WHERE s.project_id = @pid AND s.ended_at IS NOT NULL
-            AND s.started_at >= @since::timestamptz
+            AND (@since::timestamptz IS NULL OR s.started_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR s.started_at < @until::timestamptz)
           GROUP BY sr.release
         )
         SELECT
@@ -168,12 +172,13 @@ class AnalyticsStore {
         LEFT JOIN session_stats ss ON ss.release = e.release
         WHERE e.project_id = @pid
           AND e.release IS NOT NULL
-          AND e.occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
         GROUP BY e.release, ss.sessions, ss.avg_ms
         ORDER BY events DESC
         LIMIT 20
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...tp},
     );
 
     return rows.map((r) {
@@ -192,9 +197,9 @@ class AnalyticsStore {
     }).toList();
   }
 
-  Future<List<Map<String, dynamic>>> listSessions(String projectId, {int days = 7, int limit = 50}) async {
+  Future<List<Map<String, dynamic>>> listSessions(String projectId, {int days = 7, int limit = 50, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days);
+    final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
         SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms,
@@ -209,11 +214,12 @@ class AnalyticsStore {
           ORDER BY occurred_at DESC LIMIT 1
         ) end_ev ON true
         WHERE s.project_id = @pid
-          AND s.started_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR s.started_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR s.started_at < @until::timestamptz)
         ORDER BY s.started_at DESC
         LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'since': since, 'lim': limit},
+      parameters: {'pid': projectId, 'lim': limit, ...timeParams(w)},
     );
 
     return rows.map((r) {
@@ -301,10 +307,13 @@ class AnalyticsStore {
       for (final step in trail) {
         if (step is! Map) continue;
         final route = step['route']?.toString();
+        final nav = step['navigationType'] ?? step['navType'] ?? step['transition'] ?? step['action'];
         out.add({
-          'type': 'navigation',
+          if (nav != null) 'navigationType': nav.toString(),
+          'type': step['type']?.toString() ?? 'navigation',
           'route': route,
           'label': step['screenName'] ?? route,
+          'screenName': step['screenName'] ?? route,
           'at': step['at'],
           if (step['durationMs'] != null) 'durationMs': step['durationMs'],
         });
@@ -325,12 +334,13 @@ class AnalyticsStore {
   }
 
   /// Full KPI bundle for the Statistics dashboard page.
-  Future<Map<String, dynamic>> projectStats(String projectId, {int days = 7}) async {
+  Future<Map<String, dynamic>> projectStats(String projectId, {int days = 7, TimeWindow? window}) async {
     final conn = await db.connect();
-    final period = days.clamp(1, 90);
-    final since = utcTimestampDaysAgo(period);
-    final prevStart = utcTimestampDaysAgo(period * 2);
-    final prevEnd = since;
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final period = w.approximateDays;
+    final since = w.since!;
+    final until = w.until;
+    final prev = w.previousPeriod();
 
     Future<List<dynamic>> metrics(String from, {String? before}) async {
       final rows = before == null
@@ -373,8 +383,10 @@ class AnalyticsStore {
       return rows.first;
     }
 
-    final cur = await metrics(since);
-    final prev = await metrics(prevStart, before: prevEnd);
+    final cur = until == null ? await metrics(since) : await metrics(since, before: until);
+    final prevStart = prev.since!;
+    final prevEnd = prev.until ?? since;
+    final prevM = await metrics(prevStart, before: prevEnd);
 
     final sessions = await conn.execute(
       Sql.named('''
@@ -384,9 +396,10 @@ class AnalyticsStore {
           COUNT(*) FILTER (WHERE ended_at IS NOT NULL)::int
         FROM app_sessions
         WHERE project_id = @pid
-          AND started_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
     final sess = sessions.first;
 
@@ -395,9 +408,10 @@ class AnalyticsStore {
         SELECT COUNT(DISTINCT session_id)::int
         FROM events
         WHERE project_id = @pid AND type = 'crash' AND session_id IS NOT NULL
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
 
     final openIssues = await conn.execute(
@@ -409,31 +423,36 @@ class AnalyticsStore {
       Sql.named('''
         SELECT type, COUNT(*)::int FROM events
         WHERE project_id = @pid
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY type ORDER BY COUNT(*) DESC
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
 
     final byPlatform = await conn.execute(
       Sql.named('''
         SELECT platform, COUNT(*)::int FROM events
         WHERE project_id = @pid AND platform IS NOT NULL
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 8
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: {'pid': projectId, ...timeParams(w)},
     );
 
+    final trendFrom = since.substring(0, 10);
+    final trendUntil = trendUntilDate(w);
     final trend = await conn.execute(
       Sql.named('''
         SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int,
                SUM(unique_users)::int
         FROM daily_stats
         WHERE project_id = @pid AND date >= @fromDate::date
+          AND (@untilDate::date IS NULL OR date < @untilDate::date)
         GROUP BY date ORDER BY date
       '''),
-      parameters: {'pid': projectId, 'fromDate': utcDateDaysAgo(period - 1)},
+      parameters: {'pid': projectId, 'fromDate': trendFrom, 'untilDate': trendUntil},
     );
 
     int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
@@ -462,10 +481,10 @@ class AnalyticsStore {
       'crashFreeRatePct': totalSessions == 0 ? 100.0 : ((totalSessions - crashed) / totalSessions * 100),
       'errorRatePct': events == 0 ? 0.0 : (errors / events * 100),
       'deltas': {
-        'events': delta(n(cur[0]), n(prev[0])),
-        'errors': delta(n(cur[1]), n(prev[1])),
-        'crashes': delta(n(cur[2]), n(prev[2])),
-        'uniqueUsers': delta(n(cur[7]), n(prev[7])),
+        'events': delta(n(cur[0]), n(prevM[0])),
+        'errors': delta(n(cur[1]), n(prevM[1])),
+        'crashes': delta(n(cur[2]), n(prevM[2])),
+        'uniqueUsers': delta(n(cur[7]), n(prevM[7])),
       },
       'byType': byType.map((r) => {'type': r[0], 'count': r[1]}).toList(),
       'byPlatform': byPlatform.map((r) => {'platform': r[0], 'count': r[1]}).toList(),
@@ -482,10 +501,11 @@ class AnalyticsStore {
   }
 
   /// Extended breakdowns for unified dashboard (peak hours, top endpoints/screens, etc.).
-  Future<Map<String, dynamic>> dashboardInsights(String projectId, {int days = 7}) async {
+  Future<Map<String, dynamic>> dashboardInsights(String projectId, {int days = 7, TimeWindow? window}) async {
     final conn = await db.connect();
-    final period = days.clamp(1, 90);
-    final since = utcTimestampDaysAgo(period);
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final tp = timeParams(w);
+    final p = {'pid': projectId, ...tp};
 
     final usersAffected = await conn.execute(
       Sql.named('''
@@ -493,18 +513,21 @@ class AnalyticsStore {
         FROM events
         WHERE project_id = @pid AND user_id IS NOT NULL
           AND type IN ('error', 'network', 'crash')
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final peakEvents = await conn.execute(
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
-        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        FROM events WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 1
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final peakErrors = await conn.execute(
@@ -512,10 +535,11 @@ class AnalyticsStore {
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
         FROM events
         WHERE project_id = @pid AND type IN ('error', 'network', 'crash')
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 1
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final hourly = await conn.execute(
@@ -523,17 +547,21 @@ class AnalyticsStore {
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS h,
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int
-        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        FROM events WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 1
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final endpoints = await conn.execute(
       Sql.named('''
         SELECT payload->'network'->>'url' AS endpoint, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND payload->'network'->>'url' IS NOT NULL
           AND (
             type IN ('error', 'crash') OR
@@ -542,26 +570,30 @@ class AnalyticsStore {
           )
         GROUP BY endpoint ORDER BY 2 DESC LIMIT 10
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final screens = await conn.execute(
       Sql.named('''
         SELECT COALESCE(NULLIF(payload->'screen'->>'currentRoute', ''), 'unknown') AS screen, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND type = 'crash' AND occurred_at >= @since::timestamptz
+        WHERE project_id = @pid AND type = 'crash'
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY screen ORDER BY 2 DESC LIMIT 10
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final byEnv = await conn.execute(
       Sql.named('''
         SELECT COALESCE(NULLIF(environment, ''), 'unknown') AS environment, COUNT(*)::int
-        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        FROM events WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY environment ORDER BY 2 DESC
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final byRelease = await conn.execute(
@@ -570,10 +602,12 @@ class AnalyticsStore {
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
                COUNT(*) FILTER (WHERE type = 'crash')::int
-        FROM events WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        FROM events WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY release ORDER BY 2 DESC LIMIT 12
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     final byDeploy = await conn.execute(
@@ -584,7 +618,9 @@ class AnalyticsStore {
           NULLIF(payload->'custom'->>'deployTag', '')
         ) AS tag, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND occurred_at >= @since::timestamptz
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND COALESCE(
             NULLIF(payload->'custom'->>'deployment', ''),
             NULLIF(payload->'custom'->>'deploymentTag', ''),
@@ -592,7 +628,7 @@ class AnalyticsStore {
           ) IS NOT NULL
         GROUP BY tag ORDER BY 2 DESC LIMIT 10
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: p,
     );
 
     int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
@@ -612,9 +648,9 @@ class AnalyticsStore {
     };
   }
 
-  Future<List<Map<String, dynamic>>> listUsers(String projectId, {int days = 30, int limit = 100}) async {
+  Future<List<Map<String, dynamic>>> listUsers(String projectId, {int days = 30, int limit = 100, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days.clamp(1, 90));
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
     final rows = await conn.execute(
       Sql.named('''
         SELECT user_id,
@@ -625,12 +661,13 @@ class AnalyticsStore {
                COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
         FROM events
         WHERE project_id = @pid AND user_id IS NOT NULL
-          AND occurred_at >= @since::timestamptz
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY user_id
         ORDER BY MAX(occurred_at) DESC
         LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'since': since, 'lim': limit},
+      parameters: {'pid': projectId, ...timeParams(w), 'lim': limit},
     );
     return rows
         .map((r) => {
@@ -644,9 +681,10 @@ class AnalyticsStore {
         .toList();
   }
 
-  Future<Map<String, dynamic>?> getUser(String projectId, String userId, {int days = 30}) async {
+  Future<Map<String, dynamic>?> getUser(String projectId, String userId, {int days = 30, TimeWindow? window}) async {
     final conn = await db.connect();
-    final since = utcTimestampDaysAgo(days.clamp(1, 90));
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final tp = timeParams(w);
     final stats = await conn.execute(
       Sql.named('''
         SELECT COUNT(*)::int,
@@ -656,18 +694,22 @@ class AnalyticsStore {
                MAX(occurred_at),
                MAX(country)
         FROM events
-        WHERE project_id = @pid AND user_id = @uid AND occurred_at >= @since::timestamptz
+        WHERE project_id = @pid AND user_id = @uid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'uid': userId, 'since': since},
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
     );
     if (stats.isEmpty || stats.first[0] == 0) return null;
 
     final sessions = await conn.execute(
       Sql.named('''
         SELECT COUNT(*)::int FROM app_sessions
-        WHERE project_id = @pid AND user_id = @uid AND started_at >= @since::timestamptz
+        WHERE project_id = @pid AND user_id = @uid
+          AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)
       '''),
-      parameters: {'pid': projectId, 'uid': userId, 'since': since},
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
     );
 
     final recent = await conn.execute(
@@ -689,7 +731,7 @@ class AnalyticsStore {
     final s = stats.first;
     return {
       'userId': userId,
-      'days': days,
+      'days': w.approximateDays,
       'eventCount': s[0],
       'errorCount': s[1],
       'crashCount': s[2],

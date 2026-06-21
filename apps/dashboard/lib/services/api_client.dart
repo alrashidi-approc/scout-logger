@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/app_config.dart';
+import '../utils/date_range.dart';
+import 'auth_service.dart';
 
 List<Map<String, dynamic>> jsonListMaps(dynamic value) {
   if (value is! List) return [];
@@ -34,11 +36,45 @@ class ScoutApi {
     return Uri.parse('$base$path');
   }
 
-  Map<String, String> get _headers => {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        if (AppConfig.I.apiKey.isNotEmpty) 'X-API-Key': AppConfig.I.apiKey,
-      };
+  Map<String, String> get _headers {
+    final auth = AuthService.instance.token;
+    return {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      if (auth != null && auth.isNotEmpty) 'Authorization': 'Bearer $auth',
+    };
+  }
+
+  Future<Map<String, dynamic>> fetchMe() async {
+    final res = await _client.get(_uri('/api/auth/me'), headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['user']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAdminUsers() async {
+    final res = await _client.get(_uri('/api/admin/users'), headers: _headers);
+    _ok(res);
+    return jsonListMaps((jsonDecode(res.body) as Map)['users']);
+  }
+
+  Future<Map<String, dynamic>> updateAdminUser(
+    String userId, {
+    String? globalRole,
+    bool? canCreateProjects,
+  }) async {
+    final body = <String, dynamic>{};
+    if (globalRole != null) body['globalRole'] = globalRole;
+    if (canCreateProjects != null) body['canCreateProjects'] = canCreateProjects;
+    final res = await _client.patch(_uri('/api/admin/users/$userId'), headers: _headers, body: jsonEncode(body));
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['user']);
+  }
+
+  Future<Map<String, dynamic>> fetchProjectCredentials(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/credentials'), headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['credentials']);
+  }
 
   Future<List<Map<String, dynamic>>> fetchProjects() async {
     final res = await _client.get(_uri('/api/projects'), headers: _headers);
@@ -57,36 +93,36 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['project']);
   }
 
-  Future<Map<String, dynamic>> fetchOverview(String projectId, {int days = 1}) async {
-    final uri = _uri('/api/projects/$projectId/overview').replace(queryParameters: {'days': '$days'});
+  Future<Map<String, dynamic>> fetchOverview(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/overview').replace(queryParameters: (period ?? const PeriodFilter.days(1)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['overview']);
   }
 
-  Future<Map<String, dynamic>> fetchDashboard(String projectId, {int days = 7}) async {
-    final uri = _uri('/api/projects/$projectId/dashboard').replace(queryParameters: {'days': '$days'});
+  Future<Map<String, dynamic>> fetchDashboard(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/dashboard').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['dashboard']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchUsers(String projectId, {int days = 30, int limit = 100}) async {
-    final uri = _uri('/api/projects/$projectId/users').replace(queryParameters: {'days': '$days', 'limit': '$limit'});
+  Future<List<Map<String, dynamic>>> fetchUsers(String projectId, {PeriodFilter? period, int limit = 100}) async {
+    final uri = _uri('/api/projects/$projectId/users').replace(queryParameters: {...(period ?? const PeriodFilter.days(30)).toQuery(), 'limit': '$limit'});
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['users']);
   }
 
-  Future<Map<String, dynamic>> fetchUser(String projectId, String userId, {int days = 30}) async {
-    final uri = _uri('/api/projects/$projectId/users/$userId').replace(queryParameters: {'days': '$days'});
+  Future<Map<String, dynamic>> fetchUser(String projectId, String userId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/users/$userId').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['user']);
   }
 
-  Future<Map<String, dynamic>> fetchStats(String projectId, {int days = 7}) async {
-    final uri = _uri('/api/projects/$projectId/stats').replace(queryParameters: {'days': '$days'});
+  Future<Map<String, dynamic>> fetchStats(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/stats').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['stats']);
@@ -97,13 +133,13 @@ class ScoutApi {
     String? type,
     String? status,
     String? q,
-    int? days,
+    PeriodFilter? period,
   }) async {
     final params = <String, String>{};
     if (type != null) params['type'] = type;
     if (status != null) params['status'] = status;
     if (q != null && q.isNotEmpty) params['q'] = q;
-    if (days != null) params['days'] = '$days';
+    if (period != null) params.addAll(period.toQuery());
     final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params.isEmpty ? null : params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
@@ -119,19 +155,37 @@ class ScoutApi {
   Future<List<Map<String, dynamic>>> fetchEvents(
     String projectId, {
     String? type,
+    String? level,
+    String? category,
     String? q,
     String? country,
-    int? days,
+    PeriodFilter? period,
   }) async {
     final params = <String, String>{};
     if (type != null) params['type'] = type;
+    if (level != null) params['level'] = level;
+    if (category != null) params['category'] = category;
     if (q != null && q.isNotEmpty) params['q'] = q;
     if (country != null) params['country'] = country;
-    if (days != null) params['days'] = '$days';
+    if (period != null) params.addAll(period.toQuery());
     final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params.isEmpty ? null : params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['events']);
+  }
+
+  Future<Map<String, dynamic>> updateIssueStatus(
+    String projectId,
+    String issueId,
+    String status,
+  ) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/issues/$issueId'),
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'status': status}),
+    );
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['issue']);
   }
 
   Future<Map<String, dynamic>> fetchEvent(String projectId, String eventId) async {
@@ -140,15 +194,15 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['event']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchGeo(String projectId, {int days = 7}) async {
-    final uri = _uri('/api/projects/$projectId/geo').replace(queryParameters: {'days': '$days'});
+  Future<List<Map<String, dynamic>>> fetchGeo(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/geo').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['geo']);
   }
 
-  Future<List<String>> fetchRoutes(String projectId, {int days = 30}) async {
-    final uri = _uri('/api/projects/$projectId/analytics/routes').replace(queryParameters: {'days': '$days'});
+  Future<List<String>> fetchRoutes(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/analytics/routes').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     final routes = (jsonDecode(res.body) as Map)['routes'];
@@ -156,10 +210,10 @@ class ScoutApi {
     return routes.map((r) => r.toString()).toList();
   }
 
-  Future<Map<String, dynamic>> fetchFunnel(String projectId, List<String> steps, {int days = 30}) async {
+  Future<Map<String, dynamic>> fetchFunnel(String projectId, List<String> steps, {PeriodFilter? period}) async {
     final uri = _uri('/api/projects/$projectId/analytics/funnel').replace(queryParameters: {
       'steps': steps.join(','),
-      'days': '$days',
+      ...(period ?? const PeriodFilter.days(30)).toQuery(),
     });
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
@@ -173,15 +227,15 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['retention']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchReleaseComparison(String projectId, {int days = 30}) async {
-    final uri = _uri('/api/projects/$projectId/analytics/releases').replace(queryParameters: {'days': '$days'});
+  Future<List<Map<String, dynamic>>> fetchReleaseComparison(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/analytics/releases').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['releases']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchSessions(String projectId, {int days = 7, int limit = 50}) async {
-    final uri = _uri('/api/projects/$projectId/sessions').replace(queryParameters: {'days': '$days', 'limit': '$limit'});
+  Future<List<Map<String, dynamic>>> fetchSessions(String projectId, {PeriodFilter? period, int limit = 50}) async {
+    final uri = _uri('/api/projects/$projectId/sessions').replace(queryParameters: {...(period ?? const PeriodFilter.days(7)).toQuery(), 'limit': '$limit'});
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['sessions']);

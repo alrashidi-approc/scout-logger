@@ -4,21 +4,23 @@ import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../widgets/analytics_charts.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
+import '../widgets/period_picker.dart';
 import '../widgets/panel.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/trend_chart.dart';
 import '../widgets/world_map.dart';
 
 class OverviewScreen extends StatefulWidget {
-  const OverviewScreen({super.key, required this.projectId, this.initialDays = 7});
+  const OverviewScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7)});
 
   final String projectId;
-  final int initialDays;
+  final PeriodFilter initialPeriod;
 
   @override
   State<OverviewScreen> createState() => _OverviewScreenState();
@@ -30,7 +32,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
   List<Map<String, dynamic>> _recentIssues = [];
   bool _loading = true;
   String? _error;
-  late int _days = widget.initialDays;
+  late PeriodFilter _period = widget.initialPeriod;
 
   @override
   void initState() {
@@ -46,13 +48,13 @@ class _OverviewScreenState extends State<OverviewScreen> {
     try {
       Map<String, dynamic> data;
       try {
-        data = await _api.fetchDashboard(widget.projectId, days: _days);
+        data = await _api.fetchDashboard(widget.projectId, period: _period);
       } catch (_) {
-        final overview = await _api.fetchOverview(widget.projectId, days: _days);
-        final stats = await _api.fetchStats(widget.projectId, days: _days);
+        final overview = await _api.fetchOverview(widget.projectId, period: _period);
+        final stats = await _api.fetchStats(widget.projectId, period: _period);
         data = {...overview, ...stats};
       }
-      final issues = await _api.fetchIssues(widget.projectId, days: _days);
+      final issues = await _api.fetchIssues(widget.projectId, period: _period);
       if (mounted) setState(() {
         _d = data;
         _recentIssues = issues.take(5).toList();
@@ -66,9 +68,9 @@ class _OverviewScreenState extends State<OverviewScreen> {
     }
   }
 
-  void _setDays(int d) {
-    _days = d;
-    context.go('/p/${widget.projectId}?days=$d');
+  void _setPeriod(PeriodFilter p) {
+    _period = p;
+    context.go(Uri(path: '/p/${widget.projectId}', queryParameters: p.toQuery()).toString());
     _load();
   }
 
@@ -78,10 +80,11 @@ class _OverviewScreenState extends State<OverviewScreen> {
     return jsonNum(deltas[key]) ?? 0;
   }
 
+  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
+
   @override
   Widget build(BuildContext context) {
     final pid = widget.projectId;
-    final period = periodLabel(_days);
     final title = _d != null ? jsonMap(_d!['project'])['name']?.toString() ?? pid : pid;
 
     return Column(
@@ -91,13 +94,15 @@ class _OverviewScreenState extends State<OverviewScreen> {
           padding: pageInsets(context, top: pagePad(context)),
           child: PageHeader(
             title: title,
-            subtitle: 'Project dashboard · $period',
+            subtitle: 'Project dashboard · ${_period.comparisonLabel()}',
+            period: _period,
+            onPeriodTap: _openPeriodPicker,
             actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
           ),
         ),
         Padding(
           padding: pageInsets(context, top: 12),
-          child: FilterBar(days: _days, onDaysChanged: _setDays),
+          child: FilterBar(period: _period, onPeriodChanged: _setPeriod),
         ),
         Expanded(
           child: _loading
@@ -131,16 +136,16 @@ class _OverviewScreenState extends State<OverviewScreen> {
             children: [
               StatCard(label: 'Crash-free', value: '${jsonPct(d['crashFreeRatePct'], fallback: '100')}%', icon: Icons.verified_user_outlined, color: AppTheme.success, hint: '${d['completedSessions'] ?? 0} sessions'),
               StatCard(label: 'Error rate', value: '${jsonPct(d['errorRatePct'])}%', icon: Icons.speed, color: AppTheme.warning, hint: '${d['errors'] ?? 0} / ${d['events'] ?? 0} ev'),
-              StatCard(label: 'Events', value: '${d['events'] ?? d['eventsToday']}', icon: Icons.show_chart, delta: _delta('events'), onTap: () => context.go('/p/$pid/events?days=$_days')),
-              StatCard(label: 'Errors', value: '${d['errors'] ?? d['errorsToday']}', icon: Icons.error_outline, color: AppTheme.error, delta: _delta('errors'), deltaGoodWhenDown: true, onTap: () => context.go('/p/$pid/events?type=errors&days=$_days')),
-              StatCard(label: 'Users w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, onTap: () => context.go('/p/$pid/users?days=$_days')),
+              StatCard(label: 'Events', value: '${d['events'] ?? d['eventsToday']}', icon: Icons.show_chart, delta: _delta('events'), onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Errors', value: '${d['errors'] ?? d['errorsToday']}', icon: Icons.error_outline, color: AppTheme.error, delta: _delta('errors'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'level': 'error', 'type': 'errors'})).toString())),
+              StatCard(label: 'Users w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Peak hour', value: formatHour(jsonInt(d['peakHour'])), icon: Icons.schedule, color: AppTheme.info, hint: '${d['peakHourEvents'] ?? 0} ev'),
               StatCard(label: 'Peak error hour', value: formatHour(jsonInt(d['peakErrorHour'])), icon: Icons.warning_amber_outlined, color: AppTheme.warning, hint: '${d['peakErrorHourCount'] ?? 0} err'),
-              StatCard(label: 'Unique users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), onTap: () => context.go('/p/$pid/users?days=$_days')),
-              StatCard(label: 'Sessions', value: '${d['completedSessions'] ?? 0}', icon: Icons.play_circle_outline, color: AppTheme.accentPurple, onTap: () => context.go('/p/$pid/sessions?days=$_days')),
-              StatCard(label: 'Crashes', value: '${d['crashes'] ?? d['crashesToday']}', icon: Icons.bolt, color: AppTheme.error, delta: _delta('crashes'), deltaGoodWhenDown: true, onTap: () => context.go('/p/$pid/events?type=crash&days=$_days')),
+              StatCard(label: 'Unique users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Sessions', value: '${d['completedSessions'] ?? 0}', icon: Icons.play_circle_outline, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Crashes', value: '${d['crashes'] ?? d['crashesToday']}', icon: Icons.bolt, color: AppTheme.error, delta: _delta('crashes'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString())),
               StatCard(label: 'Open issues', value: '${d['openIssues']}', icon: Icons.bug_report_outlined, color: AppTheme.accentPurple, onTap: () => context.go('/p/$pid/issues')),
-              StatCard(label: 'Live sessions', value: '${d['activeSessions'] ?? 0}', icon: Icons.sensors, color: AppTheme.primary, onTap: () => context.go('/p/$pid/sessions?days=$_days')),
+              StatCard(label: 'Live sessions', value: '${d['activeSessions'] ?? 0}', icon: Icons.sensors, color: AppTheme.primary, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
             ],
           ),
           const SizedBox(height: 12),
@@ -172,7 +177,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
                 Column(children: [
                   DashboardPanel(
                     title: 'Top failing endpoints',
-                    child: RankList(items: endpoints, labelOf: (i) => '${i['endpoint']}', countOf: (i) => i['count'] as int? ?? 0, onTap: (i) => context.go('/p/$pid/events?days=$_days&q=${Uri.encodeComponent('${i['endpoint']}')}')),
+                    child: RankList(items: endpoints, labelOf: (i) => '${i['endpoint']}', countOf: (i) => i['count'] as int? ?? 0, onTap: (i) => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'q': '${i['endpoint']}'})).toString())),
                   ),
                   const SizedBox(height: 12),
                   DashboardPanel(
@@ -258,7 +263,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
                 ),
                 DashboardPanel(
                   title: 'Users by country',
-                  trailing: TextButton(onPressed: () => context.go('/p/$pid/geo?days=$_days'), child: const Text('Full map')),
+                  trailing: TextButton(onPressed: () => context.go(Uri(path: '/p/$pid/geo', queryParameters: _period.toQuery()).toString()), child: const Text('Full map')),
                   child: WorldMapCompact(points: countries),
                 ),
               ],

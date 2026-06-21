@@ -4,14 +4,21 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
 import '../config/server_config.dart';
+import '../middleware/auth_middleware.dart';
 import '../middleware/http_utils.dart';
 import '../store/analytics_store.dart';
+import '../store/auth_store.dart';
 import '../store/scout_store.dart';
+import '../util/dates.dart';
+import 'admin_routes.dart';
 
-int _days(String? raw, int fallback) {
-  final p = int.tryParse(raw ?? '');
-  if (p == null) return fallback;
-  return p.clamp(1, 90);
+TimeWindow _window(Map<String, String> q, {int defaultDays = 7}) =>
+    TimeWindow.fromQuery(q, defaultDays: defaultDays);
+
+TimeWindow? _optionalWindow(Map<String, String> q) {
+  if (q['from'] != null && q['from']!.isNotEmpty) return TimeWindow.fromQuery(q);
+  if (q['days'] != null && q['days']!.isNotEmpty) return TimeWindow.fromQuery(q);
+  return null;
 }
 
 Future<Response> _api(Future<Response> Function() run) async {
@@ -22,28 +29,73 @@ Future<Response> _api(Future<Response> Function() run) async {
   }
 }
 
-Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytics) {
+Future<Response?> _projectGuard(Request request, String projectId, AuthStore auth, {bool write = false}) {
+  final principal = authFrom(request)!;
+  return ensureProjectAccess(
+    auth: principal,
+    projectId: projectId,
+    membership: auth.membershipRole,
+    write: write,
+  );
+}
+
+Handler apiRoutes(
+  ServerConfig config,
+  ScoutStore store,
+  AnalyticsStore analytics,
+  AuthStore authStore,
+) {
   final router = Router();
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
+  router.get('/auth/me', meRoute(auth: authStore));
+  router.mount('/admin/', adminRoutes(auth: authStore));
 
-  router.get('/projects', (_) async {
-    final projects = await store.listProjects();
+  router.get('/projects', (Request request) async {
+    final auth = authFrom(request)!;
+    final projects = await store.listProjects(userId: auth.userId, admin: auth.isAdmin);
     return Response.ok(jsonEncode({'ok': true, 'projects': projects}), headers: {'Content-Type': 'application/json'});
   });
 
   router.post('/projects', (Request request) async {
+    final auth = authFrom(request)!;
+    if (!auth.canCreateApps) return jsonErr('You do not have permission to create projects', status: 403);
     final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
     final name = body['name']?.toString().trim();
     if (name == null || name.isEmpty) return jsonErr('name is required');
     final project = await store.createProject(name: name, publicUrl: config.publicUrl);
+    if (auth.userId != null && !auth.apiKeyBypass) {
+      await authStore.addProjectOwner(auth.userId!, project['id'] as String);
+    }
     return Response.ok(jsonEncode({'ok': true, 'project': project}), headers: {'Content-Type': 'application/json'});
+  });
+
+  router.get('/projects/<id>/credentials', (Request request, String id) async {
+    return _api(() async {
+      final auth = authFrom(request)!;
+      final denied = await ensureCredentialsAccess(
+        auth: auth,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      if (!auth.isAdmin && !await store.projectExists(id)) return jsonErr('Project not found', status: 404);
+      if (!auth.isAdmin) {
+        final guard = await _projectGuard(request, id, authStore);
+        if (guard != null) return guard;
+      }
+      final creds = await store.getProjectCredentials(id, publicUrl: config.publicUrl);
+      if (creds == null) return jsonErr('Project not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'credentials': creds}), headers: {'Content-Type': 'application/json'});
+    });
   });
 
   router.get('/projects/<id>/overview', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       try {
-        final overview = await store.projectOverview(id, days: _days(request.url.queryParameters['days'], 1));
+        final overview = await store.projectOverview(id, window: _window(request.url.queryParameters, defaultDays: 1));
         return Response.ok(jsonEncode({'ok': true, 'overview': overview}), headers: {'Content-Type': 'application/json'});
       } on ArgumentError {
         return jsonErr('Project not found', status: 404);
@@ -53,11 +105,14 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/dashboard', (Request request, String id) async {
     return _api(() async {
-      final days = _days(request.url.queryParameters['days'], 7);
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      final w = _window(q);
       try {
-        final overview = await store.projectOverview(id, days: days);
-        final stats = await analytics.projectStats(id, days: days);
-        final insights = await analytics.dashboardInsights(id, days: days);
+        final overview = await store.projectOverview(id, window: w);
+        final stats = await analytics.projectStats(id, window: w);
+        final insights = await analytics.dashboardInsights(id, window: w);
         return Response.ok(
           jsonEncode({'ok': true, 'dashboard': {...overview, ...stats, ...insights}}),
           headers: {'Content-Type': 'application/json'},
@@ -70,9 +125,11 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/users', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final users = await analytics.listUsers(
         id,
-        days: _days(request.url.queryParameters['days'], 30),
+        window: _window(request.url.queryParameters, defaultDays: 30),
         limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100,
       );
       return Response.ok(jsonEncode({'ok': true, 'users': users}), headers: {'Content-Type': 'application/json'});
@@ -81,7 +138,9 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/users/<userId>', (Request request, String id, String userId) async {
     return _api(() async {
-      final user = await analytics.getUser(id, userId, days: _days(request.url.queryParameters['days'], 30));
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final user = await analytics.getUser(id, userId, window: _window(request.url.queryParameters, defaultDays: 30));
       if (user == null) return jsonErr('User not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'user': user}), headers: {'Content-Type': 'application/json'});
     });
@@ -89,21 +148,24 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/stats', (Request request, String id) async {
     return _api(() async {
-      final stats = await analytics.projectStats(id, days: _days(request.url.queryParameters['days'], 7));
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final stats = await analytics.projectStats(id, window: _window(request.url.queryParameters));
       return Response.ok(jsonEncode({'ok': true, 'stats': stats}), headers: {'Content-Type': 'application/json'});
     });
   });
 
   router.get('/projects/<id>/issues', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final q = request.url.queryParameters;
-      final daysRaw = q['days'];
       final issues = await store.listIssues(
         id,
         type: q['type'],
         status: q['status'],
         q: q['q'],
-        days: daysRaw == null || daysRaw.isEmpty ? null : _days(daysRaw, 30),
+        window: _optionalWindow(q),
       );
       return Response.ok(jsonEncode({'ok': true, 'issues': issues}), headers: {'Content-Type': 'application/json'});
     });
@@ -111,7 +173,23 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/issues/<issueId>', (Request request, String id, String issueId) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final issue = await store.getIssue(id, issueId);
+      if (issue == null) return jsonErr('Issue not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'issue': issue}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.patch('/projects/<id>/issues/<issueId>', (Request request, String id, String issueId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      final body = await request.readAsString();
+      final json = jsonDecode(body) as Map<String, dynamic>;
+      final status = json['status'] as String?;
+      if (status == null || status.isEmpty) return jsonErr('status required');
+      final issue = await store.updateIssueStatus(id, issueId, status);
       if (issue == null) return jsonErr('Issue not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'issue': issue}), headers: {'Content-Type': 'application/json'});
     });
@@ -119,14 +197,17 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/events', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final q = request.url.queryParameters;
-      final daysRaw = q['days'];
       final events = await store.listEvents(
         id,
-        type: q['type'],
+        type: q['type'] ?? q['kind'],
+        level: q['level'],
+        category: q['category'],
         q: q['q'],
         country: q['country'],
-        days: daysRaw == null || daysRaw.isEmpty ? null : _days(daysRaw, 7),
+        window: _optionalWindow(q),
       );
       return Response.ok(jsonEncode({'ok': true, 'events': events}), headers: {'Content-Type': 'application/json'});
     });
@@ -134,6 +215,8 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/events/<eventId>', (Request request, String id, String eventId) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final event = await store.getEvent(id, eventId);
       if (event == null) return jsonErr('Event not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'event': event}), headers: {'Content-Type': 'application/json'});
@@ -142,30 +225,38 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/geo', (Request request, String id) async {
     return _api(() async {
-      final geo = await store.geoBreakdown(id, days: _days(request.url.queryParameters['days'], 7));
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final geo = await store.geoBreakdown(id, window: _window(request.url.queryParameters));
       return Response.ok(jsonEncode({'ok': true, 'geo': geo}), headers: {'Content-Type': 'application/json'});
     });
   });
 
   router.get('/projects/<id>/analytics/routes', (Request request, String id) async {
     return _api(() async {
-      final routes = await analytics.distinctRoutes(id, days: _days(request.url.queryParameters['days'], 30));
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final routes = await analytics.distinctRoutes(id, window: _window(request.url.queryParameters, defaultDays: 30));
       return Response.ok(jsonEncode({'ok': true, 'routes': routes}), headers: {'Content-Type': 'application/json'});
     });
   });
 
   router.get('/projects/<id>/analytics/funnel', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final stepsParam = request.url.queryParameters['steps'] ?? '';
       final steps = stepsParam.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
       if (steps.isEmpty) return jsonErr('steps query required (comma-separated routes)');
-      final funnel = await analytics.funnel(id, steps, days: _days(request.url.queryParameters['days'], 30));
+      final funnel = await analytics.funnel(id, steps, window: _window(request.url.queryParameters, defaultDays: 30));
       return Response.ok(jsonEncode({'ok': true, 'funnel': funnel}), headers: {'Content-Type': 'application/json'});
     });
   });
 
   router.get('/projects/<id>/analytics/retention', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final weeks = int.tryParse(request.url.queryParameters['weeks'] ?? '') ?? 8;
       final data = await analytics.retention(id, weeks: weeks);
       return Response.ok(jsonEncode({'ok': true, 'retention': data}), headers: {'Content-Type': 'application/json'});
@@ -174,16 +265,20 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/analytics/releases', (Request request, String id) async {
     return _api(() async {
-      final releases = await analytics.releaseComparison(id, days: _days(request.url.queryParameters['days'], 30));
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final releases = await analytics.releaseComparison(id, window: _window(request.url.queryParameters, defaultDays: 30));
       return Response.ok(jsonEncode({'ok': true, 'releases': releases}), headers: {'Content-Type': 'application/json'});
     });
   });
 
   router.get('/projects/<id>/sessions', (Request request, String id) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final sessions = await analytics.listSessions(
         id,
-        days: _days(request.url.queryParameters['days'], 7),
+        window: _window(request.url.queryParameters),
         limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50,
       );
       return Response.ok(jsonEncode({'ok': true, 'sessions': sessions}), headers: {'Content-Type': 'application/json'});
@@ -192,6 +287,8 @@ Handler apiRoutes(ServerConfig config, ScoutStore store, AnalyticsStore analytic
 
   router.get('/projects/<id>/sessions/<sessionId>/timeline', (Request request, String id, String sessionId) async {
     return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
       final timeline = await analytics.sessionTimeline(id, sessionId);
       if (timeline == null) return jsonErr('Session not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'session': timeline}), headers: {'Content-Type': 'application/json'});

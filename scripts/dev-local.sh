@@ -15,8 +15,9 @@ source "${ROOT}/scripts/lib/load-env.sh"
 source "${ROOT}/scripts/lib/container-runtime.sh"
 load_env "$ROOT"
 
-PORT="${PORT:-8080}"
-DB_PORT="${DB_PORT:-5433}"
+# Host dev — don't inherit Hetzner PORT/DB_PORT/PUBLIC_URL from .env
+DEV_PORT="${DEV_PORT:-8080}"
+DEV_DB_PORT="${DEV_DB_PORT:-5433}"
 DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH:-scout/dashboard}"
 DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH#/}"
 DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH%/}"
@@ -25,8 +26,18 @@ cmd="${1:-server}"
 
 start_db() {
   require_container_runtime
+  export DB_PORT="$DEV_DB_PORT"
   echo "==> Starting Postgres on 127.0.0.1:${DB_PORT}..."
   compose_cmd -f docker-compose.yaml -f docker-compose.dev.yaml up -d db
+  for _ in $(seq 1 30); do
+    if compose_cmd -f docker-compose.yaml -f docker-compose.dev.yaml exec -T db \
+      pg_isready -U "${POSTGRES_USER:-scout}" -d "${POSTGRES_DB:-scout}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Postgres did not become ready on 127.0.0.1:${DB_PORT}"
+  exit 1
 }
 
 case "$cmd" in
@@ -34,10 +45,20 @@ case "$cmd" in
     start_db
     echo "DB_HOST=localhost DB_PORT=${DB_PORT} POSTGRES_USER=${POSTGRES_USER:-scout} POSTGRES_DB=${POSTGRES_DB:-scout}"
     ;;
-  server)
+  migrate)
     start_db
     export DB_HOST=localhost
-    export DB_PORT
+    export DB_PORT="$DEV_DB_PORT"
+    echo "==> Applying migrations to localhost:${DB_PORT}..."
+    cd "${ROOT}/apps/server"
+    dart run bin/migrate.dart
+    ;;
+  server)
+    start_db
+    export PORT="$DEV_PORT"
+    export PUBLIC_URL="http://localhost:${DEV_PORT}"
+    export DB_HOST=localhost
+    export DB_PORT="$DEV_DB_PORT"
     echo "==> Server http://localhost:${PORT}  dashboard http://localhost:${PORT}/${DASHBOARD_WEB_PATH}/"
     echo "    (Rebuild UI once: cd apps/dashboard && flutter build web)"
     cd "${ROOT}/apps/server"
@@ -50,8 +71,11 @@ case "$cmd" in
           echo "Build dashboard first: ./dev dashboard"
           exit 1
         fi
+        export PORT="$DEV_PORT"
+        export PUBLIC_URL="http://localhost:${DEV_PORT}"
+        export DB_PORT="$DEV_DB_PORT"
         echo "==> Full stack (server + db) on http://localhost:${PORT}/"
-        compose_cmd up --build -d
+        compose_cmd -f docker-compose.yaml -f docker-compose.dev.yaml up --build -d
         for _ in $(seq 1 30); do
           if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
             echo "OK  http://127.0.0.1:${PORT}/health"
@@ -85,8 +109,11 @@ case "$cmd" in
   seed)
     exec bash "${ROOT}/scripts/seed-demo-data.sh"
     ;;
+  pull-db)
+    exec bash "${ROOT}/scripts/pull-db.sh" "${@:2}"
+    ;;
   test)
-    BASE="http://127.0.0.1:${PORT}"
+    BASE="http://127.0.0.1:${DEV_PORT}"
     echo "==> Health..."
     curl -fsS "${BASE}/health" | head -c 200
     echo ""
@@ -144,7 +171,9 @@ case "$cmd" in
     echo "OK — refresh dashboard Issues / Events"
     ;;
   *)
-    echo "Usage: $0 {server|db|docker|dashboard|seed|test}"
+    echo "Usage: $0 {server|db|migrate|docker|dashboard|seed|pull-db|test}"
+    echo "  migrate       — apply DB migrations (auth tables, etc.) — no manual SQL needed"
+    echo "  pull-db       — dump server Postgres to dumps/ (--import to load locally)"
     echo "  docker up     — build + start containers (default)"
     echo "  docker down   — stop containers"
     echo "  docker reset  — wipe DB volume + restart (fixes password mismatch)"

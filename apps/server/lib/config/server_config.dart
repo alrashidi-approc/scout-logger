@@ -14,6 +14,14 @@ class ServerConfig {
     required this.geoEnabled,
     required this.dashboardWebDir,
     required this.dashboardWebPath,
+    required this.jwtSecret,
+    required this.smtpHost,
+    required this.smtpPort,
+    required this.smtpUser,
+    required this.smtpPassword,
+    required this.smtpFrom,
+    required this.smtpAllowInsecure,
+    required this.encryptionKey,
   });
 
   factory ServerConfig.load({EnvFile? env}) {
@@ -21,6 +29,7 @@ class ServerConfig {
     final port = int.tryParse(e['PORT'] ?? '') ?? 8080;
     final host = e['HOST'] ?? '0.0.0.0';
     final webPath = _normalizeWebPath(e['DASHBOARD_WEB_PATH'] ?? 'scout/dashboard');
+    final jwtSecret = e['JWT_SECRET'] ?? e['DASHBOARD_API_KEY'] ?? 'dev-jwt-secret-change-me';
     return ServerConfig(
       host: host,
       port: port,
@@ -30,6 +39,14 @@ class ServerConfig {
       geoEnabled: _bool(e['GEO_ENABLED'], defaultValue: true),
       dashboardWebDir: e['DASHBOARD_WEB_DIR'] ?? _defaultDashboardDir(e),
       dashboardWebPath: webPath,
+      jwtSecret: jwtSecret,
+      smtpHost: e['SMTP_HOST'] ?? '',
+      smtpPort: int.tryParse(e['SMTP_PORT'] ?? '') ?? 587,
+      smtpUser: e['SMTP_USER'] ?? '',
+      smtpPassword: e['SMTP_PASSWORD'] ?? '',
+      smtpFrom: e['SMTP_FROM'] ?? e['SMTP_USER'] ?? 'noreply@scout.local',
+      smtpAllowInsecure: _bool(e['SMTP_ALLOW_INSECURE'], defaultValue: false),
+      encryptionKey: e['ENCRYPTION_KEY'] ?? jwtSecret,
     );
   }
 
@@ -42,6 +59,14 @@ class ServerConfig {
   final String dashboardWebDir;
   /// URL path without leading slash, e.g. `scout/dashboard`.
   final String dashboardWebPath;
+  final String jwtSecret;
+  final String smtpHost;
+  final int smtpPort;
+  final String smtpUser;
+  final String smtpPassword;
+  final String smtpFrom;
+  final bool smtpAllowInsecure;
+  final String encryptionKey;
 
   String get dashboardUrlPath => '/$dashboardWebPath';
 
