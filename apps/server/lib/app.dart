@@ -29,7 +29,12 @@ Handler createApp({
 }) {
   final cipher = KeyCipher(config.encryptionKey);
   final auth = authStore ?? AuthStore(store.db, cipher: cipher);
-  final tokens = jwt ?? JwtService(secret: config.jwtSecret);
+  final tokens = jwt ??
+      JwtService(
+        secret: config.jwtSecret,
+        sessionTtlDays: config.jwtSessionTtlDays,
+        rememberTtlDays: config.jwtRememberTtlDays,
+      );
   final mail = email ?? EmailService(config);
   final router = Router();
   final geo = GeoEnricher(enabled: config.geoEnabled);

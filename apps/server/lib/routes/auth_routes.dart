@@ -31,7 +31,7 @@ Handler authRoutes({
         final token = await auth.createVerificationToken(user['id'] as String);
         devLink = await email.sendVerification(to: user['email'] as String, token: token);
       } else {
-        jwtToken = jwt.sign(auth.toPrincipal(user));
+        jwtToken = jwt.sign(auth.toPrincipal(user), rememberMe: true);
       }
       return Response.ok(
         jsonEncode({
@@ -62,10 +62,11 @@ Handler authRoutes({
       if (user['emailVerified'] != true) {
         return jsonErr('Verify your email before signing in', status: 403);
       }
+      final rememberMe = body['rememberMe'] != false;
       final principal = auth.toPrincipal(user);
-      final token = jwt.sign(principal);
+      final token = jwt.sign(principal, rememberMe: rememberMe);
       return Response.ok(
-        jsonEncode({'ok': true, 'token': token, 'user': auth.publicUser(user)}),
+        jsonEncode({'ok': true, 'token': token, 'user': auth.publicUser(user), 'rememberMe': rememberMe}),
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {
@@ -81,9 +82,32 @@ Handler authRoutes({
       final user = await auth.verifyEmail(token);
       if (user == null) return jsonErr('Invalid or expired token', status: 400);
       final principal = auth.toPrincipal(user);
-      final jwtToken = jwt.sign(principal);
+      final jwtToken = jwt.sign(principal, rememberMe: true);
       return Response.ok(
-        jsonEncode({'ok': true, 'token': jwtToken, 'user': auth.publicUser(user)}),
+        jsonEncode({'ok': true, 'token': jwtToken, 'user': auth.publicUser(user), 'rememberMe': true}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    } catch (e) {
+      return jsonErr('$e', status: 500);
+    }
+  });
+
+  router.post('/refresh', (Request request) async {
+    try {
+      final bearer = bearerToken(request);
+      if (bearer == null || bearer.isEmpty) return jsonErr('Unauthorized', status: 401);
+      final principal = jwt.verify(bearer);
+      if (principal == null || principal.userId == null) return jsonErr('Unauthorized', status: 401);
+
+      final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+      final rememberMe = body['rememberMe'] == true || jwt.rememberMeFromToken(bearer) == true;
+
+      final user = await auth.findUserById(principal.userId!);
+      if (user == null || user['emailVerified'] != true) return jsonErr('Unauthorized', status: 401);
+
+      final token = jwt.sign(auth.toPrincipal(user), rememberMe: rememberMe);
+      return Response.ok(
+        jsonEncode({'ok': true, 'token': token, 'user': auth.publicUser(user), 'rememberMe': rememberMe}),
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {

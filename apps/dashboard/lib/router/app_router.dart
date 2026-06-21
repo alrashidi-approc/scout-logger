@@ -27,6 +27,7 @@ GoRouter createRouter() {
     redirect: (context, state) {
       final loc = state.matchedLocation;
       final public = loc.startsWith('/login') || loc.startsWith('/signup') || loc.startsWith('/verify-email');
+      if (!auth.isReady) return null;
       if (!auth.isLoggedIn && !public) return '/login';
       if (auth.isLoggedIn && public) return '/projects';
       if (loc.startsWith('/admin') && !auth.isAdmin) return '/projects';

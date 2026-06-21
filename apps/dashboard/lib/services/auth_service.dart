@@ -13,12 +13,17 @@ class AuthService extends ChangeNotifier {
   static final instance = AuthService._();
 
   static const _tokenKey = 'scout_auth_token';
+  static const _rememberKey = 'scout_auth_remember';
 
   String? _token;
   Map<String, dynamic>? _user;
+  bool _rememberMe = true;
+  bool _ready = false;
 
   String? get token => _token;
   Map<String, dynamic>? get user => _user;
+  bool get rememberMe => _rememberMe;
+  bool get isReady => _ready;
 
   bool get isLoggedIn => _token != null && _token!.isNotEmpty;
   bool get isAdmin => user?['globalRole'] == 'admin';
@@ -28,14 +33,31 @@ class AuthService extends ChangeNotifier {
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     _token = prefs.getString(_tokenKey);
+    _rememberMe = prefs.getBool(_rememberKey) ?? true;
     if (isLoggedIn) {
+      final ok = await _restoreSession();
+      if (!ok) await logout(silent: true);
+    }
+    _ready = true;
+    notifyListeners();
+  }
+
+  Future<bool> _restoreSession() async {
+    try {
+      await refreshSession();
+      return true;
+    } on _AuthFailure {
+      return false;
+    } catch (_) {
       try {
         await refreshMe();
+        return true;
+      } on _AuthFailure {
+        return false;
       } catch (_) {
-        await logout(silent: true);
+        return isLoggedIn;
       }
     }
-    notifyListeners();
   }
 
   Future<void> refreshMe() async {
@@ -43,10 +65,27 @@ class AuthService extends ChangeNotifier {
       _uri('/api/auth/me'),
       headers: _headers(includeAuth: true),
     );
+    if (res.statusCode == 401 || res.statusCode == 403) throw _AuthFailure();
     _ensureOk(res);
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     _user = jsonMap(json['user']);
     notifyListeners();
+  }
+
+  Future<void> refreshSession() async {
+    final res = await http.post(
+      _uri('/api/auth/refresh'),
+      headers: _headers(includeAuth: true),
+      body: jsonEncode({'rememberMe': _rememberMe}),
+    );
+    if (res.statusCode == 401 || res.statusCode == 403) throw _AuthFailure();
+    _ensureOk(res);
+    final json = jsonDecode(res.body) as Map<String, dynamic>;
+    await _persist(
+      json['token'] as String,
+      jsonMap(json['user']),
+      rememberMe: json['rememberMe'] == true || _rememberMe,
+    );
   }
 
   Future<Map<String, dynamic>> signup({
@@ -62,19 +101,27 @@ class AuthService extends ChangeNotifier {
     _ensureOk(res);
     final json = jsonDecode(res.body) as Map<String, dynamic>;
     final token = json['token'] as String?;
-    if (token != null) await _persist(token, jsonMap(json['user']));
+    if (token != null) await _persist(token, jsonMap(json['user']), rememberMe: true);
     return json;
   }
 
-  Future<void> login({required String email, required String password}) async {
+  Future<void> login({
+    required String email,
+    required String password,
+    bool rememberMe = true,
+  }) async {
     final res = await http.post(
       _uri('/api/auth/login'),
       headers: _headers(),
-      body: jsonEncode({'email': email, 'password': password}),
+      body: jsonEncode({'email': email, 'password': password, 'rememberMe': rememberMe}),
     );
     _ensureOk(res);
     final json = jsonDecode(res.body) as Map<String, dynamic>;
-    await _persist(json['token'] as String, jsonMap(json['user']));
+    await _persist(
+      json['token'] as String,
+      jsonMap(json['user']),
+      rememberMe: json['rememberMe'] == true || rememberMe,
+    );
   }
 
   Future<void> verifyEmail(String token) async {
@@ -85,7 +132,7 @@ class AuthService extends ChangeNotifier {
     );
     _ensureOk(res);
     final json = jsonDecode(res.body) as Map<String, dynamic>;
-    await _persist(json['token'] as String, jsonMap(json['user']));
+    await _persist(json['token'] as String, jsonMap(json['user']), rememberMe: true);
   }
 
   Future<String?> resendVerification(String email) async {
@@ -107,11 +154,13 @@ class AuthService extends ChangeNotifier {
     if (!silent) notifyListeners();
   }
 
-  Future<void> _persist(String token, Map<String, dynamic> user) async {
+  Future<void> _persist(String token, Map<String, dynamic> user, {required bool rememberMe}) async {
     _token = token;
     _user = user;
+    _rememberMe = rememberMe;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
+    await prefs.setBool(_rememberKey, rememberMe);
     notifyListeners();
   }
 
@@ -137,3 +186,5 @@ class AuthService extends ChangeNotifier {
     }
   }
 }
+
+class _AuthFailure implements Exception {}

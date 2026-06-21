@@ -15,6 +15,8 @@ class ServerConfig {
     required this.dashboardWebDir,
     required this.dashboardWebPath,
     required this.jwtSecret,
+    required this.jwtSessionTtlDays,
+    required this.jwtRememberTtlDays,
     required this.smtpHost,
     required this.smtpPort,
     required this.smtpUser,
@@ -40,6 +42,8 @@ class ServerConfig {
       dashboardWebDir: e['DASHBOARD_WEB_DIR'] ?? _defaultDashboardDir(e),
       dashboardWebPath: webPath,
       jwtSecret: jwtSecret,
+      jwtSessionTtlDays: int.tryParse(e['JWT_SESSION_TTL_DAYS'] ?? '') ?? 1,
+      jwtRememberTtlDays: int.tryParse(e['JWT_REMEMBER_TTL_DAYS'] ?? '') ?? 30,
       smtpHost: e['SMTP_HOST'] ?? '',
       smtpPort: int.tryParse(e['SMTP_PORT'] ?? '') ?? 587,
       smtpUser: e['SMTP_USER'] ?? '',
@@ -60,6 +64,8 @@ class ServerConfig {
   /// URL path without leading slash, e.g. `scout/dashboard`.
   final String dashboardWebPath;
   final String jwtSecret;
+  final int jwtSessionTtlDays;
+  final int jwtRememberTtlDays;
   final String smtpHost;
   final int smtpPort;
   final String smtpUser;

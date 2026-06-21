@@ -16,7 +16,14 @@ class _LoginScreenState extends State<LoginScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
   bool _loading = false;
+  bool _rememberMe = true;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _rememberMe = AuthService.instance.rememberMe;
+  }
 
   @override
   void dispose() {
@@ -31,7 +38,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _error = null;
     });
     try {
-      await AuthService.instance.login(email: _email.text.trim(), password: _password.text);
+      await AuthService.instance.login(
+        email: _email.text.trim(),
+        password: _password.text,
+        rememberMe: _rememberMe,
+      );
       if (mounted) context.go('/projects');
     } catch (e) {
       if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
@@ -59,6 +70,14 @@ class _LoginScreenState extends State<LoginScreen> {
           autofillHints: const [AutofillHints.password],
           decoration: const InputDecoration(labelText: 'Password'),
           onSubmitted: (_) => _submit(),
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text('Keep me signed in'),
+          subtitle: const Text('Stay logged in on this device for 30 days'),
+          value: _rememberMe,
+          onChanged: _loading ? null : (v) => setState(() => _rememberMe = v ?? true),
         ),
         if (_error != null) ...[
           const SizedBox(height: 12),
