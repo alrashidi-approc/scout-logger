@@ -174,6 +174,45 @@ class ScoutStore {
     return fetchProjectById(projectId);
   }
 
+  Future<bool> deleteProject(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('DELETE FROM projects WHERE id = @id RETURNING id'),
+      parameters: {'id': projectId},
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<Map<String, List<String>>> eventFilterFacets(String projectId, {TimeWindow? window}) async {
+    final conn = await db.connect();
+    final w = window ?? TimeWindow.lastDays(30);
+    final envRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT COALESCE(NULLIF(environment, ''), 'unknown') AS environment
+        FROM events WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        ORDER BY 1
+      '''),
+      parameters: {'pid': projectId, ...timeParams(w)},
+    );
+    final verRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT app_version FROM events
+        WHERE project_id = @pid AND app_version IS NOT NULL AND app_version <> ''
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        ORDER BY 1 DESC
+        LIMIT 50
+      '''),
+      parameters: {'pid': projectId, ...timeParams(w)},
+    );
+    return {
+      'environments': envRows.map((r) => r[0] as String).toList(),
+      'appVersions': verRows.map((r) => r[0] as String).toList(),
+    };
+  }
+
   Future<Map<String, dynamic>> ingestBatch({
     required String projectId,
     required String keyId,
@@ -399,6 +438,8 @@ class ScoutStore {
     String? type,
     String? status,
     String? q,
+    String? environment,
+    String? appVersion,
     int? days,
     TimeWindow? window,
   }) async {
@@ -414,9 +455,27 @@ class ScoutStore {
           AND (@q::text IS NULL OR title ILIKE '%' || @q::text || '%')
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+          AND (
+            @env::text IS NULL AND @ver::text IS NULL
+            OR EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.issue_id = issues.id
+                AND (@env::text IS NULL OR COALESCE(NULLIF(e.environment, ''), 'unknown') = @env::text)
+                AND (@ver::text IS NULL OR e.app_version = @ver::text)
+            )
+          )
         ORDER BY last_seen_at DESC LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'lim': limit, 'type': type, 'status': status, 'q': q, ...timeParams(w)},
+      parameters: {
+        'pid': projectId,
+        'lim': limit,
+        'type': type,
+        'status': status,
+        'q': q,
+        'env': environment,
+        'ver': appVersion,
+        ...timeParams(w),
+      },
     );
     return rows
         .map((r) => {
@@ -545,6 +604,8 @@ class ScoutStore {
     String? category,
     String? q,
     String? country,
+    String? environment,
+    String? appVersion,
     int? days,
     TimeWindow? window,
   }) async {
@@ -577,6 +638,8 @@ class ScoutStore {
           AND (@category::text IS NULL OR payload->>'category' = @category::text)
           AND (@q::text IS NULL OR message ILIKE '%' || @q::text || '%')
           AND (@country::text IS NULL OR country = @country::text)
+          AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), 'unknown') = @env::text)
+          AND (@ver::text IS NULL OR app_version = @ver::text)
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         ORDER BY occurred_at DESC LIMIT @lim
@@ -589,6 +652,8 @@ class ScoutStore {
         'category': category,
         'q': q,
         'country': country,
+        'env': environment,
+        'ver': appVersion,
         ...timeParams(w),
       },
     );

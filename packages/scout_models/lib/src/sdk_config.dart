@@ -9,9 +9,11 @@ class ProjectSdkConfig {
     this.networkCaptureBodies,
     this.networkSlowThresholdMs,
     this.networkIgnoreStatusCodes,
+    this.networkLogScope,
   });
 
   static const defaultEnabledLevels = ['error', 'info', 'warning', 'success'];
+  static const defaultNetworkLogScope = 'all';
 
   final List<String>? enabledLevels;
   final bool? enableFlutterHooks;
@@ -19,6 +21,7 @@ class ProjectSdkConfig {
   final bool? networkCaptureBodies;
   final int? networkSlowThresholdMs;
   final List<int>? networkIgnoreStatusCodes;
+  final String? networkLogScope;
 
   factory ProjectSdkConfig.fromJson(Map<String, dynamic>? json) {
     if (json == null || json.isEmpty) return const ProjectSdkConfig();
@@ -30,6 +33,9 @@ class ProjectSdkConfig {
       networkCaptureBodies: json['networkCaptureBodies'] as bool?,
       networkSlowThresholdMs: clampSlowThreshold(json['networkSlowThresholdMs']),
       networkIgnoreStatusCodes: normalizeStatusCodes(json['networkIgnoreStatusCodes'] as List?),
+      networkLogScope: json.containsKey('networkLogScope')
+          ? normalizeNetworkLogScope(json['networkLogScope'])
+          : null,
     );
   }
 
@@ -41,6 +47,7 @@ class ProjectSdkConfig {
         networkCaptureBodies: networkCaptureBodies ?? true,
         networkSlowThresholdMs: clampSlowThreshold(networkSlowThresholdMs) ?? 3000,
         networkIgnoreStatusCodes: normalizeStatusCodes(networkIgnoreStatusCodes),
+        networkLogScope: normalizeNetworkLogScope(networkLogScope),
       );
 
   ProjectSdkConfig mergePatch(Map<String, dynamic> patch) {
@@ -61,6 +68,9 @@ class ProjectSdkConfig {
       networkIgnoreStatusCodes: m.containsKey('networkIgnoreStatusCodes')
           ? normalizeStatusCodes(m['networkIgnoreStatusCodes'] as List?)
           : networkIgnoreStatusCodes,
+      networkLogScope: m.containsKey('networkLogScope')
+          ? normalizeNetworkLogScope(m['networkLogScope'])
+          : networkLogScope,
     );
   }
 
@@ -71,6 +81,7 @@ class ProjectSdkConfig {
         if (networkCaptureBodies != null) 'networkCaptureBodies': networkCaptureBodies,
         if (networkSlowThresholdMs != null) 'networkSlowThresholdMs': networkSlowThresholdMs,
         'networkIgnoreStatusCodes': normalizeStatusCodes(networkIgnoreStatusCodes),
+        'networkLogScope': normalizeNetworkLogScope(networkLogScope),
       };
 
   Map<String, dynamic> toClientJson() => resolved().toJson();
@@ -137,4 +148,18 @@ List<int> normalizeStatusCodes(List<dynamic>? raw) {
     if (n != null && n >= 100 && n <= 599) codes.add(n);
   }
   return codes.toList()..sort();
+}
+
+const kNetworkLogScopes = ['all', 'errorsOnly', 'slowOnly'];
+
+/// Wire values: `all`, `errorsOnly`, `slowOnly`.
+String normalizeNetworkLogScope(dynamic raw) {
+  if (raw == null) return ProjectSdkConfig.defaultNetworkLogScope;
+  final s = raw.toString().trim();
+  return switch (s) {
+    'errors_only' || 'errorsOnly' => 'errorsOnly',
+    'slow_only' || 'slowOnly' => 'slowOnly',
+    'all' => 'all',
+    _ => kNetworkLogScopes.contains(s) ? s : ProjectSdkConfig.defaultNetworkLogScope,
+  };
 }

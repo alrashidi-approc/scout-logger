@@ -131,6 +131,8 @@ GoRouter createRouter() {
                 initialStatus: q['status'],
                 initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
                 initialQuery: q['q'],
+                initialEnvironment: q['environment'],
+                initialAppVersion: q['appVersion'],
               );
             },
             routes: [
@@ -155,6 +157,8 @@ GoRouter createRouter() {
                 initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(7),
                 initialQuery: q['q'],
                 initialCountry: q['country'],
+                initialEnvironment: q['environment'],
+                initialAppVersion: q['appVersion'],
               );
             },
             routes: [

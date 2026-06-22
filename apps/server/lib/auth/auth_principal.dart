@@ -38,3 +38,6 @@ bool canWriteProject(AuthPrincipal auth, String? membershipRole) =>
 
 bool canViewCredentials(AuthPrincipal auth, String? membershipRole) =>
     auth.isAdmin || membershipRole != null;
+
+bool canDeleteProject(AuthPrincipal auth, String? membershipRole) =>
+    auth.isAdmin || membershipRole == 'owner';

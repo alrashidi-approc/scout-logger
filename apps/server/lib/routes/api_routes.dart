@@ -70,6 +70,29 @@ Handler apiRoutes(
     return Response.ok(jsonEncode({'ok': true, 'project': project}), headers: {'Content-Type': 'application/json'});
   });
 
+  router.delete('/projects/<id>', (Request request, String id) async {
+    return _api(() async {
+      final auth = authFrom(request)!;
+      final denied = await ensureProjectDelete(
+        auth: auth,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      if (!await store.deleteProject(id)) return jsonErr('Project not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/facets', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final facets = await store.eventFilterFacets(id, window: _optionalWindow(request.url.queryParameters) ?? _window(request.url.queryParameters));
+      return Response.ok(jsonEncode({'ok': true, 'facets': facets}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
   router.get('/projects/<id>/credentials', (Request request, String id) async {
     return _api(() async {
       final auth = authFrom(request)!;
@@ -165,6 +188,8 @@ Handler apiRoutes(
         type: q['type'],
         status: q['status'],
         q: q['q'],
+        environment: q['environment'],
+        appVersion: q['appVersion'] ?? q['app_version'],
         window: _optionalWindow(q),
       );
       return Response.ok(jsonEncode({'ok': true, 'issues': issues}), headers: {'Content-Type': 'application/json'});
@@ -207,6 +232,8 @@ Handler apiRoutes(
         category: q['category'],
         q: q['q'],
         country: q['country'],
+        environment: q['environment'],
+        appVersion: q['appVersion'] ?? q['app_version'],
         window: _optionalWindow(q),
       );
       return Response.ok(jsonEncode({'ok': true, 'events': events}), headers: {'Content-Type': 'application/json'});

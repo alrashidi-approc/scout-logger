@@ -19,6 +19,8 @@ class EventsScreen extends StatefulWidget {
     this.initialPeriod = const PeriodFilter.days(7),
     this.initialQuery,
     this.initialCountry,
+    this.initialEnvironment,
+    this.initialAppVersion,
   });
 
   final String projectId;
@@ -28,6 +30,8 @@ class EventsScreen extends StatefulWidget {
   final PeriodFilter initialPeriod;
   final String? initialQuery;
   final String? initialCountry;
+  final String? initialEnvironment;
+  final String? initialAppVersion;
 
   @override
   State<EventsScreen> createState() => _EventsScreenState();
@@ -36,14 +40,18 @@ class EventsScreen extends StatefulWidget {
 class _EventsScreenState extends State<EventsScreen> {
   final _api = ScoutApi();
   List<Map<String, dynamic>> _events = [];
+  List<String> _environments = [];
+  List<String> _appVersions = [];
   bool _loading = true;
   String? _error;
   late String? _kindFilter;
   late String? _levelFilter;
   late String? _categoryFilter;
-  late PeriodFilter _period = widget.initialPeriod;
+  late PeriodFilter _period;
   late String _search;
   String? _country;
+  String? _environment;
+  String? _appVersion;
 
   static const _levelOptions = [null, 'error', 'info', 'warning', 'success'];
   static const _kindOptions = [null, 'errors', 'error', 'crash', 'network', 'session', 'log', 'span'];
@@ -58,6 +66,8 @@ class _EventsScreenState extends State<EventsScreen> {
     _period = widget.initialPeriod;
     _search = widget.initialQuery ?? '';
     _country = widget.initialCountry;
+    _environment = widget.initialEnvironment;
+    _appVersion = widget.initialAppVersion;
     _load();
   }
 
@@ -69,6 +79,8 @@ class _EventsScreenState extends State<EventsScreen> {
     q.addAll(_period.toQuery());
     if (_search.isNotEmpty) q['q'] = _search;
     if (_country != null) q['country'] = _country!;
+    if (_environment != null) q['environment'] = _environment!;
+    if (_appVersion != null) q['appVersion'] = _appVersion!;
     final uri = Uri(path: '/p/${widget.projectId}/events', queryParameters: q.isEmpty ? null : q);
     context.go(uri.toString());
   }
@@ -79,18 +91,26 @@ class _EventsScreenState extends State<EventsScreen> {
       _error = null;
     });
     try {
-      final events = await _api.fetchEvents(
-        widget.projectId,
-        type: _kindFilter,
-        level: _levelFilter,
-        category: _categoryFilter,
-        period: _period,
-        q: _search.isEmpty ? null : _search,
-        country: _country,
-      );
+      final results = await Future.wait([
+        _api.fetchEvents(
+          widget.projectId,
+          type: _kindFilter,
+          level: _levelFilter,
+          category: _categoryFilter,
+          period: _period,
+          q: _search.isEmpty ? null : _search,
+          country: _country,
+          environment: _environment,
+          appVersion: _appVersion,
+        ),
+        _api.fetchFilterFacets(widget.projectId, period: _period),
+      ]);
       if (mounted) {
+        final facets = results[1] as Map<String, dynamic>;
         setState(() {
-          _events = events;
+          _events = results[0] as List<Map<String, dynamic>>;
+          _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
+          _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
           _loading = false;
         });
       }
@@ -115,6 +135,12 @@ class _EventsScreenState extends State<EventsScreen> {
     String? search,
     String? country,
     bool clearCountry = false,
+    String? environment,
+    bool setEnvironment = false,
+    bool clearEnvironment = false,
+    String? appVersion,
+    bool setAppVersion = false,
+    bool clearAppVersion = false,
   }) {
     setState(() {
       if (setKind) _kindFilter = kind;
@@ -124,6 +150,10 @@ class _EventsScreenState extends State<EventsScreen> {
       if (search != null) _search = search;
       if (country != null) _country = country;
       if (clearCountry) _country = null;
+      if (setEnvironment) _environment = environment;
+      if (clearEnvironment) _environment = null;
+      if (setAppVersion) _appVersion = appVersion;
+      if (clearAppVersion) _appVersion = null;
     });
     _syncUrl();
     _load();
@@ -134,6 +164,8 @@ class _EventsScreenState extends State<EventsScreen> {
     if (_levelFilter != null) parts.add('level $_levelFilter');
     if (_kindFilter != null) parts.add('kind $_kindFilter');
     if (_categoryFilter != null) parts.add('category $_categoryFilter');
+    if (_environment != null) parts.add(_environment!);
+    if (_appVersion != null) parts.add('v$_appVersion');
     if (parts.isEmpty) return '${_events.length} events';
     return '${_events.length} events · ${parts.join(' · ')}';
   }
@@ -172,6 +204,12 @@ class _EventsScreenState extends State<EventsScreen> {
             categoryOptions: _categoryOptions,
             categorySelected: _categoryFilter,
             onCategorySelected: (c) => _apply(category: c, setCategory: true),
+            environmentOptions: _environments,
+            environmentSelected: _environment,
+            onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
+            appVersionOptions: _appVersions,
+            appVersionSelected: _appVersion,
+            onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
           ),
         ),
         Expanded(
@@ -183,7 +221,7 @@ class _EventsScreenState extends State<EventsScreen> {
                       ? const EmptyState(
                           icon: Icons.inbox_outlined,
                           title: 'No events',
-                          subtitle: 'Try adjusting level, kind, or category filters',
+                          subtitle: 'Try adjusting filters or the time range',
                         )
                       : RefreshIndicator(
                           onRefresh: _load,

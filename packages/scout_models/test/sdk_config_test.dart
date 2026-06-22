@@ -7,6 +7,14 @@ void main() {
     expect(normalizeEnabledLevels(['bogus']), ProjectSdkConfig.defaultEnabledLevels);
   });
 
+  test('normalizeNetworkLogScope accepts wire and snake_case', () {
+    expect(normalizeNetworkLogScope('all'), 'all');
+    expect(normalizeNetworkLogScope('errorsOnly'), 'errorsOnly');
+    expect(normalizeNetworkLogScope('errors_only'), 'errorsOnly');
+    expect(normalizeNetworkLogScope('slowOnly'), 'slowOnly');
+    expect(normalizeNetworkLogScope('bogus'), 'all');
+  });
+
   test('normalizeStatusCodes filters valid HTTP codes', () {
     expect(normalizeStatusCodes([401, '404', 99, 600, 'bad']), [401, 404]);
     expect(normalizeStatusCodes([]), isEmpty);

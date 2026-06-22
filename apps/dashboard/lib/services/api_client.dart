@@ -93,6 +93,18 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['project']);
   }
 
+  Future<void> deleteProject(String projectId) async {
+    final res = await _client.delete(_uri('/api/projects/$projectId'), headers: _headers);
+    _ok(res);
+  }
+
+  Future<Map<String, dynamic>> fetchFilterFacets(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/facets').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['facets']);
+  }
+
   Future<Map<String, dynamic>> fetchOverview(String projectId, {PeriodFilter? period}) async {
     final uri = _uri('/api/projects/$projectId/overview').replace(queryParameters: (period ?? const PeriodFilter.days(1)).toQuery());
     final res = await _client.get(uri, headers: _headers);
@@ -133,12 +145,16 @@ class ScoutApi {
     String? type,
     String? status,
     String? q,
+    String? environment,
+    String? appVersion,
     PeriodFilter? period,
   }) async {
     final params = <String, String>{};
     if (type != null) params['type'] = type;
     if (status != null) params['status'] = status;
     if (q != null && q.isNotEmpty) params['q'] = q;
+    if (environment != null) params['environment'] = environment;
+    if (appVersion != null) params['appVersion'] = appVersion;
     if (period != null) params.addAll(period.toQuery());
     final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params.isEmpty ? null : params);
     final res = await _client.get(uri, headers: _headers);
@@ -159,6 +175,8 @@ class ScoutApi {
     String? category,
     String? q,
     String? country,
+    String? environment,
+    String? appVersion,
     PeriodFilter? period,
   }) async {
     final params = <String, String>{};
@@ -167,6 +185,8 @@ class ScoutApi {
     if (category != null) params['category'] = category;
     if (q != null && q.isNotEmpty) params['q'] = q;
     if (country != null) params['country'] = country;
+    if (environment != null) params['environment'] = environment;
+    if (appVersion != null) params['appVersion'] = appVersion;
     if (period != null) params.addAll(period.toQuery());
     final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params.isEmpty ? null : params);
     final res = await _client.get(uri, headers: _headers);

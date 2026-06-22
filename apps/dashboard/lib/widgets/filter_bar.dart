@@ -175,6 +175,42 @@ class TypeFilterRow extends StatelessWidget {
   }
 }
 
+class FacetDropdown extends StatelessWidget {
+  const FacetDropdown({
+    super.key,
+    required this.label,
+    required this.options,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final List<String> options;
+  final String? selected;
+  final ValueChanged<String?> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 160,
+      child: DropdownButtonFormField<String?>(
+        value: selected,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: label,
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        ),
+        items: [
+          const DropdownMenuItem(value: null, child: Text('All', style: TextStyle(fontSize: 13))),
+          for (final o in options) DropdownMenuItem(value: o, child: Text(o, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis)),
+        ],
+        onChanged: onSelected,
+      ),
+    );
+  }
+}
+
 class FilterBar extends StatelessWidget {
   const FilterBar({
     super.key,
@@ -192,6 +228,12 @@ class FilterBar extends StatelessWidget {
     this.categoryOptions,
     this.categorySelected,
     this.onCategorySelected,
+    this.environmentOptions,
+    this.environmentSelected,
+    this.onEnvironmentSelected,
+    this.appVersionOptions,
+    this.appVersionSelected,
+    this.onAppVersionSelected,
     this.extra,
   });
 
@@ -209,6 +251,12 @@ class FilterBar extends StatelessWidget {
   final List<String?>? categoryOptions;
   final String? categorySelected;
   final ValueChanged<String?>? onCategorySelected;
+  final List<String>? environmentOptions;
+  final String? environmentSelected;
+  final ValueChanged<String?>? onEnvironmentSelected;
+  final List<String>? appVersionOptions;
+  final String? appVersionSelected;
+  final ValueChanged<String?>? onAppVersionSelected;
   final List<Widget>? extra;
 
   @override
@@ -223,6 +271,10 @@ class FilterBar extends StatelessWidget {
         TypeFilterRow(label: 'Kind', options: typeOptions!, selected: typeSelected, onSelected: onTypeSelected!),
       if (categoryOptions != null && onCategorySelected != null)
         TypeFilterRow(label: 'Category', options: categoryOptions!, selected: categorySelected, onSelected: onCategorySelected!),
+      if (environmentOptions != null && onEnvironmentSelected != null)
+        FacetDropdown(label: 'Environment', options: environmentOptions!, selected: environmentSelected, onSelected: onEnvironmentSelected!),
+      if (appVersionOptions != null && onAppVersionSelected != null)
+        FacetDropdown(label: 'App version', options: appVersionOptions!, selected: appVersionSelected, onSelected: onAppVersionSelected!),
       if (extra != null) ...extra!,
     ];
 

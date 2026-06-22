@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../services/api_client.dart';
+import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/page_header.dart';
 
@@ -18,7 +20,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   final _api = ScoutApi();
   bool _loading = true;
   bool _saving = false;
+  bool _deleting = false;
   String? _error;
+  String? _role;
   int _configVersion = 1;
   Set<String> _levels = ProjectSdkConfig.defaultEnabledLevels.toSet();
   bool _flutterHooks = true;
@@ -27,6 +31,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   int _slowThresholdMs = 3000;
   final _ignoreCodesCtrl = TextEditingController();
   Set<int> _ignoreCodes = {};
+  String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
 
   @override
   void dispose() {
@@ -46,7 +51,20 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       _error = null;
     });
     try {
-      final settings = await _api.fetchProjectSettings(widget.projectId);
+      final results = await Future.wait([
+        _api.fetchProjectSettings(widget.projectId),
+        _api.fetchProjects(),
+      ]);
+      final settings = results[0] as Map<String, dynamic>;
+      final projects = results[1] as List<Map<String, dynamic>>;
+      String? role;
+      for (final p in projects) {
+        if (p['id'] == widget.projectId) {
+          role = p['role'] as String?;
+          break;
+        }
+      }
+      if (AuthService.instance.isAdmin) role = 'owner';
       final remote = ProjectRemoteConfig(
         configVersion: settings['configVersion'] as int? ?? 1,
         updatedAt: settings['updatedAt'] as String? ?? '',
@@ -55,6 +73,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       final sdk = remote.sdk.resolved();
       if (mounted) {
         setState(() {
+          _role = role;
           _configVersion = remote.configVersion;
           _levels = sdk.enabledLevels!.toSet();
           _flutterHooks = sdk.enableFlutterHooks!;
@@ -63,6 +82,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _slowThresholdMs = sdk.networkSlowThresholdMs!;
           _ignoreCodes = sdk.networkIgnoreStatusCodes!.toSet();
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
+          _networkLogScope = sdk.networkLogScope!;
           _loading = false;
         });
       }
@@ -87,6 +107,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'networkCaptureBodies': _networkBodies,
           'networkSlowThresholdMs': _slowThresholdMs,
           'networkIgnoreStatusCodes': normalizeStatusCodes(_ignoreCodes.toList()),
+          'networkLogScope': normalizeNetworkLogScope(_networkLogScope),
         },
       });
       if (mounted) {
@@ -101,6 +122,40 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  bool get _canDelete => _role == 'owner' || AuthService.instance.isAdmin;
+
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete project?'),
+        content: const Text(
+          'This permanently deletes the project, all events, issues, and sessions. '
+          'Mobile apps using this DSN will stop reporting. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _deleting = true);
+    try {
+      await _api.deleteProject(widget.projectId);
+      if (mounted) context.go('/projects');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _deleting = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
@@ -196,6 +251,23 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 onChanged: (v) => setState(() => _slowThresholdMs = v.round()),
               ),
               const SizedBox(height: 16),
+              const Text('Network log scope', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Which HTTP calls the SDK uploads. Errors are always 4xx/5xx and Dio failures.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'all', label: Text('All')),
+                  ButtonSegment(value: 'errorsOnly', label: Text('Errors')),
+                  ButtonSegment(value: 'slowOnly', label: Text('Slow')),
+                ],
+                selected: {_networkLogScope},
+                onSelectionChanged: (v) => setState(() => _networkLogScope = v.first),
+              ),
+              const SizedBox(height: 16),
               const Text('Ignore HTTP status codes', style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               const Text(
@@ -228,6 +300,32 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             ]),
           ),
         ),
+        if (_canDelete) ...[
+          const SizedBox(height: 16),
+          Card(
+            color: AppTheme.error.withValues(alpha: 0.04),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Danger zone', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: AppTheme.error)),
+                const SizedBox(height: 8),
+                const Text(
+                  'Delete this project and all its data. Only the project owner can do this.',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 13),
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _deleting ? null : _confirmDelete,
+                  icon: _deleting
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.delete_outline, color: AppTheme.error),
+                  label: const Text('Delete project', style: TextStyle(color: AppTheme.error)),
+                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.error)),
+                ),
+              ]),
+            ),
+          ),
+        ],
       ],
     );
   }
