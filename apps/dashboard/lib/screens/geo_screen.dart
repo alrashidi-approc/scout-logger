@@ -7,6 +7,7 @@ import '../theme/app_theme.dart';
 import '../utils/country_centroids.dart';
 import '../utils/date_range.dart';
 import '../utils/geo_regions.dart';
+import '../utils/geo_source.dart';
 import '../widgets/filter_bar.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
@@ -27,6 +28,7 @@ class GeoScreen extends StatefulWidget {
 class _GeoScreenState extends State<GeoScreen> {
   final _api = ScoutApi();
   final _mapKey = GlobalKey<WorldMapPanelState>();
+  final _mapAnchorKey = GlobalKey();
   List<Map<String, dynamic>> _geo = [];
   bool _loading = true;
   bool _refreshing = false;
@@ -78,6 +80,14 @@ class _GeoScreenState extends State<GeoScreen> {
     _load();
   }
 
+  void _focusCountryOnMap(String code) {
+    final ctx = _mapAnchorKey.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(ctx, duration: const Duration(milliseconds: 280), curve: Curves.easeOutCubic, alignment: 0.2);
+    }
+    _mapKey.currentState?.focusCountry(code);
+  }
+
   void _onCountryTap(String code, int count) {
     context.go(Uri(path: '/p/${widget.projectId}/events', queryParameters: _period.mergeQuery({'country': code.toUpperCase()})).toString());
   }
@@ -106,7 +116,7 @@ class _GeoScreenState extends State<GeoScreen> {
       children: [
         PageHeader(
           title: 'Geography',
-          subtitle: 'Logged-in users by country',
+          subtitle: 'Users by connection country (IP) · profile and locale shown when different',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
@@ -118,7 +128,7 @@ class _GeoScreenState extends State<GeoScreen> {
           const EmptyState(
             icon: Icons.public_off,
             title: 'No geo data yet',
-            subtitle: 'Country comes from device locale on each event (IP is fallback).',
+            subtitle: 'Country comes from connection IP. Device locale is shown separately when it differs.',
           )
         else ...[
           if (regions.isNotEmpty)
@@ -138,13 +148,16 @@ class _GeoScreenState extends State<GeoScreen> {
               ),
             ),
           if (regions.isNotEmpty) const SizedBox(height: 12),
-          WorldMapPanel(
-            key: _mapKey,
-            points: _geo,
-            height: 520,
-            showMarkers: true,
-            autoFocus: true,
-            onCountryTap: _onCountryTap,
+          KeyedSubtree(
+            key: _mapAnchorKey,
+            child: WorldMapPanel(
+              key: _mapKey,
+              points: _geo,
+              height: 520,
+              showMarkers: true,
+              autoFocus: true,
+              onCountryTap: _onCountryTap,
+            ),
           ),
           const SizedBox(height: 20),
           Text(
@@ -155,6 +168,23 @@ class _GeoScreenState extends State<GeoScreen> {
           Card(
             child: Column(
               children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 28, child: Text('#', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11))),
+                      const SizedBox(width: 56),
+                      const Expanded(child: Text('Country', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11))),
+                      SizedBox(
+                        width: isMobile(context) ? 64 : 88,
+                        child: Text('Source', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11), textAlign: TextAlign.center),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('Users / events', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11)),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
                 for (var i = 0; i < _geo.length; i++) ...[
                   if (i > 0) const Divider(height: 1),
                   _countryRow(_geo[i], totalUsers, totalEvents, i + 1),
@@ -174,9 +204,10 @@ class _GeoScreenState extends State<GeoScreen> {
     final code = (g['country'] as String? ?? '??').toUpperCase();
     final name = countryLabel(code);
     final region = regionById(regionForCountry(code)).label;
+    final source = g['countrySource'] as String?;
 
     return InkWell(
-      onTap: () => context.go(Uri(path: '/p/${widget.projectId}/events', queryParameters: _period.mergeQuery({'country': code})).toString()),
+      onTap: () => _focusCountryOnMap(code),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(children: [
@@ -191,10 +222,7 @@ class _GeoScreenState extends State<GeoScreen> {
           const SizedBox(width: 16),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w700))),
-                Text('$users users · $events ev (${(share * 100).toStringAsFixed(1)}%)', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-              ]),
+              Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
               Text(region, style: const TextStyle(color: AppTheme.muted, fontSize: 11, letterSpacing: 0.4)),
               const SizedBox(height: 8),
@@ -204,7 +232,27 @@ class _GeoScreenState extends State<GeoScreen> {
               ),
             ]),
           ),
-          const Icon(Icons.chevron_right, color: AppTheme.muted, size: 18),
+          const SizedBox(width: 12),
+          Tooltip(
+            message: geoSourceDetail(g),
+            child: GeoSourceChip(source: source, compact: isMobile(context)),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: isMobile(context) ? 72 : 96,
+            child: Text(
+              '$users / $events',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'View events',
+            visualDensity: VisualDensity.compact,
+            onPressed: () => context.go(Uri(path: '/p/${widget.projectId}/events', queryParameters: _period.mergeQuery({'country': code})).toString()),
+            icon: const Icon(Icons.open_in_new, color: AppTheme.muted, size: 18),
+          ),
         ]),
       ),
     );

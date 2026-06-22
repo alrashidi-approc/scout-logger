@@ -7,6 +7,7 @@ import '../db/scout_db.dart';
 import '../services/geo_enricher.dart';
 import '../services/key_cipher.dart';
 import '../util/dates.dart';
+import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/user_identity.dart';
 
@@ -258,18 +259,13 @@ class ScoutStore {
     final message = payload['message']?.toString() ??
         (event.type == 'session' ? 'session ${payload['action'] ?? ''}'.trim() : null);
     final ipGeo = GeoLookup.fromJson(enrichment['geo']);
-    final resolved = GeoEnricher.resolveForEvent(device, ipGeo);
-    final fromDevice = device['countryCode']?.toString().trim().isNotEmpty == true;
-    final country = resolved.country;
-    final region = fromDevice ? null : resolved.region;
-    final city = fromDevice ? null : resolved.city;
+    final resolved = GeoEnricher.resolveForEvent(device: device, ipGeo: ipGeo);
+    final country = resolved.geo.country;
+    final region = ipGeo.region ?? resolved.geo.region;
+    final city = ipGeo.city ?? resolved.geo.city;
     final eventEnrichment = {
       ...enrichment,
-      'geo': {
-        ...resolved.toJson(),
-        'source': fromDevice ? 'device_locale' : (ipGeo.country == 'LO' ? 'local_ip' : 'ip'),
-        if (fromDevice && ipGeo.country != null) 'ipGeo': ipGeo.toJson(),
-      },
+      'geo': resolved.toEnrichmentJson(),
     };
 
     String? issueId;
@@ -771,21 +767,12 @@ class ScoutStore {
       parameters: {'pid': projectId},
     );
 
-    final trendDays = periodDays > 14 ? periodDays : 14;
-    final trendFrom = w.since != null
-        ? DateTime.parse(w.since!).toUtc().toIso8601String().substring(0, 10)
-        : utcDateDaysAgo(trendDays - 1);
-    final trendUntil = trendUntilDate(w);
-    final trend = await conn.execute(
-      Sql.named('''
-        SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int
-        FROM daily_stats
-        WHERE project_id = @pid AND date >= @fromDate::date
-          AND (@untilDate::date IS NULL OR date < @untilDate::date)
-        GROUP BY date ORDER BY date
-      '''),
-      parameters: {'pid': projectId, 'fromDate': trendFrom, 'untilDate': trendUntil},
-    );
+    final trendWindow = w.usesHourlyTrend
+        ? w
+        : (w.since != null
+            ? w
+            : TimeWindow(since: '${utcDateDaysAgo((periodDays > 14 ? periodDays : 14) - 1)}T00:00:00.000Z'));
+    final trend = await fetchEventTrend(conn, projectId, trendWindow);
 
     return {
       'project': project,
@@ -800,14 +787,8 @@ class ScoutStore {
       'uniqueUsers7d': _i(sess[3]),
       'openIssues': _i(openIssues.first[0]),
       'topCountries': countries.map((r) => {'country': r[0], 'count': r[1]}).toList(),
-      'dailyTrend': trend
-          .map((r) => {
-                'date': (r[0] as DateTime).toIso8601String().substring(0, 10),
-                'events': r[1],
-                'errors': r[2],
-                'crashes': r[3],
-              })
-          .toList(),
+      'trendGranularity': trendGranularity(w),
+      'dailyTrend': trend,
       'byRelease': releases
           .map((r) => {
                 'release': r[0],
@@ -827,7 +808,10 @@ class ScoutStore {
       Sql.named('''
         SELECT country,
                COUNT(*)::int,
-               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
+               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int,
+               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' IN ('locale', 'device_locale'))::int,
+               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' IN ('ip', 'local_ip'))::int,
+               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' = 'profile')::int
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -838,7 +822,37 @@ class ScoutStore {
       '''),
       parameters: {'pid': projectId, ...timeParams(w)},
     );
-    return rows.map((r) => {'country': r[0], 'count': r[1], 'users': r[2]}).toList();
+    return rows
+        .map((r) {
+          final localeEvents = r[3] as int;
+          final ipEvents = r[4] as int;
+          final profileEvents = r[5] as int;
+          return {
+            'country': r[0],
+            'count': r[1],
+            'users': r[2],
+            'localeEvents': localeEvents,
+            'ipEvents': ipEvents,
+            'profileEvents': profileEvents,
+            'countrySource': _geoSourceLabel(localeEvents, ipEvents, profileEvents),
+          };
+        })
+        .toList();
+  }
+
+  static String _geoSourceLabel(int localeEvents, int ipEvents, int profileEvents) {
+    final total = localeEvents + ipEvents + profileEvents;
+    if (total == 0) return 'unknown';
+    if (profileEvents == total) return 'profile';
+    if (ipEvents == total) return 'ip';
+    if (localeEvents == total) return 'locale';
+    if (ipEvents >= localeEvents && ipEvents >= profileEvents) {
+      return ipEvents == total ? 'ip' : 'mostly_ip';
+    }
+    if (profileEvents >= localeEvents && profileEvents >= ipEvents) {
+      return profileEvents == total ? 'profile' : 'mostly_profile';
+    }
+    return 'mixed';
   }
 
   Future<List<Map<String, dynamic>>> _issueGeo(Connection conn, String projectId, String issueId) async {

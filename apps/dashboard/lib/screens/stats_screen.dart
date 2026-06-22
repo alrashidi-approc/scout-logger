@@ -85,6 +85,7 @@ class _StatsScreenState extends State<StatsScreen> {
   Widget _buildContent(BuildContext context) {
     final d = _data!;
     final trend = jsonListMaps(d['dailyTrend']);
+    final hourlyTrend = d['trendGranularity'] == 'hour' || _period.usesHourlyTrend;
     final byType = jsonListMaps(d['byType']);
     final byPlatform = jsonListMaps(d['byPlatform']);
     final pid = widget.projectId;
@@ -207,6 +208,7 @@ class _StatsScreenState extends State<StatsScreen> {
           const SizedBox(height: 20),
           DashboardPanel(
             title: 'Activity trend',
+            subtitle: hourlyTrend ? 'Hourly (UTC)' : null,
             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
               _legend(AppTheme.primary, 'Events'),
               const SizedBox(width: 12),
@@ -214,7 +216,7 @@ class _StatsScreenState extends State<StatsScreen> {
               const SizedBox(width: 12),
               _legend(AppTheme.success, 'Users'),
             ]),
-            child: TrendChart(points: trend, showUsers: true),
+            child: TrendChart(points: trend, showUsers: true, hourly: hourlyTrend),
           ),
           const SizedBox(height: 16),
           LayoutBuilder(builder: (context, c) {

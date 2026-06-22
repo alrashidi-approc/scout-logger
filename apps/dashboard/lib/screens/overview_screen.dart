@@ -137,6 +137,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
 
   Widget _buildBody(BuildContext context, Map<String, dynamic> d, String pid) {
     final trend = jsonListMaps(d['dailyTrend']);
+    final hourlyTrend = d['trendGranularity'] == 'hour' || _period.usesHourlyTrend;
     final hourly = jsonListMaps(d['hourlyActivity']);
     final byPlatform = jsonListMaps(d['byPlatform']);
     final byType = jsonListMaps(d['byType']);
@@ -176,12 +177,13 @@ class _OverviewScreenState extends State<OverviewScreen> {
               children: [
                 DashboardPanel(
                   title: 'Events over time',
+                  subtitle: hourlyTrend ? 'Hourly (UTC)' : null,
                   trailing: chartLegend([
                     _legend(AppTheme.primary, 'Events'),
                     _legend(AppTheme.error, 'Errors'),
                     _legend(AppTheme.success, 'Logged-in users'),
                   ]),
-                  child: TrendChart(points: trend, showUsers: true, height: c.maxWidth < Breakpoints.mobile ? 200 : 240),
+                  child: TrendChart(points: trend, showUsers: true, hourly: hourlyTrend, height: c.maxWidth < Breakpoints.mobile ? 200 : 240),
                 ),
                 DashboardPanel(title: 'Peak error times', subtitle: 'Errors by hour (UTC)', child: HourlyChart(points: hourly, errorsOnly: true, height: c.maxWidth < Breakpoints.mobile ? 160 : 180)),
               ],

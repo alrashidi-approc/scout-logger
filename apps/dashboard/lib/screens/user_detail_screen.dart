@@ -87,7 +87,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       padding: pageInsets(context, top: 16, bottom: pagePad(context)),
       children: [
         TextButton.icon(onPressed: () => popOrGo(context, '/p/${widget.projectId}/users'), icon: const Icon(Icons.arrow_back, size: 18), label: const Text('Back')),
-        PageHeader(title: widget.userId, subtitle: 'Logged-in user · merged with pre-login activity on same device'),
+        PageHeader(
+          title: u['email'] as String? ?? widget.userId,
+          subtitle: u['email'] != null ? widget.userId : 'Logged-in user · merged with pre-login activity on same device',
+        ),
         if (u['includesGuestActivity'] == true) ...[
           const SizedBox(height: 12),
           Container(
@@ -109,11 +112,46 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           _chip('Errors', '${u['errorCount']}', Icons.error_outline),
           _chip('Crashes', '${u['crashCount']}', Icons.bolt),
           _chip('Sessions', '${u['sessionCount']}', Icons.play_circle_outline),
+          _chip('Devices', '${u['deviceCount'] ?? 1}', Icons.devices),
           if (u['topCountry'] != null) _chip('Country', '${u['topCountry']}', Icons.public),
         ]),
         if (first != null && last != null) ...[
           const SizedBox(height: 12),
           Text('First seen ${DateFormat.yMMMd().format(first.toLocal())} · Last ${DateFormat.yMMMd().add_jm().format(last.toLocal())}', style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
+        ],
+        if (jsonListMaps(u['devices']).isNotEmpty) ...[
+          const SizedBox(height: 20),
+          const Text('Devices', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: AppTheme.text)),
+          const SizedBox(height: 10),
+          ...jsonListMaps(u['devices']).map((d) {
+            final firstD = DateTime.tryParse(d['firstSeenAt'] as String? ?? '');
+            final lastD = DateTime.tryParse(d['lastSeenAt'] as String? ?? '');
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppTheme.border)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(d['deviceName'] as String? ?? 'Device', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                const SizedBox(height: 4),
+                Text('${d['platform'] ?? '—'} · ${d['eventCount']} events', style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                const SizedBox(height: 4),
+                Text(
+                  '${d['installId']}',
+                  style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (firstD != null && lastD != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '${DateFormat.MMMd().format(firstD.toLocal())} – ${DateFormat.MMMd().format(lastD.toLocal())}',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                    ),
+                  ),
+              ]),
+            );
+          }),
         ],
         const SizedBox(height: 20),
         const Text('Recent events', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: AppTheme.text)),

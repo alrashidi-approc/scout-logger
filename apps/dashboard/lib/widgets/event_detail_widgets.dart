@@ -88,7 +88,7 @@ class EventQuickFacts extends StatelessWidget {
       children: [
         if (view.userId != '—') _fact(Icons.person_outline, 'User', view.userId, onUserTap),
         if (view.sessionId != '—') _fact(Icons.play_circle_outline, 'Session', view.sessionId.length > 12 ? '${view.sessionId.substring(0, 12)}…' : view.sessionId, onSessionTap),
-        if (view.country != '—') _fact(Icons.public, 'Location', view.city != '—' ? '${view.city}, ${view.country}' : view.country, onCountryTap),
+        if (view.country != '—') _fact(Icons.public, 'Location', view.locationLabel, onCountryTap),
         if (view.route != '—') _fact(Icons.route_outlined, 'Screen', view.route, null),
         if (view.statusCode.isNotEmpty) _fact(Icons.http, 'Status', view.statusCode, null),
         if (view.network.isNotEmpty && view.network['durationMs'] != null)
@@ -136,7 +136,7 @@ class EventFlowDiagram extends StatelessWidget {
       _Node(Icons.verified_outlined, 'Release', view.release),
       _Node(Icons.route_outlined, 'Screen', view.route),
       _Node(Icons.lan_outlined, 'Network', view.url.isEmpty ? '—' : '${view.method.isEmpty ? '' : '${view.method} '}${view.url}'),
-      _Node(Icons.public, 'Location', view.country),
+      _Node(Icons.public, 'Location', view.locationLabel),
       _Node(Icons.person_outline, 'User', view.userId),
     ].where((n) => n.value != '—' && !n.value.endsWith('· —')).toList();
 

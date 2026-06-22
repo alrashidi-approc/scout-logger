@@ -23,6 +23,9 @@ class PeriodFilter {
     return t.difference(from!).inDays + 1;
   }
 
+  /// Hourly chart for 24h preset or a single custom calendar day.
+  bool get usesHourlyTrend => isPreset ? days == 1 : spanDays == 1;
+
   static DateTime _todayLocal() {
     final n = DateTime.now();
     return DateTime(n.year, n.month, n.day);

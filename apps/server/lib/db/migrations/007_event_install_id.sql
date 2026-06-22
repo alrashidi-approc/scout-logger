@@ -6,6 +6,7 @@ CREATE INDEX IF NOT EXISTS events_project_install ON events (project_id, install
 UPDATE events
 SET install_id = COALESCE(
   NULLIF(payload->'device'->>'installId', ''),
+  NULLIF(payload->'user'->>'installId', ''),
   NULLIF(payload->'device'->>'anonymousId', ''),
   NULLIF(payload->'user'->>'anonymousId', '')
 )

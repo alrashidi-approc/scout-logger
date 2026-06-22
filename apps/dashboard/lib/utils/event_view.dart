@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:scout_models/scout_models.dart';
 
 import 'network_readable.dart';
+import 'geo_source.dart';
+import 'user_identity.dart';
 
 Map<String, dynamic> asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : {};
 
@@ -18,6 +20,10 @@ class EventView {
   Map<String, dynamic> get geo => asMap(enrichment['geo']);
   Map<String, dynamic> get user => asMap(payload['user']);
   Map<String, dynamic> get device => asMap(payload['device']);
+  Map<String, dynamic> get deviceGeo {
+    final nested = asMap(device['geo']);
+    return nested.isEmpty ? device : {...device, ...nested};
+  }
   Map<String, dynamic> get screen => asMap(payload['screen']);
   Map<String, dynamic> get network => asMap(payload['network']);
   Map<String, dynamic> get networkReadable => network.isEmpty ? {} : networkReadableFrom(network);
@@ -45,15 +51,43 @@ class EventView {
   String get platform => str(device['platform']) ?? str(event['platform']) ?? '—';
   String get appVersion => str(device['version']) ?? str(device['appVersion']) ?? str(event['appVersion']) ?? '—';
   String get userId => str(user['id']) ?? str(user['userId']) ?? str(event['userId']) ?? '—';
+  String get userEmail => str(user['email']) ?? userEmailFromPayload(payload) ?? '—';
+  String get installId => str(event['installId']) ?? installIdFromPayload(payload) ?? '—';
+  bool get isGuestUser => isGuestAppUser(userId: userId == '—' ? null : userId, installId: installId == '—' ? null : installId);
   String get sessionId => str(user['sessionId']) ?? str(event['sessionId']) ?? '—';
   String get route => str(screen['currentRoute']) ?? str(payload['route']) ?? str(payload['screen']) ?? '—';
   String get country {
     final name = str(geo['countryName']);
     if (name != null && name != 'Local' && name != 'Unknown') return name;
-    final code = str(event['country']) ?? str(device['countryCode']) ?? str(geo['country']);
+    final code = str(event['country']) ?? str(geo['country']);
     if (code == null || code == 'LO' || code == '??') return '—';
     return name ?? code;
   }
+
+  String? get connectionCountryCode {
+    final code = str(event['country']) ?? str(geo['country']);
+    if (code == null || code == 'LO' || code == '??') return null;
+    return code.toUpperCase();
+  }
+
+  String get localeCountry {
+    final code = str(geo['localeCountry']) ?? str(deviceGeo['localeCountry']) ?? str(deviceGeo['countryCode']);
+    if (code == null || code.isEmpty) {
+      final locale = str(deviceGeo['locale']);
+      if (locale != null && locale.contains('-')) {
+        final part = locale.split('-').last;
+        if (part.length == 2) return part.toUpperCase();
+      }
+      return '—';
+    }
+    return code.toUpperCase();
+  }
+
+  String get locationLabel => locationFactLabel(
+        connectionCode: connectionCountryCode,
+        localeCode: localeCountry != '—' ? localeCountry : null,
+        city: city,
+      );
 
   String get city => str(event['city']) ?? str(geo['city']) ?? '—';
   String get geoSource => str(geo['source']) ?? 'ip';
@@ -112,10 +146,16 @@ class EventView {
         if (device['ramTotalMb'] != null) DetailField('RAM', '${device['ramFreeMb'] ?? '?'}/${device['ramTotalMb']} MB'),
         if (device['diskFreeMb'] != null) DetailField('Disk free', '${device['diskFreeMb']} MB'),
         DetailField('Dark mode', device['darkMode'] == true ? 'Yes' : 'No'),
-        if (device['timezone'] != null) DetailField('Timezone', str(device['timezone'])!),
-        if (device['languageCode'] != null) DetailField('Language', str(device['languageCode'])!),
-        if (device['countryCode'] != null) DetailField('Country code', str(device['countryCode'])!),
-        if (device['anonymousId'] != null) DetailField('Anonymous ID', str(device['anonymousId'])!, mono: true),
+        if (deviceGeo['timezone'] != null) DetailField('Timezone', str(deviceGeo['timezone'])!),
+        if (deviceGeo['locale'] != null) DetailField('Locale', str(deviceGeo['locale'])!),
+        if (deviceGeo['languageCode'] != null) DetailField('Language', str(deviceGeo['languageCode'])!),
+        if (deviceGeo['localeCountry'] != null || deviceGeo['countryCode'] != null)
+          DetailField('Locale region', str(deviceGeo['localeCountry']) ?? str(deviceGeo['countryCode'])!),
+        if (deviceGeo['country'] != null && deviceGeo['countrySource'] != null)
+          DetailField('Geo package', '${deviceGeo['country']} (${str(deviceGeo['countrySource'])})'),
+        if (device['installId'] != null) DetailField('Install ID', str(device['installId'])!, mono: true),
+        if (device['anonymousId'] != null && device['anonymousId'] != device['installId'])
+          DetailField('Anonymous ID', str(device['anonymousId'])!, mono: true),
         if (device['launchCount'] != null) DetailField('Launch #', '${device['launchCount']}'),
         if (device['daysSinceInstall'] != null) DetailField('Days since install', '${device['daysSinceInstall']}'),
         DetailField('Device ID', str(device['id']) ?? str(device['deviceId']) ?? '—', mono: true),
@@ -126,11 +166,16 @@ class EventView {
 
   List<DetailField> userFields() => [
         DetailField('User ID', userId, mono: true, highlight: true),
+        if (userEmail != '—') DetailField('Email', userEmail, highlight: true),
+        if (installId != '—') DetailField('Install ID', installId, mono: true),
+        if (isGuestUser) DetailField('Account', 'Guest (device id)', highlight: true),
         DetailField('Session ID', sessionId, mono: true),
-        DetailField('Country', country),
+        DetailField('Connection country', country),
+        if (localeCountry != '—' && localeCountry != connectionCountryCode)
+          DetailField('Locale region', localeCountry),
         DetailField('City', city),
         DetailField('IP hash', str(enrichment['clientIpHash']) ?? '—', mono: true),
-        ..._extraMap(user, skip: {'id', 'userId', 'sessionId'}),
+        ..._extraMap(user, skip: {'id', 'userId', 'sessionId', 'email', 'installId', 'anonymousId'}),
       ];
 
   Map<String, dynamic> get sessionSummary =>
@@ -251,7 +296,7 @@ class EventView {
         if (platform != '—') 'Platform: $platform · $appVersion',
         if (userId != '—') 'User ID: $userId',
         if (country != '—')
-          'Region: $country${city != '—' ? ', $city' : ''} (${geoSource == 'device_locale' ? 'device locale' : 'request IP'})',
+          'Location: $locationLabel (${eventGeoSourceLabel(geoSource)})',
         ...networkSummaryLines(),
         if (issue != null) 'Grouped with ${issue!['eventCount']} similar events',
       ];

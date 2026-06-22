@@ -29,4 +29,53 @@ void main() {
     });
     expect(id, 'install-1');
   });
+
+  test('install id prefers device then user installId', () {
+    expect(
+      installIdFromPayload({
+        'user': {'id': 'user-123', 'installId': 'device-abc', 'anonymousId': 'device-abc'},
+        'device': {'installId': 'device-abc'},
+      }),
+      'device-abc',
+    );
+    expect(
+      installIdFromPayload({
+        'user': {'id': 'user-123', 'installId': 'device-abc'},
+        'device': {},
+      }),
+      'device-abc',
+    );
+  });
+
+  test('package guest vs logged-in payloads', () {
+    expect(
+      isGuestAppUser(
+        userId: 'device-abc',
+        installId: installIdFromPayload({
+          'user': {'id': 'device-abc', 'installId': 'device-abc', 'anonymousId': 'device-abc'},
+          'device': {'installId': 'device-abc'},
+        }),
+      ),
+      isTrue,
+    );
+    expect(
+      isIdentifiedAppUser(
+        userId: 'user-123',
+        installId: installIdFromPayload({
+          'user': {'id': 'user-123', 'email': 'a@b.com', 'installId': 'device-abc', 'anonymousId': 'device-abc'},
+          'device': {'installId': 'device-abc'},
+        }),
+      ),
+      isTrue,
+    );
+  });
+
+  test('user email from payload', () {
+    expect(
+      userEmailFromPayload({
+        'user': {'id': 'user-123', 'email': 'dev@example.com'},
+      }),
+      'dev@example.com',
+    );
+  });
 }

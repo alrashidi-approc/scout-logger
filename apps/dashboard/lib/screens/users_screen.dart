@@ -110,15 +110,20 @@ class _UsersScreenState extends State<UsersScreen> {
               itemBuilder: (_, i) {
                 final u = _users[i];
                 final last = DateTime.tryParse(u['lastSeenAt'] as String? ?? '');
+                final email = u['email'] as String?;
+                final userId = u['userId'] as String;
                 return Container(
                   margin: const EdgeInsets.only(bottom: 8),
                   decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.border)),
                   child: ListTile(
-                    onTap: () => context.push('/p/${widget.projectId}/users/${Uri.encodeComponent(u['userId'] as String)}'),
+                    onTap: () => context.push('/p/${widget.projectId}/users/${Uri.encodeComponent(userId)}'),
                     leading: CircleAvatar(backgroundColor: AppTheme.primary.withValues(alpha: 0.15), child: const Icon(Icons.person, color: AppTheme.primary, size: 18)),
-                    title: Text('${u['userId']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                    title: Text(email ?? userId, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
                     subtitle: Text(
-                      '${u['eventCount']} events · ${u['errorCount']} errors · ${u['sessionCount']} sessions',
+                      [
+                        if (email != null) userId,
+                        '${u['eventCount']} events · ${u['errorCount']} errors · ${u['deviceCount'] ?? 1} device${(u['deviceCount'] as int? ?? 1) == 1 ? '' : 's'}',
+                      ].join(' · '),
                       style: const TextStyle(fontSize: 12, color: AppTheme.muted),
                     ),
                     trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [

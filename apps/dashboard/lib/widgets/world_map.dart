@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui' show lerpDouble;
 
 import 'package:countries_world_map/countries_world_map.dart';
 import 'package:countries_world_map/data/maps/world_map.dart';
@@ -38,12 +39,15 @@ class WorldMapPanel extends StatefulWidget {
   State<WorldMapPanel> createState() => WorldMapPanelState();
 }
 
-class WorldMapPanelState extends State<WorldMapPanel> {
+class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderStateMixin {
   String? _hoverId;
   String? _selectedId;
   final _transform = TransformationController();
   final _viewportKey = GlobalKey();
   late final MapAttributes _attrs = MapAttributes(SMapWorld.instructionsMercator);
+  AnimationController? _focusAnim;
+  Offset? _focusScene;
+  double _focusScale = 1;
 
   @override
   void initState() {
@@ -62,9 +66,23 @@ class WorldMapPanelState extends State<WorldMapPanel> {
 
   @override
   void dispose() {
+    _focusAnim?.dispose();
     _transform.dispose();
     super.dispose();
   }
+
+  /// Zoom and center the map on a country (ISO-2).
+  void focusCountry(String countryCode) {
+    final code = countryCode.toLowerCase();
+    if (code.length != 2 || _trafficFor(code) == 0) return;
+    setState(() {
+      _selectedId = code;
+      _hoverId = null;
+    });
+    _focusCountries([code], tight: true);
+  }
+
+  int _trafficFor(String id) => math.max(_usersFor(id), _countFor(id));
 
   void focusRegion(String regionId) {
     final codes = widget.points
@@ -157,14 +175,8 @@ class WorldMapPanelState extends State<WorldMapPanel> {
   }
 
   void _onCountryTap(String id) {
-    final users = _usersFor(id);
-    if (users == 0) return;
-    final code = id.toLowerCase();
-    setState(() {
-      _selectedId = _selectedId == code ? null : code;
-      _hoverId = null;
-    });
-    _focusCountries([code], tight: true);
+    if (_trafficFor(id) == 0) return;
+    focusCountry(id);
   }
 
   void _focusActive() {
@@ -196,17 +208,69 @@ class WorldMapPanelState extends State<WorldMapPanel> {
     _focusBoundsFromLatLng(coords, tight: tight);
   }
 
+  ({double fitScale, double offsetX, double offsetY})? _mapLayout() {
+    final rb = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (rb == null || !rb.hasSize) return null;
+    final vw = rb.size.width;
+    final vh = rb.size.height;
+    final fitScale = math.min(vw / _attrs.mapWidth, vh / _attrs.mapHeight);
+    return (
+      fitScale: fitScale,
+      offsetX: (vw - _attrs.mapWidth * fitScale) / 2,
+      offsetY: (vh - _attrs.mapHeight * fitScale) / 2,
+    );
+  }
+
+  void _applyTransform(Offset scene, double scale) {
+    final rb = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (rb == null) return;
+    final vw = rb.size.width;
+    final vh = rb.size.height;
+    final s = scale.clamp(1.0, 14.0);
+    _transform.value = Matrix4.identity()
+      ..translateByDouble(vw / 2, vh / 2, 0, 1)
+      ..scaleByDouble(s, s, s, 1)
+      ..translateByDouble(-scene.dx, -scene.dy, 0, 1);
+    _focusScene = scene;
+    _focusScale = s;
+  }
+
+  void _animateTo(Offset scene, double targetScale) {
+    final rb = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (rb == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _animateTo(scene, targetScale));
+      return;
+    }
+    final vw = rb.size.width;
+    final vh = rb.size.height;
+    final fromScene = _focusScene ?? Offset(vw / 2, vh / 2);
+    final fromScale = _focusScale;
+
+    _focusAnim?.dispose();
+    _focusAnim = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+    final curve = CurvedAnimation(parent: _focusAnim!, curve: Curves.easeOutCubic);
+    _focusAnim!.addListener(() {
+      final t = curve.value;
+      _applyTransform(
+        Offset.lerp(fromScene, scene, t)!,
+        lerpDouble(fromScale, targetScale, t)!,
+      );
+    });
+    _focusAnim!.forward();
+  }
+
   void _focusBoundsFromLatLng(List<(double, double)> coords, {required bool tight}) {
     if (coords.isEmpty) return;
-    final rb = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
-    if (rb == null || !rb.hasSize) {
+    final layout = _mapLayout();
+    if (layout == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _focusBoundsFromLatLng(coords, tight: tight));
       return;
     }
 
+    final rb = _viewportKey.currentContext!.findRenderObject() as RenderBox;
     final vw = rb.size.width;
     final vh = rb.size.height;
-    final fitScale = math.min(vw / _attrs.mapWidth, vh / _attrs.mapHeight);
+    final fitScale = layout.fitScale;
 
     var minX = double.infinity, maxX = double.negativeInfinity;
     var minY = double.infinity, maxY = double.negativeInfinity;
@@ -219,30 +283,37 @@ class WorldMapPanelState extends State<WorldMapPanel> {
     }
 
     final single = coords.length == 1;
-    final pad = tight ? (single ? 36.0 : 70.0) : 120.0;
-    final bw = math.max(maxX - minX + pad, single ? 48.0 : 90.0);
-    final bh = math.max(maxY - minY + pad, single ? 40.0 : 70.0);
+    final padMap = tight ? (single ? 28.0 : 60.0) : 100.0;
+    final bw = math.max(maxX - minX + padMap, single ? 40.0 : 80.0);
+    final bh = math.max(maxY - minY + padMap, single ? 36.0 : 64.0);
     final cx = (minX + maxX) / 2;
     final cy = (minY + maxY) / 2;
 
-    final scaleX = vw / (bw * fitScale);
-    final scaleY = vh / (bh * fitScale);
-    final minScale = tight ? (single ? 5.0 : 2.5) : 1.6;
-    final scale = math.min(math.min(scaleX, scaleY), 14.0).clamp(minScale, 14.0);
+    final scene = Offset(
+      layout.offsetX + cx * fitScale,
+      layout.offsetY + cy * fitScale,
+    );
+    final bwScene = bw * fitScale;
+    final bhScene = bh * fitScale;
+    final scaleX = vw / bwScene;
+    final scaleY = vh / bhScene;
+    final minScale = tight ? (single ? 7.0 : 3.5) : 1.6;
+    final targetScale = math.min(math.min(scaleX, scaleY) * 0.92, 14.0).clamp(minScale, 14.0);
 
-    final offsetX = (vw - _attrs.mapWidth * fitScale) / 2;
-    final offsetY = (vh - _attrs.mapHeight * fitScale) / 2;
-    final tx = vw / 2 - (offsetX + cx * fitScale) * scale;
-    final ty = vh / 2 - (offsetY + cy * fitScale) * scale;
-
-    _transform.value = Matrix4.identity()
-      ..translateByDouble(tx, ty, 0, 1)
-      ..scaleByDouble(scale, scale, scale, 1);
+    _animateTo(scene, targetScale);
   }
 
   void _zoomBy(double factor) {
-    final scale = (_transform.value.getMaxScaleOnAxis() * factor).clamp(1.0, 14.0);
-    _transform.value = Matrix4.identity()..scaleByDouble(scale, scale, scale, 1);
+    final layout = _mapLayout();
+    final scene = _focusScene ??
+        (layout != null
+            ? Offset(
+                layout.offsetX + _attrs.mapWidth * layout.fitScale / 2,
+                layout.offsetY + _attrs.mapHeight * layout.fitScale / 2,
+              )
+            : null);
+    if (scene == null) return;
+    _applyTransform(scene, (_focusScale * factor).clamp(1.0, 14.0));
   }
 
   @override
@@ -301,7 +372,7 @@ class WorldMapPanelState extends State<WorldMapPanel> {
                       left: 12,
                       bottom: 12,
                       child: Text(
-                        'Tap a country to highlight · pinch to zoom',
+                        'Tap a country to zoom · pinch to pan',
                         style: TextStyle(color: WorldMapPanel._label.withValues(alpha: 0.45), fontSize: 11),
                       ),
                     ),

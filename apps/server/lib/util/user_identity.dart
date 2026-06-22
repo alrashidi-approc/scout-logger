@@ -17,6 +17,7 @@ String? installIdFromPayload(Map<String, dynamic> payload) {
   final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : null;
   for (final v in [
     device?['installId'],
+    user?['installId'],
     device?['anonymousId'],
     user?['anonymousId'],
   ]) {
@@ -24,6 +25,12 @@ String? installIdFromPayload(Map<String, dynamic> payload) {
     if (s != null && s.isNotEmpty) return s;
   }
   return null;
+}
+
+String? userEmailFromPayload(Map<String, dynamic> payload) {
+  final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : null;
+  final email = user?['email']?.toString().trim();
+  return email != null && email.isNotEmpty ? email : null;
 }
 
 bool isIdentifiedAppUser({String? userId, String? installId}) {

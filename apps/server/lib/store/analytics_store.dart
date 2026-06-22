@@ -4,6 +4,7 @@ import 'package:postgres/postgres.dart';
 
 import '../db/scout_db.dart';
 import '../util/dates.dart';
+import '../util/event_trend.dart';
 import '../util/user_identity.dart';
 
 /// Product analytics queries — funnels, retention, releases, session timelines.
@@ -452,19 +453,7 @@ class AnalyticsStore {
       parameters: {'pid': projectId, ...timeParams(w)},
     );
 
-    final trendFrom = since.substring(0, 10);
-    final trendUntil = trendUntilDate(w);
-    final trend = await conn.execute(
-      Sql.named('''
-        SELECT date, SUM(events_total)::int, SUM(errors)::int, SUM(crashes)::int,
-               SUM(unique_users)::int
-        FROM daily_stats
-        WHERE project_id = @pid AND date >= @fromDate::date
-          AND (@untilDate::date IS NULL OR date < @untilDate::date)
-        GROUP BY date ORDER BY date
-      '''),
-      parameters: {'pid': projectId, 'fromDate': trendFrom, 'untilDate': trendUntil},
-    );
+    final trend = await fetchEventTrend(conn, projectId, w, includeUsers: true);
 
     int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
     double delta(num current, num previous) =>
@@ -499,15 +488,8 @@ class AnalyticsStore {
       },
       'byType': byType.map((r) => {'type': r[0], 'count': r[1]}).toList(),
       'byPlatform': byPlatform.map((r) => {'platform': r[0], 'count': r[1]}).toList(),
-      'dailyTrend': trend
-          .map((r) => {
-                'date': (r[0] as DateTime).toIso8601String().substring(0, 10),
-                'events': r[1],
-                'errors': r[2],
-                'crashes': r[3],
-                'users': r[4],
-              })
-          .toList(),
+      'trendGranularity': trendGranularity(w),
+      'dailyTrend': trend,
     };
   }
 
@@ -669,7 +651,9 @@ class AnalyticsStore {
                MAX(occurred_at) AS last_seen,
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
-               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int,
+               COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int,
+               MAX(NULLIF(TRIM(payload->'user'->>'email'), '')) AS email
         FROM events
         WHERE project_id = @pid AND ${identifiedUserSql()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -684,11 +668,13 @@ class AnalyticsStore {
         .map((r) => {
               'userId': r[0],
               'identified': true,
+              'email': r[7],
               'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
               'eventCount': r[3],
               'errorCount': r[4],
               'sessionCount': r[5],
+              'deviceCount': r[6],
             })
         .toList();
   }
@@ -761,6 +747,24 @@ class AnalyticsStore {
       parameters: {'pid': projectId, 'uid': userId, ...tp},
     );
 
+    final devices = await conn.execute(
+      Sql.named('''
+        SELECT install_id,
+               MAX(COALESCE(payload->'device'->>'deviceName', payload->'device'->>'deviceModel')) AS device_name,
+               MAX(platform) AS platform,
+               MIN(occurred_at) AS first_seen,
+               MAX(occurred_at) AS last_seen,
+               COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY install_id
+        ORDER BY MAX(occurred_at) DESC
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
+    );
+
     final recent = await conn.execute(
       Sql.named('''
         WITH user_installs AS (
@@ -791,11 +795,23 @@ class AnalyticsStore {
       parameters: {'pid': projectId, 'uid': userId},
     );
 
+    final profile = await conn.execute(
+      Sql.named('''
+        SELECT MAX(NULLIF(TRIM(payload->'user'->>'email'), ''))
+        FROM events
+        WHERE project_id = @pid AND user_id = @uid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
+    );
+
     final s = stats.first;
     final guestEvents = guestOnly.first[0] as int;
     return {
       'userId': userId,
       'identified': true,
+      'email': profile.first[0],
       'includesGuestActivity': guestEvents > 0,
       'guestEventCount': guestEvents,
       'days': w.approximateDays,
@@ -806,6 +822,17 @@ class AnalyticsStore {
       'lastSeenAt': (s[4] as DateTime).toUtc().toIso8601String(),
       'topCountry': s[5],
       'sessionCount': sessions.first[0],
+      'deviceCount': devices.length,
+      'devices': devices
+          .map((r) => {
+                'installId': r[0],
+                'deviceName': r[1],
+                'platform': r[2],
+                'firstSeenAt': (r[3] as DateTime).toUtc().toIso8601String(),
+                'lastSeenAt': (r[4] as DateTime).toUtc().toIso8601String(),
+                'eventCount': r[5],
+              })
+          .toList(),
       'recentEvents': recent
           .map((r) {
             final uid = r[14]?.toString();

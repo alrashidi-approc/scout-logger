@@ -50,6 +50,16 @@ class TimeWindow {
     return u.difference(s).inDays.clamp(1, 365);
   }
 
+  /// Rolling 24h or a single inclusive calendar day (`from`…`to` same day).
+  bool get usesHourlyTrend {
+    if (since == null) return false;
+    final s = DateTime.parse(since!).toUtc();
+    final u = until != null ? DateTime.parse(until!).toUtc() : DateTime.now().toUtc();
+    final span = u.difference(s);
+    if (until != null && span == const Duration(days: 1)) return true;
+    return span.inHours <= 24;
+  }
+
   /// Previous period of equal length (for delta comparisons).
   TimeWindow previousPeriod() {
     if (since == null) return TimeWindow.lastDays(7);

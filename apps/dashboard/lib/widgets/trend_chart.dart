@@ -8,11 +8,18 @@ import '../theme/app_theme.dart';
 const chartErrorColor = AppTheme.error;
 
 class TrendChart extends StatelessWidget {
-  const TrendChart({super.key, required this.points, this.height = 240, this.showUsers = false});
+  const TrendChart({
+    super.key,
+    required this.points,
+    this.height = 240,
+    this.showUsers = false,
+    this.hourly = false,
+  });
 
   final List<Map<String, dynamic>> points;
   final double height;
   final bool showUsers;
+  final bool hourly;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +36,9 @@ class TrendChart extends StatelessWidget {
     final all = [...events, ...errors, if (showUsers) ...users];
     final maxY = all.fold<double>(0, (m, v) => v > m ? v : m);
     final top = maxY <= 0 ? 5.0 : maxY * 1.25;
+    final labelEvery = hourly ? (points.length > 12 ? 4 : 2) : 1;
+    final dayFmt = DateFormat.Md();
+    final hourFmt = DateFormat('HH:mm');
 
     return SizedBox(
       height: height,
@@ -58,11 +68,15 @@ class TrendChart extends StatelessWidget {
                 getTitlesWidget: (v, _) {
                   final i = v.toInt();
                   if (i < 0 || i >= points.length) return const SizedBox.shrink();
+                  if (hourly && i % labelEvery != 0 && i != points.length - 1) return const SizedBox.shrink();
                   final d = DateTime.tryParse('${points[i]['date']}');
                   if (d == null) return const SizedBox.shrink();
                   return Padding(
                     padding: const EdgeInsets.only(top: 8),
-                    child: Text(DateFormat.Md().format(d), style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
+                    child: Text(
+                      hourly ? hourFmt.format(d.toUtc()) : dayFmt.format(d),
+                      style: const TextStyle(fontSize: 10, color: AppTheme.muted),
+                    ),
                   );
                 },
               ),
@@ -77,14 +91,23 @@ class TrendChart extends StatelessWidget {
           lineTouchData: LineTouchData(
             touchTooltipData: LineTouchTooltipData(
               getTooltipColor: (_) => AppTheme.panelElevated,
-              getTooltipItems: (spots) => spots.map((s) {
-                final label = s.bar.color == chartErrorColor
-                    ? 'Errors'
-                    : s.bar.color == AppTheme.success
-                        ? 'Users'
-                        : 'Events';
-                return LineTooltipItem('$label: ${s.y.toInt()}', TextStyle(color: s.bar.color, fontWeight: FontWeight.w700));
-              }).toList(),
+              getTooltipItems: (spots) {
+                final i = spots.first.x.toInt();
+                final d = i >= 0 && i < points.length ? DateTime.tryParse('${points[i]['date']}') : null;
+                final when = d == null
+                    ? ''
+                    : hourly
+                        ? '${DateFormat('MMM d, HH:mm').format(d.toUtc())} UTC\n'
+                        : '${dayFmt.format(d)}\n';
+                return spots.map((s) {
+                  final label = s.bar.color == chartErrorColor
+                      ? 'Errors'
+                      : s.bar.color == AppTheme.success
+                          ? 'Users'
+                          : 'Events';
+                  return LineTooltipItem('$when$label: ${s.y.toInt()}', TextStyle(color: s.bar.color, fontWeight: FontWeight.w700));
+                }).toList();
+              },
             ),
           ),
         ),

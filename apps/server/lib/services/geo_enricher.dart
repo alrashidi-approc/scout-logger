@@ -22,6 +22,10 @@ class GeoLookup {
   final double? latitude;
   final double? longitude;
 
+  bool get hasCountry => country != null && country!.isNotEmpty && country != '??';
+
+  bool get isUsable => hasCountry && country != 'LO';
+
   Map<String, dynamic> toJson() => {
         if (country != null) 'country': country,
         if (countryName != null) 'countryName': countryName,
@@ -47,28 +51,43 @@ class GeoLookup {
   }
 }
 
+class GeoResolution {
+  const GeoResolution({
+    required this.geo,
+    required this.source,
+    this.localeCountry,
+    this.ipGeo,
+  });
+
+  final GeoLookup geo;
+  final String source;
+  final String? localeCountry;
+  final GeoLookup? ipGeo;
+
+  Map<String, dynamic> toEnrichmentJson() => {
+        ...geo.toJson(),
+        'source': source,
+        if (localeCountry != null) 'localeCountry': localeCountry,
+        if (ipGeo != null && ipGeo!.hasCountry) 'ipGeo': ipGeo!.toJson(),
+      };
+}
+
 class GeoEnricher {
   GeoEnricher({required this.enabled});
+
+  static const ipApiFields = 'status,country,countryCode,regionName,city,timezone,lat,lon';
 
   final bool enabled;
 
   Future<GeoLookup> lookup(Map<String, String> headers, {String? remoteIp}) async {
     if (!enabled) return const GeoLookup();
 
-    final cfCountry = headers['cf-ipcountry'];
-    if (cfCountry != null && cfCountry.isNotEmpty && cfCountry != 'XX') {
-      return GeoLookup(
-        country: cfCountry.toUpperCase(),
-        countryName: countryName(cfCountry),
-      );
-    }
-
     final ip = clientIp(headers, remoteIp: remoteIp);
     if (ip == null || isPrivateIp(ip)) {
       return const GeoLookup(country: 'LO', countryName: 'Local');
     }
 
-    return await _resolveIp(ip) ?? GeoLookup(country: '??', countryName: 'Unknown');
+    return await resolveIp(ip) ?? const GeoLookup(country: '??', countryName: 'Unknown');
   }
 
   String? clientIp(Map<String, String> headers, {String? remoteIp}) {
@@ -99,12 +118,78 @@ class GeoEnricher {
 
   static String? countryName(String? code) => _countryName(code ?? '');
 
-  /// Prefer device locale country (reliable on mobile) over IP lookup.
-  static GeoLookup resolveForEvent(Map<String, dynamic> device, GeoLookup ipGeo) {
-    final code = device['countryCode']?.toString().trim();
-    if (code == null || code.isEmpty || code.toLowerCase() == 'unknown') return ipGeo;
+  /// Client geo package IP → server request IP → SDK locale country → device [countryCode].
+  static GeoResolution resolveForEvent({
+    required Map<String, dynamic> device,
+    required GeoLookup ipGeo,
+  }) {
+    final d = _normalizedDeviceGeo(device);
+    final localeCountry = _localeCountry(d);
+
+    final sdkCountry = _sdkCountry(d);
+    if (sdkCountry != null && sdkCountry.source == 'ip') {
+      return GeoResolution(
+        geo: GeoLookup(country: sdkCountry.code, countryName: countryName(sdkCountry.code)),
+        source: 'ip',
+        localeCountry: localeCountry,
+        ipGeo: ipGeo.hasCountry ? ipGeo : null,
+      );
+    }
+
+    if (ipGeo.isUsable) {
+      return GeoResolution(geo: ipGeo, source: 'ip', localeCountry: localeCountry);
+    }
+
+    if (sdkCountry != null) {
+      return GeoResolution(
+        geo: GeoLookup(country: sdkCountry.code, countryName: countryName(sdkCountry.code)),
+        source: sdkCountry.source,
+        localeCountry: localeCountry,
+        ipGeo: ipGeo.hasCountry ? ipGeo : null,
+      );
+    }
+
+    if (localeCountry != null) {
+      return GeoResolution(
+        geo: GeoLookup(country: localeCountry, countryName: countryName(localeCountry)),
+        source: 'locale',
+        localeCountry: localeCountry,
+        ipGeo: ipGeo.hasCountry ? ipGeo : null,
+      );
+    }
+
+    return GeoResolution(geo: ipGeo, source: 'unknown', localeCountry: localeCountry);
+  }
+
+  /// Flat [device] fields plus nested [device.geo] from the client geo package.
+  static Map<String, dynamic> _normalizedDeviceGeo(Map<String, dynamic> device) {
+    final nested = device['geo'];
+    if (nested is Map) return {...device, ...Map<String, dynamic>.from(nested)};
+    return device;
+  }
+
+  static ({String code, String source})? _sdkCountry(Map<String, dynamic> device) {
+    final code = device['country']?.toString().trim();
+    if (code == null || code.isEmpty || code == 'LO' || code == '??') return null;
     final upper = code.toUpperCase();
-    return GeoLookup(country: upper, countryName: countryName(upper));
+    final raw = device['countrySource']?.toString().toLowerCase();
+    final source = raw == 'locale' || raw == 'device_locale' ? 'locale' : 'ip';
+    return (code: upper, source: source);
+  }
+
+  static String? _localeCountry(Map<String, dynamic> device) {
+    for (final key in ['localeCountry', 'countryCode']) {
+      final code = device[key]?.toString().trim();
+      if (code != null && code.isNotEmpty && code.toLowerCase() != 'unknown') {
+        return code.toUpperCase();
+      }
+    }
+    final locale = device['locale']?.toString();
+    if (locale != null && locale.contains('-')) {
+      final part = locale.split('-').last.trim();
+      if (part.length == 2) return part.toUpperCase();
+    }
+    return null;
   }
 
   static String? _countryName(String code) {
@@ -128,20 +213,30 @@ class GeoEnricher {
     return names[code.toUpperCase()];
   }
 
-  Future<GeoLookup?> _resolveIp(String ip) async {
+  static Future<GeoLookup?> resolveIp(String ip) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 2);
     try {
       final req = await client.getUrl(
-        Uri.parse('http://ip-api.com/json/$ip?fields=status,country,countryCode,regionName,city,timezone,lat,lon'),
+        Uri.parse('http://ip-api.com/json/$ip?fields=$ipApiFields'),
       );
       final res = await req.close().timeout(const Duration(seconds: 2));
       if (res.statusCode != 200) return null;
-      final body = await res.transform(utf8.decoder).join();
+      return parseIpApiBody(await res.transform(utf8.decoder).join());
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  static GeoLookup? parseIpApiBody(String body) {
+    try {
       final j = jsonDecode(body) as Map<String, dynamic>;
       if (j['status'] != 'success') return null;
       final code = j['countryCode']?.toString();
+      if (code == null || code.isEmpty) return null;
       return GeoLookup(
-        country: code,
+        country: code.toUpperCase(),
         countryName: j['country']?.toString() ?? countryName(code),
         region: j['regionName']?.toString(),
         city: j['city']?.toString(),
@@ -151,8 +246,6 @@ class GeoEnricher {
       );
     } catch (_) {
       return null;
-    } finally {
-      client.close(force: true);
     }
   }
 }
