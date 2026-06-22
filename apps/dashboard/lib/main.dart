@@ -1,20 +1,53 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'config/app_config.dart';
 import 'router/app_router.dart';
 import 'services/auth_service.dart';
+import 'services/dashboard_log_service.dart';
+import 'services/dashboard_scope.dart';
 import 'theme/app_theme.dart';
 import 'theme/scroll_behavior.dart';
+import 'widgets/page_placeholder.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppConfig.load();
   await AuthService.instance.load();
+
+  final prevFlutter = FlutterError.onError;
+  FlutterError.onError = (details) {
+    DashboardLogService.record(
+      projectId: DashboardScope.projectId,
+      level: 'error',
+      message: details.exceptionAsString(),
+      context: {
+        'library': details.library,
+        if (details.context != null) 'context': details.context.toString(),
+      },
+    );
+    prevFlutter?.call(details);
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    DashboardLogService.record(
+      projectId: DashboardScope.projectId,
+      level: 'error',
+      message: error.toString(),
+      context: {'stack': stack.toString().split('\n').take(5).join('\n')},
+    );
+    return false;
+  };
+
   runApp(MaterialApp.router(
     title: 'Scout Logger',
     theme: AppTheme.light().withScoutDefaults(),
     scrollBehavior: const ScoutScrollBehavior(),
     routerConfig: createRouter(),
     restorationScopeId: 'scout-dashboard',
+    builder: (context, child) => ColoredBox(
+      color: AppTheme.bg,
+      child: child ?? const ScoutBootstrapView(),
+    ),
   ));
 }

@@ -191,10 +191,11 @@ class FacetDropdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final safe = selected != null && options.contains(selected) ? selected : null;
     return SizedBox(
       width: 160,
       child: DropdownButtonFormField<String?>(
-        value: selected,
+        value: safe,
         isExpanded: true,
         decoration: InputDecoration(
           labelText: label,

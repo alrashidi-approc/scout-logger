@@ -8,6 +8,7 @@ import '../services/geo_enricher.dart';
 import '../services/key_cipher.dart';
 import '../util/dates.dart';
 import '../util/ids.dart';
+import '../util/user_identity.dart';
 
 class ScoutStore {
   ScoutStore(this.db, {KeyCipher? cipher}) : _cipher = cipher;
@@ -188,7 +189,7 @@ class ScoutStore {
     final w = window ?? TimeWindow.lastDays(30);
     final envRows = await conn.execute(
       Sql.named('''
-        SELECT DISTINCT COALESCE(NULLIF(environment, ''), 'unknown') AS environment
+        SELECT DISTINCT COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') AS environment
         FROM events WHERE project_id = @pid
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
@@ -198,8 +199,11 @@ class ScoutStore {
     );
     final verRows = await conn.execute(
       Sql.named('''
-        SELECT DISTINCT app_version FROM events
-        WHERE project_id = @pid AND app_version IS NOT NULL AND app_version <> ''
+        SELECT DISTINCT COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) AS app_version
+        FROM events
+        WHERE project_id = @pid
+          AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) IS NOT NULL
+          AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) <> ''
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         ORDER BY 1 DESC
@@ -241,6 +245,7 @@ class ScoutStore {
     final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : <String, dynamic>{};
     final device = payload['device'] is Map ? Map<String, dynamic>.from(payload['device'] as Map) : <String, dynamic>{};
     final userId = user['id']?.toString() ?? user['userId']?.toString();
+    final installId = installIdFromPayload(payload);
     final sessionId = user['sessionId']?.toString() ??
         payload['sessionId']?.toString() ??
         (payload['session'] is Map ? (payload['session'] as Map)['id']?.toString() : null);
@@ -278,6 +283,7 @@ class ScoutStore {
         title: eventTitle(event.type, payload),
         occurredAt: occurredAt,
         userId: userId,
+        installId: installId,
         country: country,
       );
     }
@@ -287,11 +293,11 @@ class ScoutStore {
       Sql.named('''
         INSERT INTO events (
           id, project_id, issue_id, type, occurred_at,
-          user_id, session_id, release, environment, platform, app_version,
+          user_id, session_id, install_id, release, environment, platform, app_version,
           country, region, city, message, payload, enrichment
         ) VALUES (
           @id, @pid, @iid, @type, @at,
-          @uid, @sid, @rel, @env, @plat, @aver,
+          @uid, @sid, @iid_install, @rel, @env, @plat, @aver,
           @country, @region, @city, @msg, @payload::jsonb, @enrich::jsonb
         )
       '''),
@@ -303,6 +309,7 @@ class ScoutStore {
         'at': occurredAt,
         'uid': userId,
         'sid': sessionId,
+        'iid_install': installId,
         'rel': release,
         'env': environment,
         'plat': platform,
@@ -326,7 +333,7 @@ class ScoutStore {
       );
     }
 
-    if (userId != null) {
+    if (userId != null && isIdentifiedAppUser(userId: userId, installId: installId)) {
       await conn.execute(
         Sql.named('''
           INSERT INTO user_first_seen (project_id, user_id, first_seen_at, first_country)
@@ -387,6 +394,7 @@ class ScoutStore {
     required String title,
     required DateTime occurredAt,
     String? userId,
+    String? installId,
     String? country,
   }) async {
     final existing = await conn.execute(
@@ -425,7 +433,7 @@ class ScoutStore {
         'type': type,
         'title': title,
         'at': occurredAt,
-        'au': userId != null ? 1 : 0,
+        'au': isIdentifiedAppUser(userId: userId, installId: installId) ? 1 : 0,
         'country': country,
       },
     );
@@ -448,7 +456,13 @@ class ScoutStore {
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, fingerprint, type, title, status, event_count, affected_users,
-               first_seen_at, last_seen_at, top_country
+               first_seen_at, last_seen_at, top_country,
+               (SELECT COALESCE(NULLIF(e.payload->>'level', ''), 'error')
+                FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
+                ORDER BY e.occurred_at DESC LIMIT 1) AS level,
+               (SELECT e.payload->'network'->>'statusCode'
+                FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
+                ORDER BY e.occurred_at DESC LIMIT 1) AS status_code
         FROM issues WHERE project_id = @pid
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
@@ -460,8 +474,8 @@ class ScoutStore {
             OR EXISTS (
               SELECT 1 FROM events e
               WHERE e.project_id = @pid AND e.issue_id = issues.id
-                AND (@env::text IS NULL OR COALESCE(NULLIF(e.environment, ''), 'unknown') = @env::text)
-                AND (@ver::text IS NULL OR e.app_version = @ver::text)
+                AND (@env::text IS NULL OR COALESCE(NULLIF(e.environment, ''), NULLIF(e.payload->>'environment', ''), NULLIF(e.payload->'release'->>'environment', ''), 'unknown') = @env::text)
+                AND (@ver::text IS NULL OR COALESCE(NULLIF(e.app_version, ''), NULLIF(e.payload->'device'->>'appVersion', ''), NULLIF(e.payload->'device'->>'version', '')) = @ver::text)
             )
           )
         ORDER BY last_seen_at DESC LIMIT @lim
@@ -489,6 +503,8 @@ class ScoutStore {
               'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': (r[8] as DateTime).toUtc().toIso8601String(),
               'topCountry': r[9],
+              'level': r[10],
+              if (r[11] != null) 'statusCode': r[11],
             })
         .toList();
   }
@@ -638,8 +654,8 @@ class ScoutStore {
           AND (@category::text IS NULL OR payload->>'category' = @category::text)
           AND (@q::text IS NULL OR message ILIKE '%' || @q::text || '%')
           AND (@country::text IS NULL OR country = @country::text)
-          AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), 'unknown') = @env::text)
-          AND (@ver::text IS NULL OR app_version = @ver::text)
+          AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') = @env::text)
+          AND (@ver::text IS NULL OR COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) = @ver::text)
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         ORDER BY occurred_at DESC LIMIT @lim
@@ -695,7 +711,7 @@ class ScoutStore {
           COUNT(*)::int,
           COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
           COUNT(*) FILTER (WHERE type = 'crash')::int,
-          COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int
+          COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
         FROM events
         WHERE project_id = @pid
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -725,7 +741,7 @@ class ScoutStore {
               AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
               AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)),
           COUNT(DISTINCT user_id) FILTER (
-            WHERE user_id IS NOT NULL
+            WHERE ${identifiedUserSql()}
               AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
               AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           )::int
@@ -811,13 +827,13 @@ class ScoutStore {
       Sql.named('''
         SELECT country,
                COUNT(*)::int,
-               COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '')::int
+               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY country
-        ORDER BY COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL AND user_id <> '') DESC,
+        ORDER BY COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} ) DESC,
                  COUNT(*) DESC
       '''),
       parameters: {'pid': projectId, ...timeParams(w)},
@@ -967,5 +983,63 @@ class ScoutStore {
       parameters: {'id': projectId, 'settings': jsonEncode(next.toSettingsJson())},
     );
     return next.toClientResponse();
+  }
+
+  Future<void> appendDashboardLog({
+    required String projectId,
+    String? userId,
+    required String level,
+    required String message,
+    String? route,
+    Map<String, dynamic>? context,
+  }) async {
+    final conn = await db.connect();
+    final lvl = {'error', 'warning', 'info'}.contains(level) ? level : 'error';
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO dashboard_logs (id, project_id, user_id, level, message, route, context)
+        VALUES (@id, @pid, @uid, @lvl, @msg, @route, @ctx::jsonb)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'uid': userId,
+        'lvl': lvl,
+        'msg': message.length > 4000 ? message.substring(0, 4000) : message,
+        'route': route,
+        'ctx': jsonEncode(context ?? {}),
+      },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> listDashboardLogs(
+    String projectId, {
+    int limit = 100,
+    String? level,
+  }) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT l.id, l.level, l.message, l.route, l.context, l.created_at, u.email
+        FROM dashboard_logs l
+        LEFT JOIN dashboard_users u ON u.id = l.user_id
+        WHERE l.project_id = @pid
+          AND (@lvl::text IS NULL OR l.level = @lvl::text)
+        ORDER BY l.created_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'lvl': level, 'lim': limit.clamp(1, 500)},
+    );
+    return rows
+        .map((r) => {
+              'id': r[0],
+              'level': r[1],
+              'message': r[2],
+              'route': r[3],
+              'context': r[4] is Map ? Map<String, dynamic>.from(r[4] as Map) : <String, dynamic>{},
+              'createdAt': (r[5] as DateTime).toUtc().toIso8601String(),
+              'userEmail': r[6],
+            })
+        .toList();
   }
 }

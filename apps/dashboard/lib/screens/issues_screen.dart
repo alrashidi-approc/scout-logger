@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
+import '../theme/app_theme.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -39,7 +42,9 @@ class _IssuesScreenState extends State<IssuesScreen> {
   List<String> _environments = [];
   List<String> _appVersions = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late String? _typeFilter;
   late String? _statusFilter;
   late PeriodFilter _period;
@@ -72,39 +77,57 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
-      final results = await Future.wait([
-        _api.fetchIssues(
-          widget.projectId,
-          type: _typeFilter,
-          status: _statusFilter,
-          period: _period,
-          q: _search.isEmpty ? null : _search,
-          environment: _environment,
-          appVersion: _appVersion,
-        ),
-        _api.fetchFilterFacets(widget.projectId, period: _period),
-      ]);
-      if (mounted) {
-        final facets = results[1] as Map<String, dynamic>;
-        setState(() {
-          _issues = results[0] as List<Map<String, dynamic>>;
-          _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
-          _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
-          _loading = false;
-        });
-      }
+      final issues = await _api.fetchIssues(
+        widget.projectId,
+        type: _typeFilter,
+        status: _statusFilter,
+        period: _period,
+        q: _search.isEmpty ? null : _search,
+        environment: _environment,
+        appVersion: _appVersion,
+      );
+      if (!mounted) return;
+      setState(() {
+        _issues = issues;
+        _hasData = true;
+        _loading = false;
+
+        _refreshing = false;
+      });
+      _loadFacets();
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = e;
           _loading = false;
+
+          _refreshing = false;
         });
       }
     }
+  }
+
+  Future<void> _loadFacets() async {
+    try {
+      final facets = await _api.fetchFilterFacets(widget.projectId, period: _period);
+      if (!mounted) return;
+      setState(() {
+        _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      });
+    } catch (_) {}
   }
 
   void _apply({
@@ -139,72 +162,99 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final pad = pagePad(context);
+    final insets = pageInsets(context);
+
+    return Stack(
       children: [
-        Padding(
-          padding: pageInsets(context, top: pagePad(context)),
-          child: PageHeader(
-            title: 'Issues',
-            subtitle: '${_issues.length} grouped errors and crashes',
-            period: _period,
-            onPeriodTap: _openPeriodPicker,
-            actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+        RefreshIndicator(
+      onRefresh: _load,
+      child: CustomScrollView(
+        key: PageStorageKey('issues-${widget.projectId}'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverPadding(
+            padding: insets.copyWith(top: pad),
+            sliver: SliverToBoxAdapter(
+              child: PageHeader(
+                title: 'Issues',
+                subtitle: '${_issues.length} grouped errors and crashes',
+                period: _period,
+                onPeriodTap: _openPeriodPicker,
+                actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+              ),
+            ),
           ),
-        ),
-        Padding(
-          padding: pageInsets(context, top: 12),
-          child: FilterBar(
-            period: _period,
-            onPeriodChanged: (p) => _apply(period: p),
-            searchHint: 'Search issue title…',
-            searchValue: _search,
-            onSearch: (q) => _apply(search: q),
-            typeOptions: const [null, 'error', 'crash', 'network'],
-            typeSelected: _typeFilter,
-            onTypeSelected: (t) => _apply(type: t, reloadType: true),
-            environmentOptions: _environments,
-            environmentSelected: _environment,
-            onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
-            appVersionOptions: _appVersions,
-            appVersionSelected: _appVersion,
-            onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
-            extra: [
-              Wrap(
-                spacing: 8,
-                children: [
-                  FilterChip(label: const Text('All status'), selected: _statusFilter == null, onSelected: (_) => _apply(status: null, reloadStatus: true)),
-                  FilterChip(label: const Text('Open'), selected: _statusFilter == 'open', onSelected: (_) => _apply(status: 'open', reloadStatus: true)),
-                  FilterChip(label: const Text('Resolved'), selected: _statusFilter == 'resolved', onSelected: (_) => _apply(status: 'resolved', reloadStatus: true)),
+          SliverPadding(
+            padding: insets.copyWith(top: 12),
+            sliver: SliverToBoxAdapter(
+              child: FilterBar(
+                period: _period,
+                onPeriodChanged: (p) => _apply(period: p),
+                searchHint: 'Search issue title…',
+                searchValue: _search,
+                onSearch: (q) => _apply(search: q),
+                typeOptions: const [null, 'error', 'crash', 'network'],
+                typeSelected: _typeFilter,
+                onTypeSelected: (t) => _apply(type: t, reloadType: true),
+                environmentOptions: _environments,
+                environmentSelected: _environment,
+                onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
+                appVersionOptions: _appVersions,
+                appVersionSelected: _appVersion,
+                onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
+                extra: [
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      FilterChip(label: const Text('All status'), selected: _statusFilter == null, onSelected: (_) => _apply(status: null, reloadStatus: true)),
+                      FilterChip(label: const Text('Open'), selected: _statusFilter == 'open', onSelected: (_) => _apply(status: 'open', reloadStatus: true)),
+                      FilterChip(label: const Text('Resolved'), selected: _statusFilter == 'resolved', onSelected: (_) => _apply(status: 'resolved', reloadStatus: true)),
+                    ],
+                  ),
                 ],
               ),
-            ],
+            ),
           ),
-        ),
-        Expanded(
-          child: _loading
-              ? const LoadingView()
-              : _error != null
-                  ? ErrorPanel(message: _error!, onRetry: _load)
-                  : _issues.isEmpty
-                      ? const EmptyState(
-                          icon: Icons.check_circle_outline,
-                          title: 'No issues match filters',
-                          subtitle: 'When your app sends errors, they appear here grouped by fingerprint.',
-                        )
-                      : RefreshIndicator(
-                          onRefresh: _load,
-                          child: ListView.builder(
-                            key: PageStorageKey('issues-${widget.projectId}'),
-                            padding: pageInsets(context, top: 12, bottom: pagePad(context)),
-                            itemCount: _issues.length,
-                            itemBuilder: (_, i) => IssueCard(
-                              issue: _issues[i],
-                              onTap: () => context.push('/p/${widget.projectId}/issues/${_issues[i]['id']}'),
-                            ),
-                          ),
-                        ),
-        ),
+          if (_loading)
+            const SliverFillRemaining(hasScrollBody: false, child: LoadingView(layout: PlaceholderLayout.issues))
+          else if (_error != null && !_hasData)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: ErrorPanel(message: formatLoadError(_error!), onRetry: _load),
+            )
+          else if (_issues.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: EmptyState(
+                icon: Icons.check_circle_outline,
+                title: 'No issues match filters',
+                subtitle: 'When your app sends errors, they appear here grouped by fingerprint.',
+              ),
+            )
+          else
+            SliverPadding(
+              padding: insets.copyWith(top: 12, bottom: pad),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => IssueCard(
+                    issue: _issues[i],
+                    onTap: () => context.push('/p/${widget.projectId}/issues/${_issues[i]['id']}'),
+                  ),
+                  childCount: _issues.length,
+                ),
+              ),
+            ),
+        ],
+      ),
+    ),
+        if (_refreshing)
+          Positioned.fill(
+            child: ColoredBox(
+              color: AppTheme.bg.withValues(alpha: 0.92),
+              child: const ScoutRefreshShimmer(layout: PlaceholderLayout.issues),
+            ),
+          ),
       ],
     );
   }

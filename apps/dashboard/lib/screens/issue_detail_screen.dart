@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_card.dart';
 import '../widgets/level_badge.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class IssueDetailScreen extends StatefulWidget {
@@ -24,8 +26,9 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _issue;
   bool _loading = true;
+  bool _refreshing = false;
   bool _updating = false;
-  String? _error;
+  Object? _error;
 
   @override
   void initState() {
@@ -35,19 +38,31 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _issue != null,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final issue = await _api.fetchIssue(widget.projectId, widget.issueId);
       if (mounted) setState(() {
         _issue = issue;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -75,9 +90,17 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading && _issue == null,
+      refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.detail,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     final issue = _issue!;
     final events = jsonListMaps(issue['events']);
     final geo = jsonListMaps(issue['geoBreakdown']);

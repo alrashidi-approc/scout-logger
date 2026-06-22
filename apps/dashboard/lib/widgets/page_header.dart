@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
+import 'page_placeholder.dart';
+export 'page_placeholder.dart' show PlaceholderLayout, ScoutAnimatedPlaceholder, ScoutRefreshShimmer, ScoutBootstrapView;
 import 'period_picker.dart';
 
 class PageHeader extends StatelessWidget {
@@ -44,6 +46,53 @@ class PageHeader extends StatelessWidget {
           const SizedBox(height: 8),
           Wrap(spacing: 4, runSpacing: 4, children: actions!),
         ],
+      ],
+    );
+  }
+}
+
+/// Strip `Exception:` prefix from API / load failures.
+String formatLoadError(Object error) => error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+
+/// Standard loading / error / content switch for scrollable screens.
+class AsyncScreenBody extends StatelessWidget {
+  const AsyncScreenBody({
+    super.key,
+    required this.loading,
+    this.refreshing = false,
+    this.error,
+    required this.onRetry,
+    required this.child,
+    this.empty,
+    this.placeholderLayout = PlaceholderLayout.list,
+  });
+
+  final bool loading;
+  final bool refreshing;
+  final Object? error;
+  final VoidCallback onRetry;
+  final Widget child;
+  final Widget? empty;
+  final PlaceholderLayout placeholderLayout;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return ScoutAnimatedPlaceholder(layout: placeholderLayout);
+    if (error != null && !refreshing) {
+      return ErrorPanel(message: formatLoadError(error!), onRetry: onRetry);
+    }
+    if (empty != null && !refreshing) return empty!;
+
+    return Stack(
+      children: [
+        child,
+        if (refreshing)
+          Positioned.fill(
+            child: ColoredBox(
+              color: AppTheme.bg.withValues(alpha: 0.92),
+              child: ScoutRefreshShimmer(layout: placeholderLayout),
+            ),
+          ),
       ],
     );
   }
@@ -96,8 +145,12 @@ class ErrorPanel extends StatelessWidget {
 }
 
 class LoadingView extends StatelessWidget {
-  const LoadingView({super.key});
+  const LoadingView({super.key, this.layout = PlaceholderLayout.generic, this.refreshing = false});
+
+  final PlaceholderLayout layout;
+  final bool refreshing;
 
   @override
-  Widget build(BuildContext context) => const Center(child: CircularProgressIndicator());
+  Widget build(BuildContext context) =>
+      refreshing ? ScoutRefreshShimmer(layout: layout) : ScoutAnimatedPlaceholder(layout: layout);
 }

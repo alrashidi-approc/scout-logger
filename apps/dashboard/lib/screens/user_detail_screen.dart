@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../widgets/event_card.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class UserDetailScreen extends StatefulWidget {
@@ -23,7 +25,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _user;
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  Object? _error;
 
   @override
   void initState() {
@@ -33,28 +36,48 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _user != null,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final user = await _api.fetchUser(widget.projectId, widget.userId);
       if (mounted) setState(() {
         _user = user;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading && _user == null,
+      refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.detail,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     final u = _user!;
     final events = jsonListMaps(u['recentEvents']);
     final first = DateTime.tryParse(u['firstSeenAt'] as String? ?? '');
@@ -64,7 +87,22 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       padding: pageInsets(context, top: 16, bottom: pagePad(context)),
       children: [
         TextButton.icon(onPressed: () => popOrGo(context, '/p/${widget.projectId}/users'), icon: const Icon(Icons.arrow_back, size: 18), label: const Text('Back')),
-        PageHeader(title: widget.userId, subtitle: 'User profile'),
+        PageHeader(title: widget.userId, subtitle: 'Logged-in user · merged with pre-login activity on same device'),
+        if (u['includesGuestActivity'] == true) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.info.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.info.withValues(alpha: 0.25)),
+            ),
+            child: Text(
+              'Includes ${u['guestEventCount'] ?? 0} pre-login events from the same install (guest id merged into this profile).',
+              style: const TextStyle(fontSize: 12, color: AppTheme.text, height: 1.4),
+            ),
+          ),
+        ],
         const SizedBox(height: 16),
         Wrap(spacing: 10, runSpacing: 10, children: [
           _chip('Events', '${u['eventCount']}', Icons.show_chart),

@@ -4,6 +4,7 @@ import 'package:postgres/postgres.dart';
 
 import '../db/scout_db.dart';
 import '../util/dates.dart';
+import '../util/user_identity.dart';
 
 /// Product analytics queries — funnels, retention, releases, session timelines.
 class AnalyticsStore {
@@ -90,16 +91,22 @@ class AnalyticsStore {
     final since = utcTimestampDaysAgo(weeks * 7);
     final rows = await conn.execute(
       Sql.named('''
-        WITH cohorts AS (
+        WITH         cohorts AS (
           SELECT user_id, date_trunc('week', first_seen_at AT TIME ZONE 'utc')::date AS cohort_week
           FROM user_first_seen
           WHERE project_id = @pid
             AND first_seen_at >= @since::timestamptz
+            AND EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.user_id = user_first_seen.user_id
+                AND ${identifiedUserSql(alias: 'e')}
+              LIMIT 1
+            )
         ),
         activity AS (
           SELECT user_id, date_trunc('week', occurred_at AT TIME ZONE 'utc')::date AS active_week
           FROM events
-          WHERE project_id = @pid AND user_id IS NOT NULL
+          WHERE project_id = @pid AND ${identifiedUserSql()}
           GROUP BY user_id, active_week
         )
         SELECT
@@ -165,7 +172,7 @@ class AnalyticsStore {
           COUNT(*)::int AS events,
           COUNT(*) FILTER (WHERE e.type = 'crash')::int AS crashes,
           COUNT(*) FILTER (WHERE e.type IN ('error', 'network'))::int AS errors,
-          COUNT(DISTINCT e.user_id)::int AS users,
+          COUNT(DISTINCT e.user_id) FILTER (WHERE ${identifiedUserSql(alias: 'e')})::int AS users,
           COALESCE(ss.sessions, 0)::int AS sessions,
           COALESCE(ss.avg_ms, 0)::int AS avg_session_ms
         FROM events e
@@ -205,7 +212,8 @@ class AnalyticsStore {
         SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms,
                end_ev.payload->'summary' AS summary,
                end_ev.payload->'reason' AS reason,
-               (SELECT release FROM events WHERE project_id = s.project_id AND session_id = s.id AND release IS NOT NULL ORDER BY occurred_at LIMIT 1) AS release
+               (SELECT release FROM events WHERE project_id = s.project_id AND session_id = s.id AND release IS NOT NULL ORDER BY occurred_at LIMIT 1) AS release,
+               (SELECT install_id FROM events WHERE project_id = s.project_id AND session_id = s.id AND install_id IS NOT NULL ORDER BY occurred_at LIMIT 1) AS install_id
         FROM app_sessions s
         LEFT JOIN LATERAL (
           SELECT payload FROM events
@@ -224,9 +232,12 @@ class AnalyticsStore {
 
     return rows.map((r) {
       final summary = _jsonField(r[5]);
+      final userId = r[1]?.toString();
+      final installId = r[8]?.toString();
       return {
         'id': r[0],
-        'userId': r[1],
+        'userId': userId,
+        'isGuest': isGuestAppUser(userId: userId, installId: installId),
         'startedAt': (r[2] as DateTime).toUtc().toIso8601String(),
         'endedAt': r[3] != null ? (r[3] as DateTime).toUtc().toIso8601String() : null,
         'durationMs': r[4],
@@ -354,7 +365,7 @@ class AnalyticsStore {
               COUNT(*) FILTER (WHERE type = 'session')::int,
               COUNT(*) FILTER (WHERE type = 'span')::int,
               COUNT(*) FILTER (WHERE type = 'log')::int,
-              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int,
+              COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
             FROM events
             WHERE project_id = @pid AND occurred_at >= @from::timestamptz
@@ -371,7 +382,7 @@ class AnalyticsStore {
               COUNT(*) FILTER (WHERE type = 'session')::int,
               COUNT(*) FILTER (WHERE type = 'span')::int,
               COUNT(*) FILTER (WHERE type = 'log')::int,
-              COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int,
+              COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
             FROM events
             WHERE project_id = @pid
@@ -511,7 +522,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COUNT(DISTINCT user_id)::int
         FROM events
-        WHERE project_id = @pid AND user_id IS NOT NULL
+        WHERE project_id = @pid AND ${identifiedUserSql()}
           AND type IN ('error', 'network', 'crash')
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
@@ -660,7 +671,7 @@ class AnalyticsStore {
                COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
                COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
         FROM events
-        WHERE project_id = @pid AND user_id IS NOT NULL
+        WHERE project_id = @pid AND ${identifiedUserSql()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY user_id
@@ -672,6 +683,7 @@ class AnalyticsStore {
     return rows
         .map((r) => {
               'userId': r[0],
+              'identified': true,
               'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
               'eventCount': r[3],
@@ -685,22 +697,59 @@ class AnalyticsStore {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
     final tp = timeParams(w);
+    final guestSql = guestUserSql();
+
     final stats = await conn.execute(
       Sql.named('''
-        SELECT COUNT(*)::int,
-               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
-               COUNT(*) FILTER (WHERE type = 'crash')::int,
-               MIN(occurred_at),
-               MAX(occurred_at),
-               MAX(country)
+        WITH user_installs AS (
+          SELECT DISTINCT install_id
+          FROM events
+          WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
+        ),
+        merged AS (
+          SELECT type, occurred_at, country
+          FROM events
+          WHERE project_id = @pid
+            AND (
+              user_id = @uid
+              OR (
+                install_id IN (SELECT install_id FROM user_installs)
+                AND $guestSql
+              )
+            )
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        )
+        SELECT
+          COUNT(*)::int,
+          COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+          COUNT(*) FILTER (WHERE type = 'crash')::int,
+          MIN(occurred_at),
+          MAX(occurred_at),
+          MAX(country)
+        FROM merged
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
+    );
+    if (stats.isEmpty || stats.first[0] == 0) return null;
+
+    final guestOnly = await conn.execute(
+      Sql.named('''
+        WITH user_installs AS (
+          SELECT DISTINCT install_id
+          FROM events
+          WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
+        )
+        SELECT COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND user_id = @uid
+        WHERE project_id = @pid
+          AND install_id IN (SELECT install_id FROM user_installs)
+          AND $guestSql
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
       parameters: {'pid': projectId, 'uid': userId, ...tp},
     );
-    if (stats.isEmpty || stats.first[0] == 0) return null;
 
     final sessions = await conn.execute(
       Sql.named('''
@@ -714,23 +763,41 @@ class AnalyticsStore {
 
     final recent = await conn.execute(
       Sql.named('''
+        WITH user_installs AS (
+          SELECT DISTINCT install_id
+          FROM events
+          WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
+        )
         SELECT id, type, occurred_at, message, release, platform, environment, app_version,
                payload->'screen'->>'currentRoute' AS route,
                COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
                payload->'network'->>'url' AS network_url,
                payload->'network'->>'statusCode' AS status_code,
                payload->>'category' AS category,
-               payload->>'level' AS level
+               payload->>'level' AS level,
+               user_id,
+               install_id
         FROM events
-        WHERE project_id = @pid AND user_id = @uid
+        WHERE project_id = @pid
+          AND (
+            user_id = @uid
+            OR (
+              install_id IN (SELECT install_id FROM user_installs)
+              AND $guestSql
+            )
+          )
         ORDER BY occurred_at DESC LIMIT 20
       '''),
       parameters: {'pid': projectId, 'uid': userId},
     );
 
     final s = stats.first;
+    final guestEvents = guestOnly.first[0] as int;
     return {
       'userId': userId,
+      'identified': true,
+      'includesGuestActivity': guestEvents > 0,
+      'guestEventCount': guestEvents,
       'days': w.approximateDays,
       'eventCount': s[0],
       'errorCount': s[1],
@@ -740,22 +807,27 @@ class AnalyticsStore {
       'topCountry': s[5],
       'sessionCount': sessions.first[0],
       'recentEvents': recent
-          .map((r) => {
-                'id': r[0],
-                'type': r[1],
-                'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
-                'message': r[3],
-                'release': r[4],
-                'platform': r[5],
-                'environment': r[6],
-                'appVersion': r[7],
-                'route': r[8],
-                'deviceName': r[9],
-                'networkUrl': r[10],
-                'statusCode': r[11]?.toString(),
-                'category': r[12],
-                'level': r[13],
-              })
+          .map((r) {
+            final uid = r[14]?.toString();
+            final iid = r[15]?.toString();
+            return {
+              'id': r[0],
+              'type': r[1],
+              'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'message': r[3],
+              'release': r[4],
+              'platform': r[5],
+              'environment': r[6],
+              'appVersion': r[7],
+              'route': r[8],
+              'deviceName': r[9],
+              'networkUrl': r[10],
+              'statusCode': r[11]?.toString(),
+              'category': r[12],
+              'level': r[13],
+              'isGuest': isGuestAppUser(userId: uid, installId: iid),
+            };
+          })
           .toList(),
     };
   }

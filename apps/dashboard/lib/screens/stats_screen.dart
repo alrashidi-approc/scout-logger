@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/filter_bar.dart';
@@ -9,6 +10,7 @@ import '../widgets/page_header.dart';
 import '../widgets/period_picker.dart';
 import '../widgets/stat_card.dart';
 import '../utils/date_range.dart';
+import '../utils/issue_view.dart';
 import '../utils/responsive.dart';
 import '../widgets/panel.dart';
 import '../widgets/trend_chart.dart';
@@ -27,7 +29,7 @@ class _StatsScreenState extends State<StatsScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _data;
   bool _loading = true;
-  String? _error;
+  Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
   @override
@@ -48,8 +50,9 @@ class _StatsScreenState extends State<StatsScreen> {
         _loading = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
       });
     }
@@ -71,9 +74,15 @@ class _StatsScreenState extends State<StatsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+      error: _error,
+      onRetry: _load,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     final d = _data!;
     final trend = jsonListMaps(d['dailyTrend']);
     final byType = jsonListMaps(d['byType']);
@@ -159,7 +168,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString()),
               ),
               StatCard(
-                label: 'Unique users',
+                label: 'Logged-in users',
                 value: '${d['uniqueUsers']}',
                 icon: Icons.people_outline,
                 color: AppTheme.success,
@@ -201,7 +210,7 @@ class _StatsScreenState extends State<StatsScreen> {
             trailing: Row(mainAxisSize: MainAxisSize.min, children: [
               _legend(AppTheme.primary, 'Events'),
               const SizedBox(width: 12),
-              _legend(AppTheme.accentPurple, 'Errors'),
+              _legend(AppTheme.error, 'Errors'),
               const SizedBox(width: 12),
               _legend(AppTheme.success, 'Users'),
             ]),
@@ -268,8 +277,6 @@ class _TypePie extends StatelessWidget {
   const _TypePie(this.items);
   final List<Map<String, dynamic>> items;
 
-  static const _colors = [AppTheme.primary, AppTheme.accentPurple, AppTheme.warning, AppTheme.success, AppTheme.info, AppTheme.accentPink];
-
   @override
   Widget build(BuildContext context) {
     final total = items.fold<int>(0, (s, i) => s + (i['count'] as int? ?? 0));
@@ -286,7 +293,7 @@ class _TypePie extends StatelessWidget {
                 for (var i = 0; i < items.length; i++)
                   PieChartSectionData(
                     value: (items[i]['count'] as int? ?? 0).toDouble(),
-                    color: _colors[i % _colors.length],
+                    color: chartTypeColor('${items[i]['type']}'),
                     radius: 52,
                     title: '',
                   ),
@@ -303,7 +310,7 @@ class _TypePie extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(children: [
-                    Container(width: 10, height: 10, decoration: BoxDecoration(color: _colors[i % _colors.length], borderRadius: BorderRadius.circular(2))),
+                    Container(width: 10, height: 10, decoration: BoxDecoration(color: chartTypeColor('${items[i]['type']}'), borderRadius: BorderRadius.circular(2))),
                     const SizedBox(width: 8),
                     Text('${items[i]['type']}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                     const Spacer(),

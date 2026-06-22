@@ -9,6 +9,7 @@ import '../screens/geo_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
 import '../screens/overview_screen.dart';
+import '../screens/dashboard_logs_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/session_detail_screen.dart';
@@ -18,6 +19,7 @@ import '../screens/users_screen.dart';
 import '../services/auth_service.dart';
 import '../utils/date_range.dart';
 import '../widgets/shell.dart';
+import 'scout_page.dart';
 
 GoRouter createRouter() {
   final auth = AuthService.instance;
@@ -34,22 +36,31 @@ GoRouter createRouter() {
       return null;
     },
     routes: [
-      GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
-      GoRoute(path: '/signup', builder: (_, __) => const SignupScreen()),
+      GoRoute(
+        path: '/login',
+        pageBuilder: (c, s) => scoutPage(s, const LoginScreen()),
+      ),
+      GoRoute(
+        path: '/signup',
+        pageBuilder: (c, s) => scoutPage(s, const SignupScreen()),
+      ),
       GoRoute(
         path: '/verify-email',
-        builder: (_, state) => VerifyEmailScreen(
-          email: state.uri.queryParameters['email'],
-          token: state.uri.queryParameters['token'],
+        pageBuilder: (c, s) => scoutPage(
+          s,
+          VerifyEmailScreen(
+            email: s.uri.queryParameters['email'],
+            token: s.uri.queryParameters['token'],
+          ),
         ),
       ),
       GoRoute(
         path: '/projects',
-        builder: (_, __) => const DashboardShell(projectId: null, child: ProjectsScreen()),
+        pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: ProjectsScreen())),
       ),
       GoRoute(
         path: '/admin/users',
-        builder: (_, __) => const DashboardShell(projectId: null, child: AdminUsersScreen()),
+        pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: AdminUsersScreen())),
       ),
       ShellRoute(
         builder: (context, state, child) {
@@ -59,9 +70,12 @@ GoRouter createRouter() {
         routes: [
           GoRoute(
             path: '/p/:projectId',
-            builder: (_, state) => OverviewScreen(
-              projectId: state.pathParameters['projectId']!,
-              initialPeriod: PeriodFilter.parse(state.uri.queryParameters),
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              OverviewScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
+              ),
             ),
           ),
           GoRoute(
@@ -74,113 +88,150 @@ GoRouter createRouter() {
           ),
           GoRoute(
             path: '/p/:projectId/users',
-            builder: (_, state) => UsersScreen(
-              projectId: state.pathParameters['projectId']!,
-              initialPeriod: PeriodFilter.parse(state.uri.queryParameters, defaultDays: 30),
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              UsersScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
+              ),
             ),
             routes: [
               GoRoute(
                 path: ':userId',
-                builder: (_, state) => UserDetailScreen(
-                  projectId: state.pathParameters['projectId']!,
-                  userId: Uri.decodeComponent(state.pathParameters['userId']!),
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  UserDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    userId: Uri.decodeComponent(s.pathParameters['userId']!),
+                  ),
                 ),
               ),
             ],
           ),
           GoRoute(
             path: '/p/:projectId/sessions',
-            builder: (_, state) => SessionsScreen(
-              projectId: state.pathParameters['projectId']!,
-              initialPeriod: PeriodFilter.parse(state.uri.queryParameters),
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              SessionsScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
+              ),
             ),
             routes: [
               GoRoute(
                 path: ':sessionId',
-                builder: (_, state) => SessionDetailScreen(
-                  projectId: state.pathParameters['projectId']!,
-                  sessionId: state.pathParameters['sessionId']!,
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  SessionDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    sessionId: s.pathParameters['sessionId']!,
+                  ),
                 ),
               ),
             ],
           ),
           GoRoute(
             path: '/p/:projectId/analytics',
-            builder: (_, state) => AnalyticsScreen(
-              projectId: state.pathParameters['projectId']!,
-              initialTab: state.uri.queryParameters['tab'],
-              initialPeriod: PeriodFilter.parse(state.uri.queryParameters, defaultDays: 30),
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              AnalyticsScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialTab: s.uri.queryParameters['tab'],
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
+              ),
             ),
             routes: [
               GoRoute(
                 path: 'sessions/:sessionId',
-                builder: (_, state) => SessionDetailScreen(
-                  projectId: state.pathParameters['projectId']!,
-                  sessionId: state.pathParameters['sessionId']!,
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  SessionDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    sessionId: s.pathParameters['sessionId']!,
+                  ),
                 ),
               ),
             ],
           ),
           GoRoute(
             path: '/p/:projectId/issues',
-            builder: (_, state) {
-              final q = state.uri.queryParameters;
-              return IssuesScreen(
-                projectId: state.pathParameters['projectId']!,
-                initialType: q['type'],
-                initialStatus: q['status'],
-                initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
-                initialQuery: q['q'],
-                initialEnvironment: q['environment'],
-                initialAppVersion: q['appVersion'],
+            pageBuilder: (c, s) {
+              final q = s.uri.queryParameters;
+              return scoutPage(
+                s,
+                IssuesScreen(
+                  projectId: s.pathParameters['projectId']!,
+                  initialType: q['type'],
+                  initialStatus: q['status'],
+                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
+                  initialQuery: q['q'],
+                  initialEnvironment: q['environment'],
+                  initialAppVersion: q['appVersion'],
+                ),
               );
             },
             routes: [
               GoRoute(
                 path: ':issueId',
-                builder: (_, state) => IssueDetailScreen(
-                  projectId: state.pathParameters['projectId']!,
-                  issueId: state.pathParameters['issueId']!,
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  IssueDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    issueId: s.pathParameters['issueId']!,
+                  ),
                 ),
               ),
             ],
           ),
           GoRoute(
             path: '/p/:projectId/events',
-            builder: (_, state) {
-              final q = state.uri.queryParameters;
-              return EventsScreen(
-                projectId: state.pathParameters['projectId']!,
-                initialType: q['type'],
-                initialLevel: q['level'],
-                initialCategory: q['category'],
-                initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(7),
-                initialQuery: q['q'],
-                initialCountry: q['country'],
-                initialEnvironment: q['environment'],
-                initialAppVersion: q['appVersion'],
+            pageBuilder: (c, s) {
+              final q = s.uri.queryParameters;
+              return scoutPage(
+                s,
+                EventsScreen(
+                  projectId: s.pathParameters['projectId']!,
+                  initialType: q['type'],
+                  initialLevel: q['level'],
+                  initialCategory: q['category'],
+                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
+                  initialQuery: q['q'],
+                  initialCountry: q['country'],
+                  initialEnvironment: q['environment'],
+                  initialAppVersion: q['appVersion'],
+                ),
               );
             },
             routes: [
               GoRoute(
                 path: ':eventId',
-                builder: (_, state) => EventDetailScreen(
-                  projectId: state.pathParameters['projectId']!,
-                  eventId: state.pathParameters['eventId']!,
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  EventDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    eventId: s.pathParameters['eventId']!,
+                  ),
                 ),
               ),
             ],
           ),
           GoRoute(
             path: '/p/:projectId/geo',
-            builder: (_, state) => GeoScreen(
-              projectId: state.pathParameters['projectId']!,
-              initialPeriod: PeriodFilter.parse(state.uri.queryParameters),
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              GeoScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
+              ),
             ),
           ),
           GoRoute(
+            path: '/p/:projectId/logs',
+            pageBuilder: (c, s) => scoutPage(s, DashboardLogsScreen(projectId: s.pathParameters['projectId']!)),
+          ),
+          GoRoute(
             path: '/p/:projectId/settings',
-            builder: (_, state) => ProjectSettingsScreen(projectId: state.pathParameters['projectId']!),
+            pageBuilder: (c, s) => scoutPage(s, ProjectSettingsScreen(projectId: s.pathParameters['projectId']!)),
           ),
         ],
       ),

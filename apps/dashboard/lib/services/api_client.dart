@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/app_config.dart';
+import 'dashboard_log_service.dart';
 import '../utils/date_range.dart';
 import 'auth_service.dart';
 
@@ -279,12 +280,83 @@ class ScoutApi {
       headers: _headers,
       body: jsonEncode(body),
     );
-    _ok(res);
+    _ok(res, projectId: projectId);
     return jsonMap((jsonDecode(res.body) as Map)['settings']);
   }
 
-  void _ok(http.Response res) {
+  Future<List<Map<String, dynamic>>> fetchProjectMembers(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/members'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonListMaps((jsonDecode(res.body) as Map)['members']);
+  }
+
+  Future<Map<String, dynamic>> addProjectMember(
+    String projectId, {
+    required String email,
+    required String password,
+    required String role,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/members'),
+      headers: _headers,
+      body: jsonEncode({'email': email, 'password': password, 'role': role}),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['member']);
+  }
+
+  Future<Map<String, dynamic>> updateProjectMemberRole(String projectId, String userId, String role) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/members/$userId'),
+      headers: _headers,
+      body: jsonEncode({'role': role}),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['member']);
+  }
+
+  Future<void> removeProjectMember(String projectId, String userId) async {
+    final res = await _client.delete(_uri('/api/projects/$projectId/members/$userId'), headers: _headers);
+    _ok(res, projectId: projectId);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchDashboardLogs(String projectId, {String? level, int limit = 100}) async {
+    final params = <String, String>{'limit': '$limit'};
+    if (level != null) params['level'] = level;
+    final uri = _uri('/api/projects/$projectId/dashboard-logs').replace(queryParameters: params);
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonListMaps((jsonDecode(res.body) as Map)['logs']);
+  }
+
+  static String? _projectFromPath(String path) {
+    final m = RegExp(r'/projects/([^/]+)').firstMatch(path);
+    return m?.group(1);
+  }
+
+  String _formatErr(http.Response res) {
+    try {
+      final json = jsonDecode(res.body) as Map<String, dynamic>;
+      final err = json['error']?.toString();
+      if (err != null && err.isNotEmpty) return 'API ${res.statusCode}: $err';
+    } catch (_) {}
+    final body = res.body.trim();
+    if (body.isEmpty) return 'API ${res.statusCode}';
+    return 'API ${res.statusCode}: ${body.length > 200 ? '${body.substring(0, 200)}…' : body}';
+  }
+
+  void _ok(http.Response res, {String? projectId}) {
     if (res.statusCode >= 200 && res.statusCode < 300) return;
-    throw Exception('API ${res.statusCode}: ${res.body}');
+    final path = res.request?.url.path ?? '';
+    final pid = projectId ?? _projectFromPath(path);
+    final err = _formatErr(res);
+    if (pid != null && !path.contains('/dashboard-logs')) {
+      DashboardLogService.record(
+        projectId: pid,
+        message: err,
+        context: {'path': path, 'status': res.statusCode},
+      );
+    }
+    throw Exception(err);
   }
 }

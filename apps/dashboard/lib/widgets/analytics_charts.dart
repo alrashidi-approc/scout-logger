@@ -24,7 +24,7 @@ class HourlyChart extends StatelessWidget {
       if (v > maxY) maxY = v;
       bars.add(BarChartGroupData(
         x: h,
-        barRods: [BarChartRodData(toY: v, color: errorsOnly ? AppTheme.accentPurple : AppTheme.primary, width: 10, borderRadius: const BorderRadius.vertical(top: Radius.circular(4)))],
+        barRods: [BarChartRodData(toY: v, color: errorsOnly ? AppTheme.error : AppTheme.primary, width: 10, borderRadius: const BorderRadius.vertical(top: Radius.circular(4)))],
       ));
     }
 

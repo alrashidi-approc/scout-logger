@@ -349,5 +349,120 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/members', (Request request, String id) async {
+    return _api(() async {
+      final denied = await ensureProjectMembersManage(
+        auth: authFrom(request)!,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      if (!authFrom(request)!.isAdmin && !await store.projectExists(id)) {
+        return jsonErr('Project not found', status: 404);
+      }
+      final members = await authStore.listProjectMembers(id);
+      return Response.ok(jsonEncode({'ok': true, 'members': members}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.post('/projects/<id>/members', (Request request, String id) async {
+    return _api(() async {
+      final denied = await ensureProjectMembersManage(
+        auth: authFrom(request)!,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      try {
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final email = body['email']?.toString();
+        final password = body['password']?.toString();
+        final role = body['role']?.toString();
+        if (email == null || email.trim().isEmpty) return jsonErr('email is required');
+        if (role == null || role.isEmpty) return jsonErr('role is required');
+        final member = await authStore.addProjectMember(
+          projectId: id,
+          email: email,
+          password: password,
+          role: role,
+        );
+        return Response.ok(jsonEncode({'ok': true, 'member': member}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr(e.message ?? '$e', status: 400);
+      }
+    });
+  });
+
+  router.patch('/projects/<id>/members/<userId>', (Request request, String id, String userId) async {
+    return _api(() async {
+      final denied = await ensureProjectMembersManage(
+        auth: authFrom(request)!,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      try {
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final role = body['role']?.toString();
+        if (role == null || role.isEmpty) return jsonErr('role is required');
+        final member = await authStore.updateProjectMemberRole(projectId: id, userId: userId, role: role);
+        return Response.ok(jsonEncode({'ok': true, 'member': member}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr(e.message ?? '$e', status: 400);
+      }
+    });
+  });
+
+  router.delete('/projects/<id>/members/<userId>', (Request request, String id, String userId) async {
+    return _api(() async {
+      final denied = await ensureProjectMembersManage(
+        auth: authFrom(request)!,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      try {
+        await authStore.removeProjectMember(projectId: id, userId: userId);
+        return Response.ok('{"ok":true}', headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr(e.message ?? '$e', status: 400);
+      }
+    });
+  });
+
+  router.get('/projects/<id>/dashboard-logs', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      final logs = await store.listDashboardLogs(
+        id,
+        level: q['level'],
+        limit: int.tryParse(q['limit'] ?? '') ?? 100,
+      );
+      return Response.ok(jsonEncode({'ok': true, 'logs': logs}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.post('/projects/<id>/dashboard-logs', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final auth = authFrom(request)!;
+      final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+      final message = body['message']?.toString().trim();
+      if (message == null || message.isEmpty) return jsonErr('message is required');
+      await store.appendDashboardLog(
+        projectId: id,
+        userId: auth.userId,
+        level: body['level']?.toString() ?? 'error',
+        message: message,
+        route: body['route']?.toString(),
+        context: body['context'] is Map ? Map<String, dynamic>.from(body['context'] as Map) : null,
+      );
+      return Response.ok('{"ok":true}', headers: {'Content-Type': 'application/json'});
+    });
+  });
+
   return router.call;
 }

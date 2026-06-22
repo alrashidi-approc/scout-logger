@@ -2,10 +2,12 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/analytics_charts.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
@@ -31,7 +33,9 @@ class _OverviewScreenState extends State<OverviewScreen> {
   Map<String, dynamic>? _d;
   List<Map<String, dynamic>> _recentIssues = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
   @override
@@ -42,8 +46,15 @@ class _OverviewScreenState extends State<OverviewScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       Map<String, dynamic> data;
@@ -58,12 +69,18 @@ class _OverviewScreenState extends State<OverviewScreen> {
       if (mounted) setState(() {
         _d = data;
         _recentIssues = issues.take(5).toList();
+        _hasData = true;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -105,11 +122,14 @@ class _OverviewScreenState extends State<OverviewScreen> {
           child: FilterBar(period: _period, onPeriodChanged: _setPeriod),
         ),
         Expanded(
-          child: _loading
-              ? const LoadingView()
-              : _error != null
-                  ? ErrorPanel(message: _error!, onRetry: _load)
-                  : _buildBody(context, _d!, pid),
+          child: AsyncScreenBody(
+            loading: _loading,
+            refreshing: _refreshing,
+            error: _error,
+            onRetry: _load,
+            placeholderLayout: PlaceholderLayout.dashboard,
+            child: _buildBody(context, _d!, pid),
+          ),
         ),
       ],
     );
@@ -138,10 +158,10 @@ class _OverviewScreenState extends State<OverviewScreen> {
               StatCard(label: 'Error rate', value: '${jsonPct(d['errorRatePct'])}%', icon: Icons.speed, color: AppTheme.warning, hint: '${d['errors'] ?? 0} / ${d['events'] ?? 0} ev'),
               StatCard(label: 'Events', value: '${d['events'] ?? d['eventsToday']}', icon: Icons.show_chart, delta: _delta('events'), onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Errors', value: '${d['errors'] ?? d['errorsToday']}', icon: Icons.error_outline, color: AppTheme.error, delta: _delta('errors'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'level': 'error', 'type': 'errors'})).toString())),
-              StatCard(label: 'Users w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Users w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, hint: 'Logged-in only', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Peak hour', value: formatHour(jsonInt(d['peakHour'])), icon: Icons.schedule, color: AppTheme.info, hint: '${d['peakHourEvents'] ?? 0} ev'),
               StatCard(label: 'Peak error hour', value: formatHour(jsonInt(d['peakErrorHour'])), icon: Icons.warning_amber_outlined, color: AppTheme.warning, hint: '${d['peakErrorHourCount'] ?? 0} err'),
-              StatCard(label: 'Unique users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Logged-in users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), hint: 'Excludes guest UUIDs', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Sessions', value: '${d['completedSessions'] ?? 0}', icon: Icons.play_circle_outline, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Crashes', value: '${d['crashes'] ?? d['crashesToday']}', icon: Icons.bolt, color: AppTheme.error, delta: _delta('crashes'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString())),
               StatCard(label: 'Open issues', value: '${d['openIssues']}', icon: Icons.bug_report_outlined, color: AppTheme.accentPurple, onTap: () => context.go('/p/$pid/issues')),
@@ -158,8 +178,8 @@ class _OverviewScreenState extends State<OverviewScreen> {
                   title: 'Events over time',
                   trailing: chartLegend([
                     _legend(AppTheme.primary, 'Events'),
-                    _legend(AppTheme.accentPurple, 'Errors'),
-                    _legend(AppTheme.success, 'Users'),
+                    _legend(AppTheme.error, 'Errors'),
+                    _legend(AppTheme.success, 'Logged-in users'),
                   ]),
                   child: TrendChart(points: trend, showUsers: true, height: c.maxWidth < Breakpoints.mobile ? 200 : 240),
                 ),
@@ -217,7 +237,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
                                         const SizedBox(height: 4),
                                         Wrap(spacing: 8, children: [
                                           Text('${r['count']} ev', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
-                                          Text('${r['errors']} err', style: const TextStyle(fontSize: 11, color: AppTheme.warning)),
+                                          Text('${r['errors']} err', style: const TextStyle(fontSize: 11, color: AppTheme.error)),
                                           Text('${r['crashes']} crash', style: const TextStyle(fontSize: 11, color: AppTheme.error)),
                                         ]),
                                       ])
@@ -225,7 +245,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
                                         Expanded(child: Text('${r['release']}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.text))),
                                         Text('${r['count']} ev', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
                                         const SizedBox(width: 8),
-                                        Text('${r['errors']} err', style: const TextStyle(fontSize: 11, color: AppTheme.warning)),
+                                        Text('${r['errors']} err', style: const TextStyle(fontSize: 11, color: AppTheme.error)),
                                         const SizedBox(width: 8),
                                         Text('${r['crashes']} crash', style: const TextStyle(fontSize: 11, color: AppTheme.error)),
                                       ]),
@@ -289,7 +309,7 @@ class _PlatformPie extends StatelessWidget {
   final List<Map<String, dynamic>> items;
   final bool compact;
 
-  static const _colors = [AppTheme.primary, AppTheme.accentPurple, AppTheme.warning, AppTheme.success, AppTheme.info, AppTheme.accentPink];
+  static const _colors = [AppTheme.primary, AppTheme.info, AppTheme.warning, AppTheme.success, AppTheme.accentPink, AppTheme.muted];
 
   @override
   Widget build(BuildContext context) {

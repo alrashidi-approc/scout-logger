@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_detail_widgets.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class SessionDetailScreen extends StatefulWidget {
@@ -22,7 +24,8 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _session;
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  Object? _error;
 
   @override
   void initState() {
@@ -32,28 +35,48 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _session != null,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final session = await _api.fetchSessionTimeline(widget.projectId, widget.sessionId);
       if (mounted) setState(() {
         _session = session;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading && _session == null,
+      refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.detail,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     final s = _session!;
     final timeline = jsonListMaps(s['timeline']);
     final started = DateTime.tryParse(s['startedAt'] as String? ?? '');

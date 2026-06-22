@@ -362,24 +362,48 @@ class FieldGrid extends StatelessWidget {
       children: visible
           .map((f) => Padding(
                 padding: const EdgeInsets.only(bottom: 10),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  SizedBox(width: 130, child: Text(f.label, style: const TextStyle(color: AppTheme.muted, fontSize: 12))),
-                  Expanded(
-                    child: SelectableText(
-                      f.value,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontFamily: f.mono ? 'monospace' : null,
-                        color: f.highlight ? AppTheme.primary : AppTheme.text,
-                        fontWeight: f.highlight ? FontWeight.w600 : FontWeight.normal,
-                      ),
-                    ),
-                  ),
-                ]),
+                child: f.block ? _blockField(f) : _rowField(f),
               ))
           .toList(),
     );
   }
+
+  Widget _rowField(DetailField f) => Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 130, child: Text(f.label, style: const TextStyle(color: AppTheme.muted, fontSize: 12))),
+          Expanded(child: _valueText(f)),
+        ],
+      );
+
+  Widget _blockField(DetailField f) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(f.label, style: const TextStyle(color: AppTheme.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.codeBg,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppTheme.border),
+            ),
+            child: _valueText(f),
+          ),
+        ],
+      );
+
+  Widget _valueText(DetailField f) => SelectableText(
+        f.value,
+        style: TextStyle(
+          fontSize: 13,
+          fontFamily: f.mono ? 'monospace' : null,
+          color: f.highlight ? AppTheme.primary : AppTheme.text,
+          fontWeight: f.highlight ? FontWeight.w600 : FontWeight.normal,
+          height: f.mono ? 1.45 : null,
+        ),
+      );
 }
 
 class SummaryList extends StatelessWidget {

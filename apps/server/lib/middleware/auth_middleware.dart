@@ -72,3 +72,16 @@ Future<Response?> ensureProjectDelete({
   if (!canDeleteProject(auth, role)) return jsonErr('Forbidden', status: 403);
   return null;
 }
+
+Future<Response?> ensureProjectMembersManage({
+  required AuthPrincipal auth,
+  required String projectId,
+  required Future<String?> Function(String userId, String projectId) membership,
+}) async {
+  if (auth.isAdmin) return null;
+  final uid = auth.userId;
+  if (uid == null) return jsonErr('Unauthorized', status: 401);
+  final role = await membership(uid, projectId);
+  if (!canManageProjectMembers(auth, role)) return jsonErr('Forbidden', status: 403);
+  return null;
+}

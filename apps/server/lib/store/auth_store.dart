@@ -160,6 +160,115 @@ class AuthStore {
     return rows.first[0] as String;
   }
 
+  Future<List<Map<String, dynamic>>> listProjectMembers(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT u.id, u.email, u.display_name, m.role, m.created_at
+        FROM project_memberships m
+        INNER JOIN dashboard_users u ON u.id = m.user_id
+        WHERE m.project_id = @pid
+        ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.created_at ASC
+      '''),
+      parameters: {'pid': projectId},
+    );
+    return rows
+        .map((r) => {
+              'userId': r[0],
+              'email': r[1],
+              'displayName': r[2],
+              'role': r[3],
+              'createdAt': (r[4] as DateTime).toUtc().toIso8601String(),
+            })
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> addProjectMember({
+    required String projectId,
+    required String email,
+    required String role,
+    String? password,
+  }) async {
+    if (!isAssignableProjectRole(role)) throw ArgumentError('Invalid role');
+
+    final normalized = email.trim().toLowerCase();
+    if (normalized.isEmpty || !normalized.contains('@')) throw ArgumentError('Valid email required');
+
+    var user = await findUserByEmail(normalized);
+    if (user == null) {
+      if (password == null || password.length < 8) {
+        throw ArgumentError('Password must be at least 8 characters for new users');
+      }
+      user = await signup(email: normalized, password: password, autoVerify: true);
+    }
+
+    final userId = user['id'] as String;
+    final conn = await db.connect();
+    final existing = await conn.execute(
+      Sql.named('SELECT 1 FROM project_memberships WHERE user_id = @uid AND project_id = @pid'),
+      parameters: {'uid': userId, 'pid': projectId},
+    );
+    if (existing.isNotEmpty) throw ArgumentError('User is already on this project');
+
+    await conn.execute(
+      Sql.named('INSERT INTO project_memberships (user_id, project_id, role) VALUES (@uid, @pid, @role)'),
+      parameters: {'uid': userId, 'pid': projectId, 'role': role},
+    );
+
+    return {
+      'userId': userId,
+      'email': user['email'],
+      'displayName': user['displayName'],
+      'role': role,
+      'createdAt': DateTime.now().toUtc().toIso8601String(),
+    };
+  }
+
+  Future<Map<String, dynamic>> updateProjectMemberRole({
+    required String projectId,
+    required String userId,
+    required String role,
+  }) async {
+    if (!isAssignableProjectRole(role)) throw ArgumentError('Invalid role');
+
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT role FROM project_memberships WHERE user_id = @uid AND project_id = @pid'),
+      parameters: {'uid': userId, 'pid': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Member not found');
+    final current = rows.first[0] as String;
+    if (current == 'owner') throw ArgumentError('Cannot change the project owner role');
+
+    await conn.execute(
+      Sql.named('UPDATE project_memberships SET role = @role WHERE user_id = @uid AND project_id = @pid'),
+      parameters: {'role': role, 'uid': userId, 'pid': projectId},
+    );
+
+    final user = await findUserById(userId);
+    return {
+      'userId': userId,
+      'email': user?['email'],
+      'displayName': user?['displayName'],
+      'role': role,
+    };
+  }
+
+  Future<void> removeProjectMember({required String projectId, required String userId}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT role FROM project_memberships WHERE user_id = @uid AND project_id = @pid'),
+      parameters: {'uid': userId, 'pid': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Member not found');
+    if (rows.first[0] == 'owner') throw ArgumentError('Cannot remove the project owner');
+
+    await conn.execute(
+      Sql.named('DELETE FROM project_memberships WHERE user_id = @uid AND project_id = @pid'),
+      parameters: {'uid': userId, 'pid': projectId},
+    );
+  }
+
   Future<Map<String, dynamic>> updateUser({
     required String userId,
     String? globalRole,

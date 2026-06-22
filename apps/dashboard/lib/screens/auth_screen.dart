@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import '../config/app_config.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/dashboard_footer.dart';
+import '../widgets/scout_logo.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -288,41 +290,46 @@ class AuthScaffold extends StatelessWidget {
     final compact = MediaQuery.sizeOf(context).width < 720;
     return Scaffold(
       backgroundColor: AppTheme.bg,
-      body: Center(
-        child: SingleChildScrollView(
-          padding: EdgeInsets.all(compact ? 20 : 32),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(color: AppTheme.primary.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(12)),
-                  child: const Icon(Icons.radar, color: AppTheme.primary),
+      body: Column(
+        children: [
+          Expanded(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.all(compact ? 20 : 32),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Center(child: ScoutLogo(showTagline: true, iconSize: 48)),
+                      const SizedBox(height: 32),
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: AppTheme.panel,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: AppTheme.border),
+                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 24, offset: const Offset(0, 8))],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+                            const SizedBox(height: 6),
+                            Text(subtitle, style: const TextStyle(color: AppTheme.muted, fontSize: 13, height: 1.4)),
+                            const SizedBox(height: 20),
+                            child,
+                          ],
+                        ),
+                      ),
+                      const AuthFooter(),
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 12),
-                const Text('Scout Logger', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 22)),
-              ]),
-              const SizedBox(height: 28),
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: AppTheme.panel,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppTheme.border),
-                ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
-                  const SizedBox(height: 6),
-                  Text(subtitle, style: const TextStyle(color: AppTheme.muted, fontSize: 13, height: 1.4)),
-                  const SizedBox(height: 20),
-                  child,
-                ]),
               ),
-            ]),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

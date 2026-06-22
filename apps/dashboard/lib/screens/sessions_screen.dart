@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../widgets/filter_bar.dart';
+import '../utils/screen_load.dart';
+import '../utils/user_identity.dart';
 import '../widgets/page_header.dart';
 import '../widgets/period_picker.dart';
 
@@ -24,7 +27,9 @@ class _SessionsScreenState extends State<SessionsScreen> {
   final _api = ScoutApi();
   List<Map<String, dynamic>> _sessions = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
   @override
@@ -35,19 +40,32 @@ class _SessionsScreenState extends State<SessionsScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final sessions = await _api.fetchSessions(widget.projectId, period: _period, limit: 100);
       if (mounted) setState(() {
         _sessions = sessions;
+        _hasData = true;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -82,48 +100,53 @@ class _SessionsScreenState extends State<SessionsScreen> {
       ),
       Padding(padding: pageInsets(context, top: 12), child: FilterBar(period: _period, onPeriodChanged: _setPeriod)),
       Expanded(
-        child: _loading
-            ? const LoadingView()
-            : _error != null
-                ? ErrorPanel(message: _error!, onRetry: _load)
-                : _sessions.isEmpty
-                    ? const EmptyState(icon: Icons.play_circle_outline, title: 'No sessions yet', subtitle: 'Sessions are recorded when your app sends session start/end events.')
-                    : RefreshIndicator(
-                        onRefresh: _load,
-                        child: ListView.builder(
-                          key: PageStorageKey('sessions-${widget.projectId}'),
-                          padding: pageInsets(context, top: 12, bottom: pagePad(context)),
-                          itemCount: _sessions.length,
-                          itemBuilder: (_, i) {
-                            final s = _sessions[i];
-                            final started = DateTime.tryParse(s['startedAt'] as String? ?? '');
-                            final open = s['endedAt'] == null;
-                            final summary = s['summary'] is Map ? Map<String, dynamic>.from(s['summary'] as Map) : null;
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 8),
-                              decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(12), border: Border.all(color: open ? AppTheme.primary.withValues(alpha: 0.4) : AppTheme.border)),
-                              child: ListTile(
-                                onTap: () => context.push('/p/${widget.projectId}/sessions/${s['id']}'),
-                                leading: Icon(open ? Icons.sensors : Icons.play_circle_outline, color: open ? AppTheme.primary : AppTheme.muted),
-                                title: Text(started != null ? DateFormat('MMM d · HH:mm:ss').format(started.toLocal()) : '${s['id']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                                subtitle: Text(
-                                  [
-                                    if (s['userId'] != null) 'User ${s['userId']}',
-                                    if (s['release'] != null) '${s['release']}',
-                                    _fmtDur(s['durationMs']),
-                                    if (summary != null) '${summary['screensVisited'] ?? 0} screens',
-                                  ].join(' · '),
-                                  style: const TextStyle(fontSize: 12, color: AppTheme.muted),
-                                ),
-                                trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                                  if (open) const Text('LIVE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppTheme.primary)),
-                                  const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
-                                ]),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
+        child: AsyncScreenBody(
+          loading: _loading,
+            refreshing: _refreshing,
+          error: _error,
+          onRetry: _load,
+          placeholderLayout: PlaceholderLayout.list,
+          empty: !_loading && _sessions.isEmpty
+              ? const EmptyState(icon: Icons.play_circle_outline, title: 'No sessions yet', subtitle: 'Sessions are recorded when your app sends session start/end events.')
+              : null,
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView.builder(
+              key: PageStorageKey('sessions-${widget.projectId}'),
+              padding: pageInsets(context, top: 12, bottom: pagePad(context)),
+              itemCount: _sessions.length,
+              itemBuilder: (_, i) {
+                final s = _sessions[i];
+                final started = DateTime.tryParse(s['startedAt'] as String? ?? '');
+                final open = s['endedAt'] == null;
+                final summary = s['summary'] is Map ? Map<String, dynamic>.from(s['summary'] as Map) : null;
+                final guest = s['isGuest'] == true || isGuestAppUser(userId: s['userId']?.toString());
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(12), border: Border.all(color: open ? AppTheme.primary.withValues(alpha: 0.4) : AppTheme.border)),
+                  child: ListTile(
+                    onTap: () => context.push('/p/${widget.projectId}/sessions/${s['id']}'),
+                    leading: Icon(open ? Icons.sensors : Icons.play_circle_outline, color: open ? AppTheme.primary : AppTheme.muted),
+                    title: Text(started != null ? DateFormat('MMM d · HH:mm:ss').format(started.toLocal()) : '${s['id']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                    subtitle: Text(
+                      [
+                        if (s['userId'] != null) guest ? 'Guest' : 'User ${s['userId']}',
+                        if (s['release'] != null) '${s['release']}',
+                        _fmtDur(s['durationMs']),
+                        if (summary != null) '${summary['screensVisited'] ?? 0} screens',
+                      ].join(' · '),
+                      style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+                    ),
+                    trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      if (open) const Text('LIVE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppTheme.primary)),
+                      const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
       ),
     ]);
   }

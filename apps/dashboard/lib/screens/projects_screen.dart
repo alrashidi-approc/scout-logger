@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class ProjectsScreen extends StatefulWidget {
@@ -19,7 +21,9 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   final _nameCtrl = TextEditingController();
   List<Map<String, dynamic>> _projects = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   String? _newDsn;
   String? _newKey;
   final _expandedCreds = <String>{};
@@ -42,19 +46,31 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final projects = await _api.fetchProjects();
       if (mounted) setState(() {
         _projects = projects;
+        _hasData = true;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -114,11 +130,19 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+            refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.projects,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         const PageHeader(
           title: 'Projects',

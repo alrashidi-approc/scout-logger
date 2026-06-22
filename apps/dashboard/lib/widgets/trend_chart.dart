@@ -4,6 +4,9 @@ import 'package:intl/intl.dart';
 
 import '../theme/app_theme.dart';
 
+/// Line / bar color for error series on charts.
+const chartErrorColor = AppTheme.error;
+
 class TrendChart extends StatelessWidget {
   const TrendChart({super.key, required this.points, this.height = 240, this.showUsers = false});
 
@@ -68,14 +71,14 @@ class TrendChart extends StatelessWidget {
           borderData: FlBorderData(show: false),
           lineBarsData: [
             _line(events, AppTheme.primary, fill: 0.18),
-            _line(errors, AppTheme.accentPurple, fill: 0.12),
+            _line(errors, chartErrorColor, fill: 0.12),
             if (showUsers) _line(users, AppTheme.success, fill: 0.08, width: 2),
           ],
           lineTouchData: LineTouchData(
             touchTooltipData: LineTouchTooltipData(
               getTooltipColor: (_) => AppTheme.panelElevated,
               getTooltipItems: (spots) => spots.map((s) {
-                final label = s.bar.color == AppTheme.accentPurple
+                final label = s.bar.color == chartErrorColor
                     ? 'Errors'
                     : s.bar.color == AppTheme.success
                         ? 'Users'

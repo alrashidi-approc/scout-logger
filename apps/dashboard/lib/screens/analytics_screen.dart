@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
+import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
 import '../widgets/period_picker.dart';
@@ -31,7 +34,9 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
   List<Map<String, dynamic>> _releases = [];
   List<Map<String, dynamic>> _sessions = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
   @override
@@ -52,8 +57,15 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final routes = await _api.fetchRoutes(widget.projectId, period: _period);
@@ -67,14 +79,20 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
           _retention = retention;
           _releases = releases;
           _sessions = sessions;
+          _hasData = true;
           _loading = false;
+
+          _refreshing = false;
         });
         if (_funnelSteps.isNotEmpty) await _runFunnel();
       }
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -101,14 +119,24 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+            refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.analytics,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
+    final insets = pageInsets(context);
+    final pad = pagePad(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(28, 20, 28, 0),
+          padding: insets.copyWith(top: pad),
           child: PageHeader(
             title: 'Analytics',
             subtitle: 'Funnels, retention, releases, and session replays',
@@ -118,7 +146,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
           ),
         ),
         Padding(
-          padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+          padding: insets.copyWith(top: 8),
           child: FilterBar(period: _period, onPeriodChanged: _setPeriod),
         ),
         TabBar(
@@ -175,7 +203,7 @@ class _FunnelTab extends StatelessWidget {
     final total = funnel?['totalSessions'] as int? ?? 0;
 
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         Card(
           child: Padding(
@@ -286,7 +314,7 @@ class _RetentionTab extends StatelessWidget {
     }
 
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         Card(
           child: Padding(
@@ -368,7 +396,7 @@ class _ReleasesTab extends StatelessWidget {
     final baseCrash = (baseline['crashRatePct'] as num?)?.toDouble() ?? 0;
 
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         Card(
           child: Padding(
@@ -432,7 +460,7 @@ class _SessionsTab extends StatelessWidget {
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       itemCount: sessions.length,
       separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (context, i) {

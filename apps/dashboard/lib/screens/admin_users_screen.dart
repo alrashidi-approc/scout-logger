@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class AdminUsersScreen extends StatefulWidget {
@@ -16,7 +18,9 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   final _api = ScoutApi();
   List<Map<String, dynamic>> _users = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
 
   @override
   void initState() {
@@ -26,19 +30,31 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final users = await _api.fetchAdminUsers();
       if (mounted) setState(() {
         _users = users;
+        _hasData = true;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -63,11 +79,19 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+            refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.list,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         const PageHeader(
           title: 'Team & permissions',

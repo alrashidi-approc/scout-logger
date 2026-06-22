@@ -85,8 +85,8 @@ class AppTheme {
       ),
       cardTheme: CardThemeData(
         color: panel,
-        elevation: isLight ? 0 : 0,
-        shadowColor: isLight ? Colors.black.withValues(alpha: 0.04) : Colors.transparent,
+        elevation: isLight ? 1 : 0,
+        shadowColor: isLight ? Colors.black.withValues(alpha: 0.06) : Colors.transparent,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),

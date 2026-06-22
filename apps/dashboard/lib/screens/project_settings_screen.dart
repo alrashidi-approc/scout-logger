@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:scout_models/scout_models.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/project_roles.dart';
+import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class ProjectSettingsScreen extends StatefulWidget {
@@ -19,9 +23,11 @@ class ProjectSettingsScreen extends StatefulWidget {
 class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   final _api = ScoutApi();
   bool _loading = true;
+  bool _refreshing = false;
+  bool _hasData = false;
   bool _saving = false;
   bool _deleting = false;
-  String? _error;
+  Object? _error;
   String? _role;
   int _configVersion = 1;
   Set<String> _levels = ProjectSdkConfig.defaultEnabledLevels.toSet();
@@ -30,12 +36,19 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   bool _networkBodies = true;
   int _slowThresholdMs = 3000;
   final _ignoreCodesCtrl = TextEditingController();
+  final _memberEmailCtrl = TextEditingController();
+  final _memberPasswordCtrl = TextEditingController();
   Set<int> _ignoreCodes = {};
   String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
+  List<Map<String, dynamic>> _members = [];
+  String _newMemberRole = assignableProjectRoles.first;
+  bool _addingMember = false;
 
   @override
   void dispose() {
     _ignoreCodesCtrl.dispose();
+    _memberEmailCtrl.dispose();
+    _memberPasswordCtrl.dispose();
     super.dispose();
   }
 
@@ -47,8 +60,15 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final results = await Future.wait([
@@ -71,9 +91,15 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         sdk: ProjectSdkConfig.fromJson(settings['sdk'] is Map ? Map<String, dynamic>.from(settings['sdk'] as Map) : null),
       );
       final sdk = remote.sdk.resolved();
+      List<Map<String, dynamic>> members = [];
+      final canManage = role == 'owner' || AuthService.instance.isAdmin;
+      if (canManage) {
+        members = await _api.fetchProjectMembers(widget.projectId);
+      }
       if (mounted) {
         setState(() {
           _role = role;
+          _members = members;
           _configVersion = remote.configVersion;
           _levels = sdk.enabledLevels!.toSet();
           _flutterHooks = sdk.enableFlutterHooks!;
@@ -83,14 +109,20 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodes = sdk.networkIgnoreStatusCodes!.toSet();
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
+          _hasData = true;
           _loading = false;
+
+          _refreshing = false;
         });
       }
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = e;
           _loading = false;
+
+          _refreshing = false;
         });
       }
     }
@@ -129,6 +161,73 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
 
   bool get _canDelete => _role == 'owner' || AuthService.instance.isAdmin;
 
+  bool get _canManageMembers => _role == 'owner' || AuthService.instance.isAdmin;
+
+  Future<void> _addMember() async {
+    final email = _memberEmailCtrl.text.trim();
+    final password = _memberPasswordCtrl.text;
+    if (email.isEmpty) return;
+    setState(() => _addingMember = true);
+    try {
+      final member = await _api.addProjectMember(
+        widget.projectId,
+        email: email,
+        password: password,
+        role: _newMemberRole,
+      );
+      if (mounted) {
+        setState(() {
+          _members = [..._members, member];
+          _memberEmailCtrl.clear();
+          _memberPasswordCtrl.clear();
+          _addingMember = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added ${member['email']}')));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _addingMember = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      }
+    }
+  }
+
+  Future<void> _updateMemberRole(String userId, String role) async {
+    try {
+      final member = await _api.updateProjectMemberRole(widget.projectId, userId, role);
+      if (!mounted) return;
+      setState(() {
+        final i = _members.indexWhere((m) => m['userId'] == userId);
+        if (i >= 0) _members[i] = member;
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+    }
+  }
+
+  Future<void> _removeMember(Map<String, dynamic> member) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove team member?'),
+        content: Text('${member['email']} will lose access to this project.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remove')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await _api.removeProjectMember(widget.projectId, member['userId'] as String);
+      if (mounted) {
+        setState(() => _members.removeWhere((m) => m['userId'] == member['userId']));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+    }
+  }
+
   Future<void> _confirmDelete() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -163,15 +262,23 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+            refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.settings,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         PageHeader(
-          title: 'SDK settings',
-          subtitle: 'Remote config for mobile clients (v$_configVersion). Changes apply on app launch or resume.',
+          title: 'Project settings',
+          subtitle: 'SDK remote config (v$_configVersion) and team access',
           actions: [
             FilledButton.icon(
               onPressed: _saving ? null : _save,
@@ -182,12 +289,110 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 24),
+        if (_canManageMembers) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Team access', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Invite dashboard users with email and password. Existing accounts are linked without changing their password.',
+                    style: TextStyle(color: AppTheme.muted, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _memberEmailCtrl,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: 'Email', hintText: 'qa@company.com'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _memberPasswordCtrl,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Password',
+                      hintText: 'Required for new users (min 8 characters)',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: _newMemberRole,
+                    decoration: const InputDecoration(labelText: 'Role'),
+                    items: [
+                      for (final role in assignableProjectRoles)
+                        DropdownMenuItem(value: role, child: Text(projectRoleLabel(role))),
+                    ],
+                    onChanged: _addingMember ? null : (v) => setState(() => _newMemberRole = v ?? _newMemberRole),
+                  ),
+                  const SizedBox(height: 16),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      onPressed: _addingMember ? null : _addMember,
+                      icon: _addingMember
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Icon(Icons.person_add_outlined, size: 18),
+                      label: const Text('Add member'),
+                    ),
+                  ),
+                  if (_members.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    const Divider(),
+                    const SizedBox(height: 12),
+                    for (final member in _members) ...[
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: CircleAvatar(
+                          backgroundColor: AppTheme.primarySoft,
+                          child: Text(
+                            ((member['email'] as String?) ?? '?')[0].toUpperCase(),
+                            style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        title: Text(member['email'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Text(projectRoleLabel(member['role'] as String? ?? '')),
+                        trailing: member['role'] == 'owner'
+                            ? const Chip(label: Text('Owner'))
+                            : Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  DropdownButton<String>(
+                                    value: assignableProjectRoles.contains(member['role']) ? member['role'] as String : assignableProjectRoles.first,
+                                    underline: const SizedBox.shrink(),
+                                    items: [
+                                      for (final role in assignableProjectRoles)
+                                        DropdownMenuItem(value: role, child: Text(projectRoleLabel(role))),
+                                    ],
+                                    onChanged: (role) {
+                                      if (role != null) _updateMemberRole(member['userId'] as String, role);
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline, color: AppTheme.error),
+                                    tooltip: 'Remove',
+                                    onPressed: () => _removeMember(member),
+                                  ),
+                                ],
+                              ),
+                      ),
+                      if (member != _members.last) const Divider(height: 1),
+                    ],
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(height: 16),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Log levels', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const Text('SDK — Log levels', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
               const Text('Events below unchecked levels are dropped in the app before upload.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
               const SizedBox(height: 12),
@@ -217,7 +422,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Capture', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const Text('SDK — Capture', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,

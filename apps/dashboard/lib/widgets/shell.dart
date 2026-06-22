@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_scope.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
+import 'dashboard_footer.dart';
+import 'scout_logo.dart';
 
 class DashboardShell extends StatefulWidget {
   const DashboardShell({super.key, required this.projectId, required this.child});
@@ -31,6 +34,7 @@ class _DashboardShellState extends State<DashboardShell> {
     (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),
     (Icons.list_alt_outlined, Icons.list_alt, 'Events'),
     (Icons.public_outlined, Icons.public, 'Geography'),
+    (Icons.terminal_outlined, Icons.terminal, 'Logs'),
     (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
 
@@ -77,7 +81,8 @@ class _DashboardShellState extends State<DashboardShell> {
     if (path.contains('/issues')) return 4;
     if (path.contains('/events')) return 5;
     if (path.contains('/geo')) return 6;
-    if (path.contains('/settings')) return 7;
+    if (path.contains('/logs')) return 7;
+    if (path.contains('/settings')) return 8;
     return 0;
   }
 
@@ -92,7 +97,8 @@ class _DashboardShellState extends State<DashboardShell> {
       4 => '/p/$id/issues',
       5 => '/p/$id/events',
       6 => '/p/$id/geo',
-      7 => '/p/$id/settings',
+      7 => '/p/$id/logs',
+      8 => '/p/$id/settings',
       _ => '/projects',
     };
     if (i > 0 && id == null) return;
@@ -102,8 +108,92 @@ class _DashboardShellState extends State<DashboardShell> {
     }
   }
 
+  Widget _sidebarNav(BuildContext context, {required bool extended, required int selected}) {
+    if (widget.projectId == null) {
+      return _NavTile(
+        icon: Icons.folder_outlined,
+        activeIcon: Icons.folder,
+        label: 'Projects',
+        selected: true,
+        extended: extended,
+        onTap: () => _onNav(0, context),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: EdgeInsets.fromLTRB(extended ? 16 : 12, 0, extended ? 16 : 12, 8),
+          child: Text(
+            'MONITORING',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.muted.withValues(alpha: 0.85),
+              letterSpacing: 1.1,
+            ),
+          ),
+        ),
+        for (var i = 0; i < _navItems.length; i++)
+          _NavTile(
+            icon: _navItems[i].$1,
+            activeIcon: _navItems[i].$2,
+            label: _navItems[i].$3,
+            selected: selected == i,
+            extended: extended,
+            onTap: () => _onNav(i, context),
+          ),
+      ],
+    );
+  }
+
+  Widget _sidebarHeader({required bool extended, VoidCallback? onLogoTap}) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(extended ? 16 : 12, 20, extended ? 16 : 12, 16),
+      child: ScoutLogo(
+        compact: !extended,
+        showTagline: extended,
+        iconSize: extended ? 38 : 36,
+        onTap: onLogoTap ?? () => context.go(widget.projectId == null ? '/projects' : '/p/${widget.projectId}'),
+      ),
+    );
+  }
+
+  Widget _sidebarFooter(BuildContext context, {required bool extended}) {
+    if (widget.projectId == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: extended
+          ? OutlinedButton.icon(
+              onPressed: () => context.go('/projects'),
+              icon: const Icon(Icons.swap_horiz, size: 16),
+              label: const Text('Switch project'),
+            )
+          : IconButton(
+              onPressed: () => context.go('/projects'),
+              icon: const Icon(Icons.swap_horiz, color: AppTheme.muted),
+              tooltip: 'Switch project',
+            ),
+    );
+  }
+
+  Widget _mainColumn(BuildContext context, {required Widget topBar, required Widget content, required bool compact}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        topBar,
+        Expanded(child: content),
+        DashboardFooter(compact: compact),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    DashboardScope.projectId = widget.projectId;
+    DashboardScope.route = GoRouterState.of(context).uri.path;
+
     final drawerMode = useDrawerNav(context);
     final wide = !drawerMode && MediaQuery.sizeOf(context).width >= Breakpoints.shellDrawer;
     final extended = wide && widget.projectId != null;
@@ -121,9 +211,9 @@ class _DashboardShellState extends State<DashboardShell> {
     final content = DecoratedBox(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppTheme.bg, Color(0xFFF1F5F9)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFFF8FAFC), Color(0xFFF1F5F9)],
         ),
       ),
       child: PageStorage(bucket: _pageBucket, child: widget.child),
@@ -138,88 +228,79 @@ class _DashboardShellState extends State<DashboardShell> {
             : Drawer(
                 backgroundColor: AppTheme.sidebar,
                 child: SafeArea(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(20, 16, 20, 8),
-                      child: Text('Scout', style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.w800, fontSize: 18)),
-                    ),
-                    for (var i = 0; i < _navItems.length; i++)
-                      _NavTile(
-                        icon: _navItems[i].$1,
-                        activeIcon: _navItems[i].$2,
-                        label: _navItems[i].$3,
-                        selected: selected == i,
-                        extended: true,
-                        onTap: () => _onNav(i, context),
-                      ),
-                    const Spacer(),
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: OutlinedButton.icon(onPressed: () => context.go('/projects'), icon: const Icon(Icons.swap_horiz, size: 16), label: const Text('Switch project')),
-                    ),
-                  ]),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _sidebarHeader(extended: true),
+                      if (_projectName != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                          child: Text(
+                            _projectName!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppTheme.text),
+                          ),
+                        ),
+                      Expanded(child: SingleChildScrollView(child: _sidebarNav(context, extended: true, selected: selected))),
+                      _sidebarFooter(context, extended: true),
+                    ],
+                  ),
                 ),
               ),
-        body: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [topBar, Expanded(child: content)]),
+        body: _mainColumn(context, topBar: topBar, content: content, compact: compact),
       );
     }
 
     return Scaffold(
       backgroundColor: AppTheme.bg,
-      body: Row(children: [
-        Container(
-          width: extended ? 220 : 72,
-          decoration: BoxDecoration(
-            color: AppTheme.sidebar,
-            border: Border(right: BorderSide(color: AppTheme.border)),
-            boxShadow: [
-              BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(1, 0)),
-            ],
-          ),
-          child: Column(children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
-              child: Row(children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(colors: [AppTheme.primary, AppTheme.accentPurple]),
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [BoxShadow(color: AppTheme.primary.withValues(alpha: 0.3), blurRadius: 12)],
-                  ),
-                  child: const Icon(Icons.radar, color: Colors.white, size: 22),
-                ),
-                if (extended) ...[
-                  const SizedBox(width: 10),
-                  const Text('Scout', style: TextStyle(color: AppTheme.text, fontWeight: FontWeight.w800, fontSize: 16)),
-                ],
-              ]),
+      body: Row(
+        children: [
+          Container(
+            width: extended ? 232 : 76,
+            decoration: BoxDecoration(
+              color: AppTheme.sidebar,
+              border: const Border(right: BorderSide(color: AppTheme.border)),
+              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(2, 0))],
             ),
-            if (widget.projectId == null)
-              _NavTile(icon: Icons.folder_outlined, activeIcon: Icons.folder, label: 'Projects', selected: true, extended: extended, onTap: () => _onNav(0, context))
-            else
-              for (var i = 0; i < _navItems.length; i++)
-                _NavTile(
-                  icon: _navItems[i].$1,
-                  activeIcon: _navItems[i].$2,
-                  label: _navItems[i].$3,
-                  selected: selected == i,
-                  extended: extended,
-                  onTap: () => _onNav(i, context),
-                ),
-            const Spacer(),
-            if (widget.projectId != null)
-              Padding(
-                padding: const EdgeInsets.all(12),
-                child: extended
-                    ? OutlinedButton.icon(onPressed: () => context.go('/projects'), icon: const Icon(Icons.swap_horiz, size: 16), label: const Text('Switch'))
-                    : IconButton(onPressed: () => context.go('/projects'), icon: const Icon(Icons.swap_horiz, color: AppTheme.muted), tooltip: 'Switch project'),
-              ),
-          ]),
-        ),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [topBar, Expanded(child: content)])),
-      ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _sidebarHeader(extended: extended),
+                if (extended && _projectName != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppTheme.panelElevated,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.folder_outlined, size: 14, color: AppTheme.primary),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _projectName!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.text),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                Expanded(child: SingleChildScrollView(child: _sidebarNav(context, extended: extended, selected: selected))),
+                _sidebarFooter(context, extended: extended),
+              ],
+            ),
+          ),
+          Expanded(child: _mainColumn(context, topBar: topBar, content: content, compact: compact)),
+        ],
+      ),
     );
   }
 }
@@ -238,73 +319,101 @@ class _TopBar extends StatelessWidget {
     return Material(
       color: AppTheme.panel,
       elevation: 0,
-      shadowColor: Colors.black.withValues(alpha: 0.04),
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20, vertical: compact ? 10 : 12),
         decoration: BoxDecoration(
           color: AppTheme.panel,
-          border: Border(bottom: BorderSide(color: AppTheme.border)),
+          border: const Border(bottom: BorderSide(color: AppTheme.border)),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2))],
         ),
-        child: Row(children: [
-          if (drawerMode && projectName != null)
-            IconButton(onPressed: onMenu, icon: const Icon(Icons.menu, size: 22), tooltip: 'Menu')
-          else if (projectName != null)
-            TextButton.icon(onPressed: onProjects, icon: const Icon(Icons.arrow_back, size: 16), label: Text(compact ? 'Back' : 'Projects')),
-          if (projectName != null) ...[
-            if (!compact) const Text(' / ', style: TextStyle(color: AppTheme.muted)),
-            Expanded(
-              child: Text(
-                projectName!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 13 : 14, color: AppTheme.text),
-              ),
-            ),
-          ]           else
-            const Spacer(),
-          if (AuthService.instance.isAdmin && projectName == null)
-            TextButton.icon(
-              onPressed: () => context.go('/admin/users'),
-              icon: const Icon(Icons.admin_panel_settings_outlined, size: 18),
-              label: Text(compact ? '' : 'Team'),
-            ),
-          PopupMenuButton<String>(
-            tooltip: 'Account',
-            onSelected: (v) async {
-              if (v == 'logout') {
-                await AuthService.instance.logout();
-                if (context.mounted) context.go('/login');
-              } else if (v == 'admin') {
-                context.go('/admin/users');
-              }
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
-              if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
-              const PopupMenuItem(value: 'logout', child: Text('Sign out')),
-            ],
-            child: Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: CircleAvatar(
-                radius: compact ? 14 : 16,
-                backgroundColor: AppTheme.primarySoft,
+        child: Row(
+          children: [
+            if (drawerMode && projectName != null)
+              IconButton(onPressed: onMenu, icon: const Icon(Icons.menu, size: 22), tooltip: 'Menu')
+            else if (drawerMode)
+              const Padding(padding: EdgeInsets.only(right: 4), child: ScoutLogo(compact: true, iconSize: 32)),
+            if (projectName != null) ...[
+              if (!drawerMode)
+                TextButton.icon(
+                  onPressed: onProjects,
+                  icon: const Icon(Icons.arrow_back, size: 16),
+                  label: Text(compact ? 'Back' : 'Projects'),
+                ),
+              if (!compact) const Text(' / ', style: TextStyle(color: AppTheme.muted)),
+              Expanded(
                 child: Text(
-                  AuthService.instance.email.isNotEmpty ? AuthService.instance.email[0].toUpperCase() : '?',
-                  style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 13),
+                  projectName!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 13 : 15, color: AppTheme.text),
+                ),
+              ),
+            ] else ...[
+              if (!drawerMode) ...[
+                ScoutLogo(compact: compact, iconSize: 32, onTap: () => context.go('/projects')),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Text(
+                  compact ? 'Projects' : 'Your projects',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 14 : 16, color: AppTheme.text),
+                ),
+              ),
+            ],
+            if (AuthService.instance.isAdmin && projectName == null)
+              TextButton.icon(
+                onPressed: () => context.go('/admin/users'),
+                icon: const Icon(Icons.admin_panel_settings_outlined, size: 18),
+                label: Text(compact ? '' : 'Team'),
+              ),
+            PopupMenuButton<String>(
+              tooltip: 'Account',
+              onSelected: (v) async {
+                if (v == 'logout') {
+                  await AuthService.instance.logout();
+                  if (context.mounted) context.go('/login');
+                } else if (v == 'admin') {
+                  context.go('/admin/users');
+                }
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
+                if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
+                const PopupMenuItem(value: 'logout', child: Text('Sign out')),
+              ],
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: CircleAvatar(
+                  radius: compact ? 14 : 16,
+                  backgroundColor: AppTheme.primarySoft,
+                  child: Text(
+                    AuthService.instance.email.isNotEmpty ? AuthService.instance.email[0].toUpperCase() : '?',
+                    style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 13),
+                  ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 4 : 6),
-            decoration: BoxDecoration(color: AppTheme.panelElevated, borderRadius: BorderRadius.circular(20), border: Border.all(color: AppTheme.border)),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Container(width: 6, height: 6, decoration: const BoxDecoration(color: AppTheme.success, shape: BoxShape.circle)),
-              if (!compact) ...[const SizedBox(width: 8), const Text('Live', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.muted))],
-            ]),
-          ),
-        ]),
+            const SizedBox(width: 8),
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 4 : 6),
+              decoration: BoxDecoration(
+                color: AppTheme.success.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppTheme.success.withValues(alpha: 0.25)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(width: 6, height: 6, decoration: const BoxDecoration(color: AppTheme.success, shape: BoxShape.circle)),
+                  if (!compact) ...[
+                    const SizedBox(width: 8),
+                    const Text('Live', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.success)),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -328,24 +437,23 @@ class _NavTile extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 10),
+          margin: EdgeInsets.symmetric(horizontal: extended ? 10 : 8, vertical: 2),
+          padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 11),
           decoration: BoxDecoration(
             color: selected ? AppTheme.primary.withValues(alpha: 0.1) : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
-            border: selected ? Border.all(color: AppTheme.primary.withValues(alpha: 0.25)) : null,
+            border: selected ? Border.all(color: AppTheme.primary.withValues(alpha: 0.2)) : null,
           ),
-          child: Row(mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center, children: [
-            if (selected && extended)
-              Container(width: 3, height: 20, margin: const EdgeInsets.only(right: 10), decoration: BoxDecoration(color: AppTheme.primary, borderRadius: BorderRadius.circular(2)))
-            else if (extended)
-              const SizedBox(width: 13),
-            Icon(selected ? activeIcon : icon, color: accent, size: 20),
-            if (extended) ...[
-              const SizedBox(width: 10),
-              Expanded(child: Text(label, style: TextStyle(color: accent, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w500))),
+          child: Row(
+            mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center,
+            children: [
+              Icon(selected ? activeIcon : icon, color: accent, size: 20),
+              if (extended) ...[
+                const SizedBox(width: 12),
+                Expanded(child: Text(label, style: TextStyle(color: accent, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w500))),
+              ],
             ],
-          ]),
+          ),
         ),
       ),
     );

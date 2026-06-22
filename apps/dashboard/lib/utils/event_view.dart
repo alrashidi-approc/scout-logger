@@ -169,6 +169,7 @@ class EventView {
   List<DetailField> networkFields() {
     if (method.isEmpty && url.isEmpty && statusCode.isEmpty && type != 'network') return [];
     final hasResponse = network['hasResponse'] == true || statusCode.isNotEmpty;
+    final responseText = _networkResponseText();
     return [
       if (method.isNotEmpty) DetailField('Method', method, highlight: true),
       if (url.isNotEmpty) DetailField('URL / path', url, mono: true, highlight: true),
@@ -176,12 +177,40 @@ class EventView {
       if (!hasResponse && type == 'network') DetailField('Response', 'No response received', highlight: true),
       if (network['errorType'] != null) DetailField('Error type', str(network['errorType'])!, highlight: true),
       if (network['error'] != null) DetailField('Error', str(network['error'])!),
+      if (responseText != null) DetailField('Network response', responseText, mono: true, block: true),
       if (network['durationMs'] != null) DetailField('Duration', '${network['durationMs']} ms'),
       if (network['slow'] == true)
         DetailField('Slow request', 'Yes (≥ ${network['slowThresholdMs'] ?? '—'} ms)', highlight: true),
       if (network['traceId'] != null) DetailField('Trace ID', str(network['traceId'])!, mono: true),
       if (network['curl'] != null) DetailField('cURL', str(network['curl'])!, mono: true),
     ];
+  }
+
+  String? _networkResponseText() {
+    final resp = asMap(network['response']);
+    if (resp.isEmpty) return null;
+
+    final out = <String, dynamic>{...resp};
+    final body = out.remove('body');
+    if (body != null) out['body'] = _parseBody(body);
+
+    if (out.isEmpty) return null;
+    try {
+      return const JsonEncoder.withIndent('  ').convert(out);
+    } catch (_) {
+      return out.toString();
+    }
+  }
+
+  static dynamic _parseBody(dynamic body) {
+    if (body is! String) return body;
+    final trimmed = body.trim();
+    if (trimmed.isEmpty) return body;
+    try {
+      return jsonDecode(trimmed);
+    } catch (_) {
+      return body;
+    }
   }
 
   List<DetailField> issueFields() {
@@ -255,11 +284,13 @@ class EventView {
 }
 
 class DetailField {
-  DetailField(this.label, this.value, {this.mono = false, this.highlight = false});
+  DetailField(this.label, this.value, {this.mono = false, this.highlight = false, this.block = false});
   final String label;
   final String value;
   final bool mono;
   final bool highlight;
+  /// Full-width stacked layout (e.g. network response body).
+  final bool block;
 }
 
 String prettyJson(dynamic v) {

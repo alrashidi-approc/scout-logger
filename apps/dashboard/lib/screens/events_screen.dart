@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
+import '../theme/app_theme.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -16,7 +19,7 @@ class EventsScreen extends StatefulWidget {
     this.initialType,
     this.initialLevel,
     this.initialCategory,
-    this.initialPeriod = const PeriodFilter.days(7),
+    this.initialPeriod = const PeriodFilter.days(30),
     this.initialQuery,
     this.initialCountry,
     this.initialEnvironment,
@@ -43,7 +46,9 @@ class _EventsScreenState extends State<EventsScreen> {
   List<String> _environments = [];
   List<String> _appVersions = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late String? _kindFilter;
   late String? _levelFilter;
   late String? _categoryFilter;
@@ -87,41 +92,59 @@ class _EventsScreenState extends State<EventsScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
-      final results = await Future.wait([
-        _api.fetchEvents(
-          widget.projectId,
-          type: _kindFilter,
-          level: _levelFilter,
-          category: _categoryFilter,
-          period: _period,
-          q: _search.isEmpty ? null : _search,
-          country: _country,
-          environment: _environment,
-          appVersion: _appVersion,
-        ),
-        _api.fetchFilterFacets(widget.projectId, period: _period),
-      ]);
-      if (mounted) {
-        final facets = results[1] as Map<String, dynamic>;
-        setState(() {
-          _events = results[0] as List<Map<String, dynamic>>;
-          _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
-          _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
-          _loading = false;
-        });
-      }
+      final events = await _api.fetchEvents(
+        widget.projectId,
+        type: _kindFilter,
+        level: _levelFilter,
+        category: _categoryFilter,
+        period: _period,
+        q: _search.isEmpty ? null : _search,
+        country: _country,
+        environment: _environment,
+        appVersion: _appVersion,
+      );
+      if (!mounted) return;
+      setState(() {
+        _events = events;
+        _hasData = true;
+        _loading = false;
+
+        _refreshing = false;
+      });
+      _loadFacets();
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
         setState(() {
-          _error = e.toString();
+          _error = e;
           _loading = false;
+
+          _refreshing = false;
         });
       }
     }
+  }
+
+  Future<void> _loadFacets() async {
+    try {
+      final facets = await _api.fetchFilterFacets(widget.projectId, period: _period);
+      if (!mounted) return;
+      setState(() {
+        _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      });
+    } catch (_) {}
   }
 
   void _apply({
@@ -174,68 +197,95 @@ class _EventsScreenState extends State<EventsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    final pad = pagePad(context);
+    final insets = pageInsets(context);
+
+    return Stack(
       children: [
-        Padding(
-          padding: pageInsets(context, top: pagePad(context)),
-          child: PageHeader(
-            title: 'Events',
-            subtitle: _filterSummary(),
-            period: _period,
-            onPeriodTap: _openPeriodPicker,
-            actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+        RefreshIndicator(
+      onRefresh: _load,
+      child: CustomScrollView(
+        key: PageStorageKey('events-${widget.projectId}'),
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverPadding(
+            padding: insets.copyWith(top: pad),
+            sliver: SliverToBoxAdapter(
+              child: PageHeader(
+                title: 'Events',
+                subtitle: _filterSummary(),
+                period: _period,
+                onPeriodTap: _openPeriodPicker,
+                actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
+              ),
+            ),
           ),
-        ),
-        Padding(
-          padding: pageInsets(context, top: 12),
-          child: FilterBar(
-            period: _period,
-            onPeriodChanged: (p) => _apply(period: p),
-            searchHint: 'Search message…',
-            searchValue: _search,
-            onSearch: (q) => _apply(search: q),
-            levelOptions: _levelOptions,
-            levelSelected: _levelFilter,
-            onLevelSelected: (l) => _apply(level: l, setLevel: true),
-            typeOptions: _kindOptions,
-            typeSelected: _kindFilter,
-            onTypeSelected: (t) => _apply(kind: t, setKind: true),
-            categoryOptions: _categoryOptions,
-            categorySelected: _categoryFilter,
-            onCategorySelected: (c) => _apply(category: c, setCategory: true),
-            environmentOptions: _environments,
-            environmentSelected: _environment,
-            onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
-            appVersionOptions: _appVersions,
-            appVersionSelected: _appVersion,
-            onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
+          SliverPadding(
+            padding: insets.copyWith(top: 12),
+            sliver: SliverToBoxAdapter(
+              child: FilterBar(
+                period: _period,
+                onPeriodChanged: (p) => _apply(period: p),
+                searchHint: 'Search message…',
+                searchValue: _search,
+                onSearch: (q) => _apply(search: q),
+                levelOptions: _levelOptions,
+                levelSelected: _levelFilter,
+                onLevelSelected: (l) => _apply(level: l, setLevel: true),
+                typeOptions: _kindOptions,
+                typeSelected: _kindFilter,
+                onTypeSelected: (t) => _apply(kind: t, setKind: true),
+                categoryOptions: _categoryOptions,
+                categorySelected: _categoryFilter,
+                onCategorySelected: (c) => _apply(category: c, setCategory: true),
+                environmentOptions: _environments,
+                environmentSelected: _environment,
+                onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
+                appVersionOptions: _appVersions,
+                appVersionSelected: _appVersion,
+                onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
+              ),
+            ),
           ),
-        ),
-        Expanded(
-          child: _loading
-              ? const LoadingView()
-              : _error != null
-                  ? ErrorPanel(message: _error!, onRetry: _load)
-                  : _events.isEmpty
-                      ? const EmptyState(
-                          icon: Icons.inbox_outlined,
-                          title: 'No events',
-                          subtitle: 'Try adjusting filters or the time range',
-                        )
-                      : RefreshIndicator(
-                          onRefresh: _load,
-                          child: ListView.builder(
-                            key: PageStorageKey('events-${widget.projectId}'),
-                            padding: pageInsets(context, top: 12, bottom: pagePad(context)),
-                            itemCount: _events.length,
-                            itemBuilder: (_, i) => EventCard(
-                              event: _events[i],
-                              onTap: () => context.push('/p/${widget.projectId}/events/${_events[i]['id']}'),
-                            ),
-                          ),
-                        ),
-        ),
+          if (_loading)
+            const SliverFillRemaining(hasScrollBody: false, child: LoadingView(layout: PlaceholderLayout.events))
+          else if (_error != null && !_hasData)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: ErrorPanel(message: formatLoadError(_error!), onRetry: _load),
+            )
+          else if (_events.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: EmptyState(
+                icon: Icons.inbox_outlined,
+                title: 'No events',
+                subtitle: 'Try adjusting filters or the time range',
+              ),
+            )
+          else
+            SliverPadding(
+              padding: insets.copyWith(top: 12, bottom: pad),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => EventCard(
+                    event: _events[i],
+                    onTap: () => context.push('/p/${widget.projectId}/events/${_events[i]['id']}'),
+                  ),
+                  childCount: _events.length,
+                ),
+              ),
+            ),
+        ],
+      ),
+    ),
+        if (_refreshing)
+          Positioned.fill(
+            child: ColoredBox(
+              color: AppTheme.bg.withValues(alpha: 0.92),
+              child: const ScoutRefreshShimmer(layout: PlaceholderLayout.events),
+            ),
+          ),
       ],
     );
   }

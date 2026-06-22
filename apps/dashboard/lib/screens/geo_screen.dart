@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/country_centroids.dart';
 import '../utils/date_range.dart';
 import '../utils/geo_regions.dart';
 import '../widgets/filter_bar.dart';
+import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 import '../widgets/period_picker.dart';
 import '../widgets/world_map.dart';
@@ -26,7 +29,9 @@ class _GeoScreenState extends State<GeoScreen> {
   final _mapKey = GlobalKey<WorldMapPanelState>();
   List<Map<String, dynamic>> _geo = [];
   bool _loading = true;
-  String? _error;
+  bool _refreshing = false;
+  bool _hasData = false;
+  Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
   @override
@@ -37,19 +42,32 @@ class _GeoScreenState extends State<GeoScreen> {
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final geo = await _api.fetchGeo(widget.projectId, period: _period);
       if (mounted) setState(() {
         _geo = geo;
+        _hasData = true;
         _loading = false;
+
+        _refreshing = false;
       });
     } catch (e) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
-        _error = e.toString();
+        _error = e;
         _loading = false;
+
+        _refreshing = false;
       });
     }
   }
@@ -68,19 +86,27 @@ class _GeoScreenState extends State<GeoScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const LoadingView();
-    if (_error != null) return ErrorPanel(message: _error!, onRetry: _load);
+    return AsyncScreenBody(
+      loading: _loading,
+            refreshing: _refreshing,
+      error: _error,
+      onRetry: _load,
+      placeholderLayout: PlaceholderLayout.geo,
+      child: _buildContent(context),
+    );
+  }
 
+  Widget _buildContent(BuildContext context) {
     final totalEvents = _geo.fold<int>(0, (s, g) => s + (g['count'] as int? ?? 0));
     final totalUsers = _geo.fold<int>(0, (s, g) => s + (g['users'] as int? ?? g['count'] as int? ?? 0));
     final regions = aggregateByRegion(_geo);
 
     return ListView(
-      padding: const EdgeInsets.all(28),
+      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         PageHeader(
           title: 'Geography',
-          subtitle: 'Users by country',
+          subtitle: 'Logged-in users by country',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
