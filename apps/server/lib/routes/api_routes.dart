@@ -84,6 +84,29 @@ Handler apiRoutes(
     });
   });
 
+  router.delete('/projects/<id>/data', (Request request, String id) async {
+    return _api(() async {
+      final auth = authFrom(request)!;
+      final denied = await ensureProjectDelete(
+        auth: auth,
+        projectId: id,
+        membership: authStore.membershipRole,
+      );
+      if (denied != null) return denied;
+      final q = request.url.queryParameters;
+      if ((q['from'] == null || q['from']!.isEmpty) && (q['days'] == null || q['days']!.isEmpty)) {
+        return jsonErr('from/to or days query required', status: 400);
+      }
+      final window = TimeWindow.fromQuery(q, defaultDays: 7);
+      if (window.since == null) return jsonErr('Invalid date range', status: 400);
+      final deleted = await store.purgeProjectData(id, window: window);
+      return Response.ok(
+        jsonEncode({'ok': true, 'deleted': deleted}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    });
+  });
+
   router.get('/projects/<id>/facets', (Request request, String id) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);

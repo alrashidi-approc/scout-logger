@@ -185,6 +185,147 @@ class ScoutStore {
     return rows.isNotEmpty;
   }
 
+  /// Delete ingest data in [window] — events, sessions, daily stats, and derived rows.
+  Future<Map<String, int>> purgeProjectData(String projectId, {required TimeWindow window}) async {
+    if (window.since == null) throw ArgumentError('purge window requires since');
+    final conn = await db.connect();
+    final tp = timeParams(window);
+    final fromDate = window.since!.substring(0, 10);
+    final untilDate = trendUntilDate(window);
+
+    await conn.execute('BEGIN');
+    try {
+      final events = await conn.execute(
+        Sql.named('''
+          DELETE FROM events
+          WHERE project_id = @pid
+            AND occurred_at >= @since::timestamptz
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          RETURNING id
+        '''),
+        parameters: {'pid': projectId, ...tp},
+      );
+
+      final sessions = await conn.execute(
+        Sql.named('''
+          DELETE FROM app_sessions
+          WHERE project_id = @pid
+            AND started_at >= @since::timestamptz
+            AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)
+          RETURNING id
+        '''),
+        parameters: {'pid': projectId, ...tp},
+      );
+
+      final stats = await conn.execute(
+        Sql.named('''
+          DELETE FROM daily_stats
+          WHERE project_id = @pid
+            AND date >= @fromDate::date
+            AND (@untilDate::date IS NULL OR date < @untilDate::date)
+          RETURNING date
+        '''),
+        parameters: {'pid': projectId, 'fromDate': fromDate, 'untilDate': untilDate},
+      );
+
+      final issues = await conn.execute(
+        Sql.named('''
+          DELETE FROM issues i
+          WHERE i.project_id = @pid
+            AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = i.id)
+          RETURNING i.id
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          UPDATE issues i SET
+            event_count = s.cnt,
+            first_seen_at = s.first_at,
+            last_seen_at = s.last_at,
+            affected_users = s.users
+          FROM (
+            SELECT issue_id,
+                   COUNT(*)::int AS cnt,
+                   MIN(occurred_at) AS first_at,
+                   MAX(occurred_at) AS last_at,
+                   COUNT(DISTINCT user_id) FILTER (WHERE user_id IS NOT NULL)::int AS users
+            FROM events
+            WHERE project_id = @pid AND issue_id IS NOT NULL
+            GROUP BY issue_id
+          ) s
+          WHERE i.id = s.issue_id AND i.project_id = @pid
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      final users = await conn.execute(
+        Sql.named('''
+          DELETE FROM user_first_seen ufs
+          WHERE ufs.project_id = @pid
+            AND NOT EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.user_id = ufs.user_id
+            )
+          RETURNING ufs.user_id
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      final releases = await conn.execute(
+        Sql.named('''
+          DELETE FROM releases r
+          WHERE r.project_id = @pid
+            AND NOT EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid
+                AND e.release = r.release
+                AND COALESCE(e.environment, 'production') = r.environment
+            )
+          RETURNING r.release
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          UPDATE releases r SET
+            event_count = s.cnt,
+            crash_count = s.crashes,
+            first_seen_at = s.first_at,
+            last_seen_at = s.last_at
+          FROM (
+            SELECT release,
+                   COALESCE(environment, 'production') AS env,
+                   COUNT(*)::int AS cnt,
+                   COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes,
+                   MIN(occurred_at) AS first_at,
+                   MAX(occurred_at) AS last_at
+            FROM events
+            WHERE project_id = @pid AND release IS NOT NULL
+            GROUP BY release, COALESCE(environment, 'production')
+          ) s
+          WHERE r.project_id = @pid AND r.release = s.release AND r.environment = s.env
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute('COMMIT');
+      return {
+        'deletedEvents': events.length,
+        'deletedSessions': sessions.length,
+        'deletedDailyStats': stats.length,
+        'deletedIssues': issues.length,
+        'deletedUserRows': users.length,
+        'deletedReleases': releases.length,
+      };
+    } catch (e) {
+      await conn.execute('ROLLBACK');
+      rethrow;
+    }
+  }
+
   Future<Map<String, List<String>>> eventFilterFacets(String projectId, {TimeWindow? window}) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(30);
@@ -458,7 +599,13 @@ class ScoutStore {
                 ORDER BY e.occurred_at DESC LIMIT 1) AS level,
                (SELECT e.payload->'network'->>'statusCode'
                 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                ORDER BY e.occurred_at DESC LIMIT 1) AS status_code
+                ORDER BY e.occurred_at DESC LIMIT 1) AS status_code,
+               (SELECT COUNT(*)::int
+                FROM events e
+                WHERE e.project_id = @pid AND e.issue_id = issues.id
+                  AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
+                  AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
+               ) AS period_events
         FROM issues WHERE project_id = @pid
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
@@ -488,20 +635,26 @@ class ScoutStore {
       },
     );
     return rows
-        .map((r) => {
+        .map((r) {
+          final totalEvents = r[5] as int;
+          final periodEvents = r[12] as int;
+          final inPeriod = w.since != null;
+          return {
               'id': r[0],
               'fingerprint': r[1],
               'type': r[2],
               'title': r[3],
               'status': r[4],
-              'eventCount': r[5],
+              'eventCount': inPeriod ? periodEvents : totalEvents,
+              if (inPeriod) 'totalEventCount': totalEvents,
               'affectedUsers': r[6],
               'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': (r[8] as DateTime).toUtc().toIso8601String(),
               'topCountry': r[9],
               'level': r[10],
               if (r[11] != null) 'statusCode': r[11],
-            })
+            };
+        })
         .toList();
   }
 

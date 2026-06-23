@@ -6,6 +6,7 @@ import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/date_range.dart';
 import '../utils/project_roles.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
@@ -27,6 +28,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   bool _hasData = false;
   bool _saving = false;
   bool _deleting = false;
+  bool _purging = false;
   Object? _error;
   String? _role;
   int _configVersion = 1;
@@ -225,6 +227,62 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+    }
+  }
+
+  Future<void> _confirmPurgeData() async {
+    final now = DateTime.now();
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: now,
+      initialDateRange: DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
+      helpText: 'Delete data in range (UTC)',
+    );
+    if (range == null || !mounted) return;
+    final from = DateTime(range.start.year, range.start.month, range.start.day);
+    final to = DateTime(range.end.year, range.end.month, range.end.day);
+    final err = PeriodFilter.rangeError(from, to);
+    if (err != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      return;
+    }
+    final period = PeriodFilter.range(from, to);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete data in range?'),
+        content: Text(
+          'Permanently deletes all events, sessions, issues, and stats for ${period.label()} (UTC). '
+          'Data outside this range is kept. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
+            child: const Text('Delete data'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _purging = true);
+    try {
+      final res = await _api.purgeProjectData(widget.projectId, period: period);
+      final deleted = res['deleted'] is Map ? Map<String, dynamic>.from(res['deleted'] as Map) : <String, dynamic>{};
+      final events = deleted['deletedEvents'] ?? 0;
+      if (mounted) {
+        setState(() => _purging = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted $events events and related data for ${period.label()}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _purging = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      }
     }
   }
 
@@ -515,10 +573,19 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 const Text('Danger zone', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: AppTheme.error)),
                 const SizedBox(height: 8),
                 const Text(
-                  'Delete this project and all its data. Only the project owner can do this.',
+                  'Delete events in a date range to start over, or remove the entire project.',
                   style: TextStyle(color: AppTheme.muted, fontSize: 13),
                 ),
                 const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _purging ? null : _confirmPurgeData,
+                  icon: _purging
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.date_range, color: AppTheme.error),
+                  label: const Text('Delete data in date range…', style: TextStyle(color: AppTheme.error)),
+                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.error)),
+                ),
+                const SizedBox(height: 10),
                 OutlinedButton.icon(
                   onPressed: _deleting ? null : _confirmDelete,
                   icon: _deleting

@@ -164,6 +164,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
   Widget build(BuildContext context) {
     final pad = pagePad(context);
     final insets = pageInsets(context);
+    final totalEvents = _issues.fold<int>(0, (s, i) => s + (i['eventCount'] as int? ?? 0));
 
     return Stack(
       children: [
@@ -178,7 +179,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
             sliver: SliverToBoxAdapter(
               child: PageHeader(
                 title: 'Issues',
-                subtitle: '${_issues.length} grouped errors and crashes',
+                subtitle: '${_issues.length} issues · $totalEvents events · ${_period.label()}',
                 period: _period,
                 onPeriodTap: _openPeriodPicker,
                 actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],

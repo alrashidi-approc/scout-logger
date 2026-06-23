@@ -99,6 +99,13 @@ class ScoutApi {
     _ok(res);
   }
 
+  Future<Map<String, dynamic>> purgeProjectData(String projectId, {required PeriodFilter period}) async {
+    final uri = _uri('/api/projects/$projectId/data').replace(queryParameters: period.toQuery());
+    final res = await _client.delete(uri, headers: _headers);
+    _ok(res);
+    return jsonMap(jsonDecode(res.body) as Map);
+  }
+
   Future<Map<String, dynamic>> fetchFilterFacets(String projectId, {PeriodFilter? period}) async {
     final uri = _uri('/api/projects/$projectId/facets').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
     final res = await _client.get(uri, headers: _headers);

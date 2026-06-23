@@ -4,7 +4,6 @@ import 'package:intl/intl.dart';
 import '../theme/app_theme.dart';
 import '../utils/issue_view.dart';
 import '../utils/user_identity.dart';
-import 'detail_panel.dart';
 import 'level_badge.dart';
 
 class EventCard extends StatelessWidget {
@@ -32,20 +31,7 @@ class EventCard extends StatelessWidget {
     final errorFocus = effectiveLevel == 'error' || type == 'crash';
     final compact = MediaQuery.sizeOf(context).width < 720;
 
-    final endpointLabel = url.isEmpty ? null : (status.isNotEmpty ? '$url ($status)' : url);
-    final pills = <String>[
-      if (release != '—') release,
-      if (device != '—') device,
-      if (route != '—') route,
-      if (endpointLabel != null) endpointLabel,
-    ];
-
-    final flow = [
-      if (device != '—') FlowItem(Icons.phone_android_outlined, 'Device', device),
-      if (release != '—') FlowItem(Icons.verified_outlined, 'Release', release),
-      if (route != '—') FlowItem(Icons.route_outlined, 'Screen', route),
-      if (url.isNotEmpty) FlowItem(Icons.lan_outlined, 'Network', url),
-    ];
+    final endpointLabel = url.isEmpty ? null : (status.isNotEmpty ? '$status · ${_shortLabel(url)}' : _shortLabel(url));
 
     return Container(
       margin: EdgeInsets.only(bottom: compact ? 10 : 12),
@@ -106,26 +92,17 @@ class EventCard extends StatelessWidget {
                             height: 1.3,
                           ),
                         ),
-                        if (pills.isNotEmpty) ...[
-                          const SizedBox(height: 10),
-                          Wrap(spacing: 6, runSpacing: 6, children: pills.map((p) => _pill(p, AppTheme.muted)).toList()),
+                        if (device != '—' || release != '—' || route != '—' || endpointLabel != null) ...[
+                          const SizedBox(height: 8),
+                          Wrap(spacing: 5, runSpacing: 5, children: [
+                            if (device != '—') _metaTag(Icons.phone_android_outlined, _shortLabel(device)),
+                            if (release != '—') _metaTag(Icons.verified_outlined, _shortLabel(release)),
+                            if (route != '—') _metaTag(Icons.route_outlined, _shortLabel(route)),
+                            if (endpointLabel != null) _metaTag(Icons.lan_outlined, endpointLabel),
+                          ]),
                         ],
                       ]),
                     ),
-                    if (flow.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: AppTheme.panelElevated,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: AppTheme.border),
-                          ),
-                          child: FlowStrip(items: flow, embedded: true),
-                        ),
-                      ),
-                    ],
                     Padding(
                       padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
                       child: Text('Environment: $env', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
@@ -141,6 +118,37 @@ class EventCard extends StatelessWidget {
       ),
     );
   }
+
+  static String _shortLabel(String raw, {int max = 28}) {
+    final s = raw.trim();
+    if (s.length <= max) return s;
+    return '${s.substring(0, max - 1)}…';
+  }
+
+  static Widget _metaTag(IconData icon, String text) => Container(
+        constraints: const BoxConstraints(maxWidth: 148),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppTheme.bg,
+          borderRadius: BorderRadius.circular(5),
+          border: Border.all(color: AppTheme.border.withValues(alpha: 0.75)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 11, color: AppTheme.muted),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppTheme.muted),
+              ),
+            ),
+          ],
+        ),
+      );
 
   static Widget _pill(String label, Color color) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -225,7 +233,9 @@ class IssueCard extends StatelessWidget {
                     ),
                     SizedBox(height: compact ? 6 : 8),
                     Wrap(spacing: 12, runSpacing: 4, children: [
-                      _meta(Icons.repeat, '${issue['eventCount']} events'),
+                      _meta(Icons.repeat, _eventCountLabel(issue)),
+                      if ((issue['affectedUsers'] as int? ?? 0) > 0)
+                        _meta(Icons.people_outline, '${issue['affectedUsers']} users'),
                       _meta(Icons.public, issue['topCountry'] as String? ?? '—'),
                       _meta(Icons.schedule, lastLabel),
                       _meta(Icons.flag_outlined, status, color: resolved ? AppTheme.success : AppTheme.muted),
@@ -243,6 +253,13 @@ class IssueCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _eventCountLabel(Map<String, dynamic> issue) {
+    final count = issue['eventCount'] as int? ?? 0;
+    final total = issue['totalEventCount'] as int?;
+    if (total != null && total != count) return '$count events · $total total';
+    return '$count events';
   }
 
   Widget _meta(IconData icon, String text, {Color? color}) => Row(
