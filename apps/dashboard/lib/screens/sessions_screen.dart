@@ -118,7 +118,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
               itemBuilder: (_, i) {
                 final s = _sessions[i];
                 final started = DateTime.tryParse(s['startedAt'] as String? ?? '');
-                final open = s['endedAt'] == null;
+                final open = s['isActive'] == true || s['endedAt'] == null;
                 final summary = s['summary'] is Map ? Map<String, dynamic>.from(s['summary'] as Map) : null;
                 final guest = s['isGuest'] == true || isGuestAppUser(userId: s['userId']?.toString());
                 return Container(

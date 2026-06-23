@@ -156,6 +156,7 @@ Handler apiRoutes(
       final q = request.url.queryParameters;
       final w = _window(q);
       try {
+        await store.closeStaleSessions(projectId: id);
         final overview = await store.projectOverview(id, window: w);
         final stats = await analytics.projectStats(id, window: w);
         final insights = await analytics.dashboardInsights(id, window: w);
@@ -364,6 +365,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
+      await store.closeStaleSessions(projectId: id);
       final sessions = await analytics.listSessions(
         id,
         window: _window(request.url.queryParameters),
@@ -377,6 +379,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
+      await store.closeStaleSessions(projectId: id);
       final events = await store.listSessionEvents(id, sessionId);
       var timeline = await analytics.sessionTimeline(id, sessionId);
       if (timeline == null && events.isEmpty) return jsonErr('Session not found', status: 404);

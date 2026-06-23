@@ -84,7 +84,9 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
     final events = jsonListMaps(s['events']);
     final started = DateTime.tryParse(s['startedAt'] as String? ?? '');
     final ended = DateTime.tryParse(s['endedAt'] as String? ?? '');
+    final lastSeen = DateTime.tryParse(s['lastSeenAt'] as String? ?? '');
     final pid = widget.projectId;
+    final isActive = s['isActive'] == true || s['endedAt'] == null;
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -112,6 +114,8 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
                   _meta('User', s['userId']?.toString() ?? 'anonymous'),
                   _meta('Started', started != null ? DateFormat.Hms().format(started.toLocal()) : '—'),
                   _meta('Ended', ended != null ? DateFormat.Hms().format(ended.toLocal()) : 'still open'),
+                  if (isActive && lastSeen != null)
+                    _meta('Last active', DateFormat.Hms().format(lastSeen.toLocal())),
                   _meta('Trail steps', '${timeline.length}'),
                   _meta('Events', '${s['eventCount'] ?? events.length}'),
                 ],

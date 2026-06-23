@@ -4,6 +4,7 @@ import 'package:postgres/postgres.dart';
 
 import '../db/scout_db.dart';
 import '../util/dates.dart';
+import '../util/event_filters.dart';
 import '../util/event_trend.dart';
 import '../util/user_identity.dart';
 
@@ -21,6 +22,7 @@ class AnalyticsStore {
         SELECT DISTINCT step->>'route' AS route
         FROM events, jsonb_array_elements(payload->'screenTrail') AS step
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND step->>'route' IS NOT NULL AND step->>'route' != ''
@@ -44,6 +46,7 @@ class AnalyticsStore {
           SELECT DISTINCT ON (session_id) session_id, payload
           FROM events
           WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
             AND session_id IS NOT NULL
             AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
             AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
@@ -107,7 +110,7 @@ class AnalyticsStore {
         activity AS (
           SELECT user_id, date_trunc('week', occurred_at AT TIME ZONE 'utc')::date AS active_week
           FROM events
-          WHERE project_id = @pid AND ${identifiedUserSql()}
+          WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
           GROUP BY user_id, active_week
         )
         SELECT
@@ -156,7 +159,7 @@ class AnalyticsStore {
         WITH session_release AS (
           SELECT DISTINCT ON (session_id) session_id, release
           FROM events
-          WHERE project_id = @pid AND session_id IS NOT NULL AND release IS NOT NULL
+          WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND session_id IS NOT NULL AND release IS NOT NULL
           ORDER BY session_id, occurred_at
         ),
         session_stats AS (
@@ -179,6 +182,7 @@ class AnalyticsStore {
         FROM events e
         LEFT JOIN session_stats ss ON ss.release = e.release
         WHERE e.project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND e.release IS NOT NULL
           AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
@@ -210,7 +214,7 @@ class AnalyticsStore {
     final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
-        SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms,
+        SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms, s.last_seen_at,
                end_ev.payload->'summary' AS summary,
                end_ev.payload->'reason' AS reason,
                (SELECT release FROM events WHERE project_id = s.project_id AND session_id = s.id AND release IS NOT NULL ORDER BY occurred_at LIMIT 1) AS release,
@@ -232,18 +236,20 @@ class AnalyticsStore {
     );
 
     return rows.map((r) {
-      final summary = _jsonField(r[5]);
+      final summary = _jsonField(r[6]);
       final userId = r[1]?.toString();
-      final installId = r[8]?.toString();
+      final installId = r[9]?.toString();
       return {
         'id': r[0],
         'userId': userId,
         'isGuest': isGuestAppUser(userId: userId, installId: installId),
         'startedAt': (r[2] as DateTime).toUtc().toIso8601String(),
         'endedAt': r[3] != null ? (r[3] as DateTime).toUtc().toIso8601String() : null,
+        'lastSeenAt': r[5] != null ? (r[5] as DateTime).toUtc().toIso8601String() : null,
         'durationMs': r[4],
-        'release': r[7],
-        'reason': _jsonField(r[6])?.toString(),
+        'release': r[8],
+        'reason': _jsonField(r[7])?.toString(),
+        'isActive': r[3] == null,
         if (summary is Map) 'summary': Map<String, dynamic>.from(summary),
       };
     }).toList();
@@ -253,7 +259,7 @@ class AnalyticsStore {
     final conn = await db.connect();
     final session = await conn.execute(
       Sql.named('''
-        SELECT id, user_id, started_at, ended_at, duration_ms
+        SELECT id, user_id, started_at, ended_at, duration_ms, last_seen_at
         FROM app_sessions WHERE project_id = @pid AND id = @sid
       '''),
       parameters: {'pid': projectId, 'sid': sessionId},
@@ -266,6 +272,7 @@ class AnalyticsStore {
         SELECT payload->'breadcrumbs' AS crumbs, payload->'screenTrail' AS trail, occurred_at
         FROM events
         WHERE project_id = @pid AND session_id = @sid
+          AND $sqlHideSessionHeartbeat
         ORDER BY jsonb_array_length(COALESCE(payload->'breadcrumbs', '[]'::jsonb)) DESC, occurred_at DESC
         LIMIT 1
       '''),
@@ -283,6 +290,8 @@ class AnalyticsStore {
       'startedAt': (s[2] as DateTime).toUtc().toIso8601String(),
       'endedAt': s[3] != null ? (s[3] as DateTime).toUtc().toIso8601String() : null,
       'durationMs': s[4],
+      'lastSeenAt': s[5] != null ? (s[5] as DateTime).toUtc().toIso8601String() : null,
+      'isActive': s[3] == null,
       'timeline': timeline,
     };
   }
@@ -369,7 +378,7 @@ class AnalyticsStore {
               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
             FROM events
-            WHERE project_id = @pid AND occurred_at >= @from::timestamptz
+            WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND occurred_at >= @from::timestamptz
           '''),
               parameters: {'pid': projectId, 'from': from},
             )
@@ -387,6 +396,7 @@ class AnalyticsStore {
               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
             FROM events
             WHERE project_id = @pid
+              AND $sqlHideSessionHeartbeat
               AND occurred_at >= @from::timestamptz
               AND occurred_at < @before::timestamptz
           '''),
@@ -419,7 +429,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COUNT(DISTINCT session_id)::int
         FROM events
-        WHERE project_id = @pid AND type = 'crash' AND session_id IS NOT NULL
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type = 'crash' AND session_id IS NOT NULL
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
@@ -435,6 +445,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT type, COUNT(*)::int FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY type ORDER BY COUNT(*) DESC
@@ -445,7 +456,7 @@ class AnalyticsStore {
     final byPlatform = await conn.execute(
       Sql.named('''
         SELECT platform, COUNT(*)::int FROM events
-        WHERE project_id = @pid AND platform IS NOT NULL
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND platform IS NOT NULL
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 8
@@ -504,7 +515,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COUNT(DISTINCT user_id)::int
         FROM events
-        WHERE project_id = @pid AND ${identifiedUserSql()}
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
           AND type IN ('error', 'network', 'crash')
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
@@ -516,6 +527,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 1
@@ -527,7 +539,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND type IN ('error', 'network', 'crash')
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type IN ('error', 'network', 'crash')
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 1
@@ -541,6 +553,7 @@ class AnalyticsStore {
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 1
@@ -553,6 +566,7 @@ class AnalyticsStore {
         SELECT payload->'network'->>'url' AS endpoint, COUNT(*)::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND payload->'network'->>'url' IS NOT NULL
@@ -570,7 +584,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COALESCE(NULLIF(payload->'screen'->>'currentRoute', ''), 'unknown') AS screen, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND type = 'crash'
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type = 'crash'
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY screen ORDER BY 2 DESC LIMIT 10
@@ -582,6 +596,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COALESCE(NULLIF(environment, ''), 'unknown') AS environment, COUNT(*)::int
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY environment ORDER BY 2 DESC
@@ -596,6 +611,7 @@ class AnalyticsStore {
                COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
                COUNT(*) FILTER (WHERE type = 'crash')::int
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY release ORDER BY 2 DESC LIMIT 12
@@ -612,6 +628,7 @@ class AnalyticsStore {
         ) AS tag, COUNT(*)::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND COALESCE(
@@ -655,7 +672,7 @@ class AnalyticsStore {
                COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int,
                MAX(NULLIF(TRIM(payload->'user'->>'email'), '')) AS email
         FROM events
-        WHERE project_id = @pid AND ${identifiedUserSql()}
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY user_id
@@ -696,6 +713,7 @@ class AnalyticsStore {
           SELECT type, occurred_at, country
           FROM events
           WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
             AND (
               user_id = @uid
               OR (
@@ -729,6 +747,7 @@ class AnalyticsStore {
         SELECT COUNT(*)::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND install_id IN (SELECT install_id FROM user_installs)
           AND $guestSql
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -756,7 +775,7 @@ class AnalyticsStore {
                MAX(occurred_at) AS last_seen,
                COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY install_id
@@ -783,6 +802,7 @@ class AnalyticsStore {
                install_id
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (
             user_id = @uid
             OR (
@@ -799,7 +819,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT MAX(NULLIF(TRIM(payload->'user'->>'email'), ''))
         FROM events
-        WHERE project_id = @pid AND user_id = @uid
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND user_id = @uid
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),

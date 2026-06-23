@@ -7,9 +7,42 @@ import '../db/scout_db.dart';
 import '../services/geo_enricher.dart';
 import '../services/key_cipher.dart';
 import '../util/dates.dart';
+import '../util/event_filters.dart';
 import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/user_identity.dart';
+
+const _sqlIssueEventOnly = '''
+  (
+    e.type IN ('error', 'crash')
+    OR (
+      e.type = 'network'
+      AND LOWER(COALESCE(NULLIF(e.payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+      AND (
+        NULLIF(e.payload->'network'->>'error', '') IS NOT NULL
+        OR NULLIF(e.payload->'network'->>'statusCode', '') IS NULL
+        OR NOT ((e.payload->'network'->>'statusCode') ~ '^[0-9]+\$' AND (e.payload->'network'->>'statusCode')::int < 400)
+      )
+    )
+  )
+''';
+
+const _sessionIdleMinutes = 5;
+
+bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
+  final level = (payload['level']?.toString() ?? '').toLowerCase();
+  if (level == 'info' || level == 'success') return false;
+  if (type == 'error' || type == 'crash') return true;
+  if (type != 'network') return false;
+  final network = payload['network'];
+  if (network is Map) {
+    final err = network['error'];
+    if (err != null && err.toString().isNotEmpty) return true;
+    final code = int.tryParse('${network['statusCode'] ?? ''}');
+    if (code != null) return code >= 400;
+  }
+  return level == 'error' || level == 'warning';
+}
 
 class ScoutStore {
   ScoutStore(this.db, {KeyCipher? cipher}) : _cipher = cipher;
@@ -85,9 +118,9 @@ class ScoutStore {
     if (admin) {
       rows = await conn.execute('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
                NULL::text
         FROM projects p
         ORDER BY p.created_at DESC
@@ -96,9 +129,9 @@ class ScoutStore {
       rows = await conn.execute(
         Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
                m.role
         FROM projects p
         INNER JOIN project_memberships m ON m.project_id = p.id AND m.user_id = @uid
@@ -154,9 +187,9 @@ class ScoutStore {
     final rows = await conn.execute(
       Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id),
+               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id)
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat'))
         FROM projects p WHERE p.id = @id
       '''),
       parameters: {'id': projectId},
@@ -303,7 +336,7 @@ class ScoutStore {
                    MIN(occurred_at) AS first_at,
                    MAX(occurred_at) AS last_at
             FROM events
-            WHERE project_id = @pid AND release IS NOT NULL
+            WHERE project_id = @pid AND release IS NOT NULL AND $sqlHideSessionHeartbeat
             GROUP BY release, COALESCE(environment, 'production')
           ) s
           WHERE r.project_id = @pid AND r.release = s.release AND r.environment = s.env
@@ -333,6 +366,7 @@ class ScoutStore {
       Sql.named('''
         SELECT DISTINCT COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') AS environment
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         ORDER BY 1
@@ -344,6 +378,7 @@ class ScoutStore {
         SELECT DISTINCT COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) AS app_version
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) IS NOT NULL
           AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) <> ''
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -366,6 +401,7 @@ class ScoutStore {
     required Map<String, dynamic> enrichment,
   }) async {
     final conn = await db.connect();
+    await closeStaleSessions(projectId: projectId, conn: conn);
     var accepted = 0;
     for (final event in events) {
       if (!isKnownEventType(event.type)) continue;
@@ -397,6 +433,18 @@ class ScoutStore {
         'production';
     final platform = device['platform']?.toString();
     final appVersion = device['appVersion']?.toString() ?? device['version']?.toString();
+
+    if (isSessionHeartbeat(event.type, payload)) {
+      await _trackAppSession(
+        conn,
+        projectId: projectId,
+        userId: userId,
+        payload: payload,
+        occurredAt: occurredAt,
+      );
+      return;
+    }
+
     final message = payload['message']?.toString() ??
         (event.type == 'session' ? 'session ${payload['action'] ?? ''}'.trim() : null);
     final ipGeo = GeoLookup.fromJson(enrichment['geo']);
@@ -410,7 +458,7 @@ class ScoutStore {
     };
 
     String? issueId;
-    if (groupsIntoIssue(event.type)) {
+    if (groupsIntoIssue(event.type) && _qualifiesForIssue(event.type, payload)) {
       final fingerprint = eventFingerprint(event.type, payload);
       issueId = await _upsertIssue(
         conn,
@@ -596,17 +644,24 @@ class ScoutStore {
                first_seen_at, last_seen_at, top_country,
                (SELECT COALESCE(NULLIF(e.payload->>'level', ''), 'error')
                 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
+                  AND $_sqlIssueEventOnly
                 ORDER BY e.occurred_at DESC LIMIT 1) AS level,
                (SELECT e.payload->'network'->>'statusCode'
                 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
+                  AND $_sqlIssueEventOnly
                 ORDER BY e.occurred_at DESC LIMIT 1) AS status_code,
                (SELECT COUNT(*)::int
                 FROM events e
                 WHERE e.project_id = @pid AND e.issue_id = issues.id
+                  AND $_sqlIssueEventOnly
                   AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
                   AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
                ) AS period_events
         FROM issues WHERE project_id = @pid
+          AND EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.project_id = @pid AND e.issue_id = issues.id AND $_sqlIssueEventOnly
+          )
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
           AND (@q::text IS NULL OR title ILIKE '%' || @q::text || '%')
@@ -686,7 +741,7 @@ class ScoutStore {
     final events = await conn.execute(
       Sql.named('''
         SELECT id, type, occurred_at, user_id, release, country, message, payload, enrichment
-        FROM events WHERE project_id = @pid AND issue_id = @iid
+        FROM events e WHERE project_id = @pid AND issue_id = @iid AND $_sqlIssueEventOnly
         ORDER BY occurred_at DESC LIMIT 20
       '''),
       parameters: {'pid': projectId, 'iid': issueId},
@@ -799,6 +854,7 @@ class ScoutStore {
                payload->>'category' AS category
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND occurred_at >= @from AND occurred_at <= @to
           AND (
             (@sid::text IS NOT NULL AND session_id = @sid::text)
@@ -845,7 +901,7 @@ class ScoutStore {
                payload->'network'->>'statusCode' AS status_code,
                payload->>'category' AS category
         FROM events
-        WHERE project_id = @pid AND session_id = @sid
+        WHERE project_id = @pid AND session_id = @sid AND $sqlHideSessionHeartbeat
         ORDER BY occurred_at ASC
         LIMIT @lim
       '''),
@@ -877,6 +933,7 @@ class ScoutStore {
           )::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
@@ -892,6 +949,7 @@ class ScoutStore {
           COUNT(*)::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC
@@ -904,6 +962,7 @@ class ScoutStore {
         SELECT type, COUNT(*)::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY type ORDER BY 2 DESC
@@ -1000,6 +1059,7 @@ class ScoutStore {
                payload->>'category' AS category,
                payload->>'level' AS level
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (
             @kind::text IS NULL
             OR (@kind::text = 'errors' AND type IN ('error', 'crash', 'network')
@@ -1066,6 +1126,7 @@ class ScoutStore {
 
   Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window}) async {
     final conn = await db.connect();
+    await closeStaleSessions(projectId: projectId, conn: conn);
     final project = await fetchProjectById(projectId);
     if (project == null) throw ArgumentError('Project not found');
 
@@ -1082,6 +1143,7 @@ class ScoutStore {
           COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
         FROM events
         WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
@@ -1099,7 +1161,7 @@ class ScoutStore {
         SELECT
           (SELECT COUNT(*)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NULL
-              AND started_at >= (now() AT TIME ZONE 'utc') - interval '30 minutes'),
+              AND COALESCE(last_seen_at, started_at) >= (now() AT TIME ZONE 'utc') - make_interval(mins => $_sessionIdleMinutes)),
           (SELECT AVG(duration_ms)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
               AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
@@ -1114,6 +1176,7 @@ class ScoutStore {
               AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           )::int
         FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
       '''),
       parameters: {'pid': projectId, ...tp},
     );
@@ -1124,6 +1187,7 @@ class ScoutStore {
         SELECT country, COUNT(*)::int AS c
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY country ORDER BY c DESC LIMIT 10
@@ -1186,6 +1250,7 @@ class ScoutStore {
                COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' = 'profile')::int
         FROM events
         WHERE project_id = @pid AND country IS NOT NULL
+          AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY country
@@ -1230,8 +1295,8 @@ class ScoutStore {
   Future<List<Map<String, dynamic>>> _issueGeo(Connection conn, String projectId, String issueId) async {
     final rows = await conn.execute(
       Sql.named('''
-        SELECT country, COUNT(*)::int FROM events
-        WHERE project_id = @pid AND issue_id = @iid AND country IS NOT NULL
+        SELECT country, COUNT(*)::int FROM events e
+        WHERE project_id = @pid AND issue_id = @iid AND country IS NOT NULL AND $_sqlIssueEventOnly
         GROUP BY country ORDER BY COUNT(*) DESC
       '''),
       parameters: {'pid': projectId, 'iid': issueId},
@@ -1285,6 +1350,23 @@ class ScoutStore {
 
   int _i(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
 
+  Future<int> closeStaleSessions({String? projectId, Connection? conn}) async {
+    final c = conn ?? await db.connect();
+    final rows = await c.execute(
+      Sql.named('''
+        UPDATE app_sessions SET
+          ended_at = COALESCE(last_seen_at, started_at),
+          duration_ms = GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(last_seen_at, started_at) - started_at)) * 1000)::int
+        WHERE ended_at IS NULL
+          AND (@pid::text IS NULL OR project_id = @pid::text)
+          AND COALESCE(last_seen_at, started_at) < (now() AT TIME ZONE 'utc') - make_interval(mins => @mins)
+        RETURNING id
+      '''),
+      parameters: {'pid': projectId, 'mins': _sessionIdleMinutes},
+    );
+    return rows.length;
+  }
+
   Future<void> _trackAppSession(
     Connection conn, {
     required String projectId,
@@ -1299,9 +1381,24 @@ class ScoutStore {
     if (action == 'start') {
       await conn.execute(
         Sql.named('''
-          INSERT INTO app_sessions (id, project_id, user_id, started_at)
-          VALUES (@id, @pid, @uid, @at)
-          ON CONFLICT (id) DO NOTHING
+          INSERT INTO app_sessions (id, project_id, user_id, started_at, last_seen_at)
+          VALUES (@id, @pid, @uid, @at, @at)
+          ON CONFLICT (id) DO UPDATE SET
+            last_seen_at = GREATEST(app_sessions.last_seen_at, EXCLUDED.last_seen_at),
+            user_id = COALESCE(app_sessions.user_id, EXCLUDED.user_id)
+        '''),
+        parameters: {'id': sid, 'pid': projectId, 'uid': userId, 'at': occurredAt},
+      );
+      return;
+    }
+
+    if (action == 'heartbeat') {
+      await conn.execute(
+        Sql.named('''
+          UPDATE app_sessions SET
+            last_seen_at = @at,
+            user_id = COALESCE(user_id, @uid)
+          WHERE id = @id AND project_id = @pid AND ended_at IS NULL
         '''),
         parameters: {'id': sid, 'pid': projectId, 'uid': userId, 'at': occurredAt},
       );
@@ -1316,6 +1413,7 @@ class ScoutStore {
         Sql.named('''
           UPDATE app_sessions SET
             ended_at = @at,
+            last_seen_at = @at,
             duration_ms = COALESCE(@dur, EXTRACT(EPOCH FROM (@at - started_at)) * 1000)::int,
             user_id = COALESCE(user_id, @uid)
           WHERE id = @id AND project_id = @pid
