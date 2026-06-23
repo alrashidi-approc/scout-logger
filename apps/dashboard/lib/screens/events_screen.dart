@@ -226,7 +226,7 @@ class _EventsScreenState extends State<EventsScreen> {
               child: FilterBar(
                 period: _period,
                 onPeriodChanged: (p) => _apply(period: p),
-                searchHint: 'Search message…',
+                searchHint: 'Message, URL, trace ID, user, session…',
                 searchValue: _search,
                 onSearch: (q) => _apply(search: q),
                 levelOptions: _levelOptions,

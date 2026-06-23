@@ -717,7 +717,7 @@ class ScoutStore {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        SELECT id, type, occurred_at, issue_id, user_id, session_id, release, environment,
+        SELECT id, type, occurred_at, issue_id, user_id, session_id, install_id, release, environment,
                platform, app_version, country, region, city, message, payload, enrichment, created_at
         FROM events WHERE project_id = @pid AND id = @eid LIMIT 1
       '''),
@@ -758,8 +758,220 @@ class ScoutStore {
               })
           .toList();
     }
+    final occurredAt = DateTime.parse(event['occurredAt'] as String).toUtc();
+    event['sessionEvents'] = await _sessionEventsAround(
+      conn,
+      projectId: projectId,
+      eventId: eventId,
+      occurredAt: occurredAt,
+      sessionId: event['sessionId'] as String?,
+      userId: event['userId'] as String?,
+      installId: event['installId'] as String?,
+    );
     return event;
   }
+
+  Future<List<Map<String, dynamic>>> _sessionEventsAround(
+    Connection conn, {
+    required String projectId,
+    required String eventId,
+    required DateTime occurredAt,
+    String? sessionId,
+    String? userId,
+    String? installId,
+  }) async {
+    final from = occurredAt.subtract(const Duration(minutes: 5));
+    final to = occurredAt.add(const Duration(minutes: 1));
+    const limit = 40;
+
+    final hasSession = sessionId != null && sessionId.isNotEmpty;
+    final hasUser = userId != null && userId.isNotEmpty;
+    final hasInstall = installId != null && installId.isNotEmpty;
+    if (!hasSession && !hasUser && !hasInstall) return [];
+
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, message, country,
+               payload->>'level' AS level,
+               payload->'screen'->>'currentRoute' AS route,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category
+        FROM events
+        WHERE project_id = @pid
+          AND occurred_at >= @from AND occurred_at <= @to
+          AND (
+            (@sid::text IS NOT NULL AND session_id = @sid::text)
+            OR (
+              @sid::text IS NULL
+              AND (
+                (@uid::text IS NOT NULL AND user_id = @uid::text)
+                OR (@iid::text IS NOT NULL AND install_id = @iid::text)
+              )
+            )
+          )
+        ORDER BY occurred_at ASC
+        LIMIT @lim
+      '''),
+      parameters: {
+        'pid': projectId,
+        'sid': hasSession ? sessionId : null,
+        'uid': hasSession ? null : (hasUser ? userId : null),
+        'iid': hasSession ? null : (hasInstall ? installId : null),
+        'from': from,
+        'to': to,
+        'lim': limit,
+      },
+    );
+
+    return rows
+        .map((r) => _compactEventRow(r, highlightId: eventId))
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> listSessionEvents(
+    String projectId,
+    String sessionId, {
+    int limit = 200,
+  }) async {
+    if (sessionId.isEmpty) return [];
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, message, country,
+               payload->>'level' AS level,
+               payload->'screen'->>'currentRoute' AS route,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category
+        FROM events
+        WHERE project_id = @pid AND session_id = @sid
+        ORDER BY occurred_at ASC
+        LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'sid': sessionId, 'lim': limit.clamp(1, 500)},
+    );
+    return rows.map((r) => _compactEventRow(r)).toList();
+  }
+
+  Future<Map<String, dynamic>> sdkHealth(String projectId, {TimeWindow? window}) async {
+    final conn = await db.connect();
+    final w = window ?? TimeWindow.lastDays(7);
+    final tp = timeParams(w);
+
+    final totals = await conn.execute(
+      Sql.named('''
+        SELECT
+          COUNT(*)::int,
+          COUNT(*) FILTER (WHERE session_id IS NOT NULL AND session_id <> '')::int,
+          COUNT(*) FILTER (WHERE install_id IS NOT NULL AND install_id <> '')::int,
+          COUNT(*) FILTER (
+            WHERE jsonb_array_length(COALESCE(payload->'screenTrail', payload->'breadcrumbs', '[]'::jsonb)) > 0
+          )::int,
+          COUNT(*) FILTER (
+            WHERE EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(COALESCE(payload->'screenTrail', payload->'breadcrumbs', '[]'::jsonb)) elem
+              WHERE COALESCE(elem->>'navigationType', elem->>'navType', elem->>'transition', elem->>'action') IS NOT NULL
+            )
+          )::int
+        FROM events
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+
+    final levels = await conn.execute(
+      Sql.named('''
+        SELECT
+          LOWER(COALESCE(NULLIF(payload->>'level', ''),
+            CASE type WHEN 'log' THEN 'info' WHEN 'span' THEN 'info' ELSE 'error' END
+          )) AS level,
+          COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY 1 ORDER BY 2 DESC
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+
+    final types = await conn.execute(
+      Sql.named('''
+        SELECT type, COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY type ORDER BY 2 DESC
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+
+    int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
+    double pct(int part, int total) => total == 0 ? 100 : (part * 1000 / total).round() / 10;
+
+    final t = totals.first;
+    final total = n(t[0]);
+    final withSession = n(t[1]);
+    final withInstall = n(t[2]);
+    final withTrail = n(t[3]);
+    final withNav = n(t[4]);
+
+    final hints = <String>[];
+    if (total == 0) {
+      hints.add('No events in this period — verify the app DSN and ingest key.');
+    } else {
+      if (pct(withSession, total) < 80) {
+        hints.add('${pct(withSession, total)}% of events have session_id — SDK should attach sessionId on every event.');
+      }
+      if (pct(withInstall, total) < 80) {
+        hints.add('${pct(withInstall, total)}% of events have install_id — needed for guest → logged-in merge.');
+      }
+      if (pct(withTrail, total) < 50) {
+        hints.add('${pct(withTrail, total)}% include screenTrail — enable navigation tracking in SDK settings.');
+      }
+      if (pct(withNav, total) < 40 && withTrail > 0) {
+        hints.add('${pct(withNav, total)}% of trails include navigationType — update SDK screenTrail steps.');
+      }
+      final byLevel = {for (final r in levels) r[0] as String: n(r[1])};
+      if ((byLevel['success'] ?? 0) == 0 && (byLevel['info'] ?? 0) == 0) {
+        hints.add('No info/success logs — check enabledLevels and networkLogScope in project settings.');
+      }
+    }
+
+    return {
+      'total': total,
+      'withSession': withSession,
+      'withInstall': withInstall,
+      'withScreenTrail': withTrail,
+      'withNavigationType': withNav,
+      'withSessionPct': pct(withSession, total),
+      'withInstallPct': pct(withInstall, total),
+      'withScreenTrailPct': pct(withTrail, total),
+      'withNavigationTypePct': pct(withNav, total),
+      'byLevel': {for (final r in levels) r[0] as String: n(r[1])},
+      'byType': {for (final r in types) r[0] as String: n(r[1])},
+      'hints': hints,
+    };
+  }
+
+  Map<String, dynamic> _compactEventRow(ResultRow r, {String? highlightId}) => {
+        'id': r[0],
+        'type': r[1],
+        'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+        'message': r[3],
+        'country': r[4],
+        'level': r[5],
+        'route': r[6],
+        'networkUrl': r[7],
+        'statusCode': r[8]?.toString(),
+        'category': r[9],
+        if (highlightId != null) 'isCurrent': r[0] == highlightId,
+      };
 
   Future<List<Map<String, dynamic>>> listEvents(
     String projectId, {
@@ -801,7 +1013,14 @@ class ScoutStore {
               )) = LOWER(@level::text)
           )
           AND (@category::text IS NULL OR payload->>'category' = @category::text)
-          AND (@q::text IS NULL OR message ILIKE '%' || @q::text || '%')
+          AND (
+            @q::text IS NULL
+            OR message ILIKE '%' || @q::text || '%'
+            OR user_id ILIKE '%' || @q::text || '%'
+            OR session_id ILIKE '%' || @q::text || '%'
+            OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
+            OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
+          )
           AND (@country::text IS NULL OR country = @country::text)
           AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') = @env::text)
           AND (@ver::text IS NULL OR COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) = @ver::text)
@@ -1039,17 +1258,18 @@ class ScoutStore {
         'issueId': r[3],
         'userId': r[4],
         'sessionId': r[5],
-        'release': r[6],
-        'environment': r[7],
-        'platform': r[8],
-        'appVersion': r[9],
-        'country': r[10],
-        'region': r[11],
-        'city': r[12],
-        'message': r[13],
-        'payload': _jsonField(r[14]),
-        'enrichment': _jsonField(r[15]),
-        'createdAt': (r[16] as DateTime).toUtc().toIso8601String(),
+        'installId': r[6],
+        'release': r[7],
+        'environment': r[8],
+        'platform': r[9],
+        'appVersion': r[10],
+        'country': r[11],
+        'region': r[12],
+        'city': r[13],
+        'message': r[14],
+        'payload': _jsonField(r[15]),
+        'enrichment': _jsonField(r[16]),
+        'createdAt': (r[17] as DateTime).toUtc().toIso8601String(),
       };
 
   dynamic _jsonField(dynamic value) {

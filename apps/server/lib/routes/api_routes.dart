@@ -159,8 +159,9 @@ Handler apiRoutes(
         final overview = await store.projectOverview(id, window: w);
         final stats = await analytics.projectStats(id, window: w);
         final insights = await analytics.dashboardInsights(id, window: w);
+        final health = await store.sdkHealth(id, window: w);
         return Response.ok(
-          jsonEncode({'ok': true, 'dashboard': {...overview, ...stats, ...insights}}),
+          jsonEncode({'ok': true, 'dashboard': {...overview, ...stats, ...insights, 'sdkHealth': health}}),
           headers: {'Content-Type': 'application/json'},
         );
       } on ArgumentError {
@@ -376,9 +377,30 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
-      final timeline = await analytics.sessionTimeline(id, sessionId);
-      if (timeline == null) return jsonErr('Session not found', status: 404);
+      final events = await store.listSessionEvents(id, sessionId);
+      var timeline = await analytics.sessionTimeline(id, sessionId);
+      if (timeline == null && events.isEmpty) return jsonErr('Session not found', status: 404);
+      timeline ??= {
+        'id': sessionId,
+        'userId': null,
+        'startedAt': events.first['occurredAt'],
+        'endedAt': events.last['occurredAt'],
+        'durationMs': null,
+        'timeline': <Map<String, dynamic>>[],
+      };
+      timeline['events'] = events;
+      timeline['eventCount'] = events.length;
       return Response.ok(jsonEncode({'ok': true, 'session': timeline}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/sdk-health', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final w = _optionalWindow(request.url.queryParameters) ?? _window(request.url.queryParameters);
+      final health = await store.sdkHealth(id, window: w);
+      return Response.ok(jsonEncode({'ok': true, 'health': health}), headers: {'Content-Type': 'application/json'});
     });
   });
 

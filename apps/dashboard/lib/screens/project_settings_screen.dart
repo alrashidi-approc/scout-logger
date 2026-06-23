@@ -11,6 +11,7 @@ import '../utils/project_roles.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
+import '../widgets/sdk_health_card.dart';
 
 class ProjectSettingsScreen extends StatefulWidget {
   const ProjectSettingsScreen({super.key, required this.projectId});
@@ -45,6 +46,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   List<Map<String, dynamic>> _members = [];
   String _newMemberRole = assignableProjectRoles.first;
   bool _addingMember = false;
+  Map<String, dynamic> _sdkHealth = {};
 
   @override
   void dispose() {
@@ -76,8 +78,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       final results = await Future.wait([
         _api.fetchProjectSettings(widget.projectId),
         _api.fetchProjects(),
+        _api.fetchSdkHealth(widget.projectId),
       ]);
       final settings = results[0] as Map<String, dynamic>;
+      final health = results[2] as Map<String, dynamic>;
       final projects = results[1] as List<Map<String, dynamic>>;
       String? role;
       for (final p in projects) {
@@ -111,6 +115,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodes = sdk.networkIgnoreStatusCodes!.toSet();
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
+          _sdkHealth = health;
           _hasData = true;
           _loading = false;
 
@@ -445,6 +450,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             ),
           ),
         ],
+        const SizedBox(height: 16),
+        SdkHealthCard(health: _sdkHealth),
         const SizedBox(height: 16),
         Card(
           child: Padding(

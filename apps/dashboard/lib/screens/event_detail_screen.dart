@@ -128,6 +128,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         ? DateFormat('EEEE, MMM d yyyy · HH:mm:ss').format(occurred.toLocal())
         : '—';
     final related = jsonListMaps(_event!['relatedEvents']);
+    final sessionEvents = jsonListMaps(_event!['sessionEvents']);
     final pid = widget.projectId;
     final shared = widget.shared;
     final countryCode = v.event['country'] as String?;
@@ -212,16 +213,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   child: SummaryList(lines: v.summaryLines())),
               if (!shared && related.isNotEmpty)
                 InfoSection(
-                  title: 'Related events',
+                  title: 'Same issue',
                   icon: Icons.link,
-                  subtitle:
-                      '${related.length} other events in this issue group',
+                  subtitle: '${related.length} other occurrences of this error',
                   child: Column(
                     children: related
                         .map((e) => RelatedEventTile(
                               event: e,
-                              onTap: () =>
-                                  context.push('/p/$pid/events/${e['id']}'),
+                              onTap: () => context.push('/p/$pid/events/${e['id']}'),
                             ))
                         .toList(),
                   ),
@@ -233,6 +232,25 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             icon: Icons.timeline,
             subtitle: 'Breadcrumbs and screen trail',
             children: [
+              if (sessionEvents.isNotEmpty)
+                InfoSection(
+                  title: 'Session context',
+                  icon: Icons.hub_outlined,
+                  subtitle: shared
+                      ? '${sessionEvents.length} events around this one (5 min window)'
+                      : '${sessionEvents.length} events in this visit · 5 min before → 1 min after',
+                  child: Column(
+                    children: sessionEvents
+                        .map((e) => RelatedEventTile(
+                              event: e,
+                              highlight: e['isCurrent'] == true,
+                              onTap: shared || e['isCurrent'] == true
+                                  ? null
+                                  : () => context.push('/p/$pid/events/${e['id']}'),
+                            ))
+                        .toList(),
+                  ),
+                ),
               InfoSection(
                 title: 'User journey',
                 icon: Icons.timeline,

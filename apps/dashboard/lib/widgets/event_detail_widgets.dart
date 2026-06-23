@@ -780,19 +780,37 @@ class NetworkReadablePanel extends StatelessWidget {
 }
 
 class RelatedEventTile extends StatelessWidget {
-  const RelatedEventTile({super.key, required this.event, required this.onTap});
+  const RelatedEventTile({super.key, required this.event, this.onTap, this.highlight = false});
 
   final Map<String, dynamic> event;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool highlight;
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      onTap: onTap,
-      title: Text(str(event['message']) ?? str(event['type']) ?? 'Event', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-      subtitle: Text('${event['type']} · ${event['country'] ?? '—'} · ${_fmtTime(str(event['occurredAt']))}'),
-      trailing: const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
+    final level = str(event['level']);
+    final route = str(event['route']);
+    final url = str(event['networkUrl']);
+    final status = str(event['statusCode']);
+    final detail = url != null
+        ? '${status != null ? '$status · ' : ''}$url'
+        : route ?? '${event['type']} · ${event['country'] ?? '—'}';
+
+    return Material(
+      color: highlight ? AppTheme.primary.withValues(alpha: 0.08) : Colors.transparent,
+      borderRadius: BorderRadius.circular(8),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        onTap: onTap,
+        title: Text(
+          str(event['message']) ?? str(event['type']) ?? 'Event',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontWeight: highlight ? FontWeight.w800 : FontWeight.w600, fontSize: 13),
+        ),
+        subtitle: Text('${_fmtTime(str(event['occurredAt']))} · ${level ?? event['type']} · $detail', style: const TextStyle(fontSize: 12)),
+        trailing: onTap != null ? const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted) : null,
+      ),
     );
   }
 

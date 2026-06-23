@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:go_router/go_router.dart';
+
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
@@ -79,8 +81,10 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
   Widget _buildContent(BuildContext context) {
     final s = _session!;
     final timeline = jsonListMaps(s['timeline']);
+    final events = jsonListMaps(s['events']);
     final started = DateTime.tryParse(s['startedAt'] as String? ?? '');
     final ended = DateTime.tryParse(s['endedAt'] as String? ?? '');
+    final pid = widget.projectId;
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -108,11 +112,30 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
                   _meta('User', s['userId']?.toString() ?? 'anonymous'),
                   _meta('Started', started != null ? DateFormat.Hms().format(started.toLocal()) : '—'),
                   _meta('Ended', ended != null ? DateFormat.Hms().format(ended.toLocal()) : 'still open'),
-                  _meta('Steps', '${timeline.length}'),
+                  _meta('Trail steps', '${timeline.length}'),
+                  _meta('Events', '${s['eventCount'] ?? events.length}'),
                 ],
               ),
             ),
           ),
+          if (events.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('All events in session', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                  const SizedBox(height: 8),
+                  const Text('Errors, network, logs, and sessions in chronological order.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+                  const SizedBox(height: 12),
+                  ...events.map((e) => RelatedEventTile(
+                        event: e,
+                        onTap: () => context.push('/p/$pid/events/${e['id']}'),
+                      )),
+                ]),
+              ),
+            ),
+          ],
           const SizedBox(height: 16),
           Card(
             child: Padding(

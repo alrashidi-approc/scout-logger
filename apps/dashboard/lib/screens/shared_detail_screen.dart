@@ -123,8 +123,8 @@ class _SharedBanner extends StatelessWidget {
             ),
             TextButton.icon(
               onPressed: onCopy,
-              icon: const Icon(Icons.copy, size: 14),
-              label: const Text('Copy link'),
+              icon: const Icon(Icons.share_outlined, size: 14),
+              label: const Text('Share link'),
             ),
           ],
         ),

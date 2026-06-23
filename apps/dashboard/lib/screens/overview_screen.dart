@@ -17,6 +17,7 @@ import '../widgets/panel.dart';
 import '../widgets/stat_card.dart';
 import '../widgets/trend_chart.dart';
 import '../widgets/world_map.dart';
+import '../widgets/sdk_health_card.dart';
 
 class OverviewScreen extends StatefulWidget {
   const OverviewScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7)});
@@ -147,6 +148,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
     final byEnv = jsonListMaps(d['byEnvironment']);
     final byRelease = jsonListMaps(d['eventsByRelease']);
     final byDeploy = jsonListMaps(d['byDeployment']);
+    final sdkHealth = jsonMap(d['sdkHealth']);
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -169,6 +171,13 @@ class _OverviewScreenState extends State<OverviewScreen> {
               StatCard(label: 'Live sessions', value: '${d['activeSessions'] ?? 0}', icon: Icons.sensors, color: AppTheme.primary, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
             ],
           ),
+          if (sdkHealth.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SdkHealthCard(
+              health: sdkHealth,
+              onOpenSettings: () => context.go('/p/$pid/settings'),
+            ),
+          ],
           const SizedBox(height: 12),
           LayoutBuilder(builder: (context, c) {
             return responsiveRow(

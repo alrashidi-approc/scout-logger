@@ -296,6 +296,13 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['session']);
   }
 
+  Future<Map<String, dynamic>> fetchSdkHealth(String projectId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/sdk-health').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['health']);
+  }
+
   Future<Map<String, dynamic>> fetchProjectSettings(String projectId) async {
     final res = await _client.get(_uri('/api/projects/$projectId/settings'), headers: _headers);
     _ok(res);

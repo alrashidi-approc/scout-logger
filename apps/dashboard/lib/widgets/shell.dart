@@ -34,7 +34,7 @@ class _DashboardShellState extends State<DashboardShell> {
     (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),
     (Icons.list_alt_outlined, Icons.list_alt, 'Events'),
     (Icons.public_outlined, Icons.public, 'Geography'),
-    (Icons.terminal_outlined, Icons.terminal, 'Logs'),
+    (Icons.terminal_outlined, Icons.terminal, 'UI errors'),
     (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
 

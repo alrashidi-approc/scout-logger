@@ -82,8 +82,8 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
         Padding(
           padding: insets.copyWith(top: pad),
           child: PageHeader(
-            title: 'Dashboard logs',
-            subtitle: 'API and UI errors recorded while using this project in the dashboard',
+            title: 'UI errors',
+            subtitle: 'Dashboard API and UI failures — not mobile app events (see Events)',
             actions: [
               IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
             ],
