@@ -1,4 +1,4 @@
--- Heartbeats only update app_sessions.last_seen_at; remove stored rows and fix aggregates.
+-- Heartbeats only update app_sessions.last_seen_at. Purge stored rows and fix aggregates.
 DELETE FROM events
 WHERE type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat';
 
