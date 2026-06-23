@@ -9,14 +9,25 @@ import '../widgets/event_card.dart';
 import '../widgets/level_badge.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../utils/share_link.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class IssueDetailScreen extends StatefulWidget {
-  const IssueDetailScreen({super.key, required this.projectId, required this.issueId});
+  const IssueDetailScreen({super.key, required this.projectId, required this.issueId, this.shareUrl})
+      : shared = false,
+        initialIssue = null;
+
+  const IssueDetailScreen.viewOnly({super.key, required this.initialIssue, this.shareUrl})
+      : shared = true,
+        projectId = '',
+        issueId = '';
 
   final String projectId;
   final String issueId;
+  final bool shared;
+  final Map<String, dynamic>? initialIssue;
+  final String? shareUrl;
 
   @override
   State<IssueDetailScreen> createState() => _IssueDetailScreenState();
@@ -28,12 +39,18 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   bool _loading = true;
   bool _refreshing = false;
   bool _updating = false;
+  bool _sharing = false;
   Object? _error;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (widget.initialIssue != null) {
+      _issue = widget.initialIssue;
+      _loading = false;
+    } else {
+      _load();
+    }
   }
 
   Future<void> _load() async {
@@ -88,6 +105,15 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     }
   }
 
+  Future<void> _share() async {
+    setState(() => _sharing = true);
+    try {
+      await copyShareLink(context, projectId: widget.projectId, type: 'issue', resourceId: widget.issueId);
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AsyncScreenBody(
@@ -105,17 +131,19 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     final events = jsonListMaps(issue['events']);
     final geo = jsonListMaps(issue['geoBreakdown']);
     final status = issue['status'] as String? ?? 'open';
+    final shared = widget.shared;
     final first = DateTime.tryParse(issue['firstSeenAt'] as String? ?? '');
     final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
 
     return ListView(
       padding: pageInsets(context, top: 16, bottom: pagePad(context)),
       children: [
-        TextButton.icon(
-          onPressed: () => popOrGo(context, '/p/${widget.projectId}/issues'),
-          icon: const Icon(Icons.arrow_back, size: 18),
-          label: const Text('Back'),
-        ),
+        if (!shared)
+          TextButton.icon(
+            onPressed: () => popOrGo(context, '/p/${widget.projectId}/issues'),
+            icon: const Icon(Icons.arrow_back, size: 18),
+            label: const Text('Back'),
+          ),
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           LevelBadge(type: issue['type'] as String? ?? 'error'),
           const SizedBox(width: 12),
@@ -134,8 +162,16 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                 ),
             ]),
           ),
-          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
-          if (status == 'open')
+          IconButton(onPressed: shared ? null : _load, icon: const Icon(Icons.refresh)),
+          if (!shared)
+            OutlinedButton.icon(
+              onPressed: _sharing ? null : _share,
+              icon: _sharing
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.link, size: 18),
+              label: const Text('Share link'),
+            ),
+          if (!shared && status == 'open')
             FilledButton.icon(
               onPressed: _updating ? null : () => _setStatus('resolved'),
               icon: _updating
@@ -143,7 +179,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                   : const Icon(Icons.check_circle_outline, size: 18),
               label: const Text('Resolve'),
             )
-          else if (status == 'resolved')
+          else if (!shared && status == 'resolved')
             OutlinedButton.icon(
               onPressed: _updating ? null : () => _setStatus('open'),
               icon: const Icon(Icons.replay, size: 18),
@@ -182,7 +218,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
         const SizedBox(height: 12),
         ...events.map((e) => EventCard(
               event: e,
-              onTap: () => context.push('/p/${widget.projectId}/events/${e['id']}'),
+              onTap: shared ? null : () => context.push('/p/${widget.projectId}/events/${e['id']}'),
             )),
       ],
     );

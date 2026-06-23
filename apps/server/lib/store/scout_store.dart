@@ -1209,4 +1209,67 @@ class ScoutStore {
             })
         .toList();
   }
+
+  Future<Map<String, dynamic>?> createShareToken({
+    required String projectId,
+    required String resourceType,
+    required String resourceId,
+    String? createdBy,
+    int expiresInDays = 30,
+  }) async {
+    if (!{'event', 'issue'}.contains(resourceType)) throw ArgumentError('Invalid resource type');
+
+    if (resourceType == 'event') {
+      if (await getEvent(projectId, resourceId) == null) return null;
+    } else if (await getIssue(projectId, resourceId) == null) {
+      return null;
+    }
+
+    final token = newToken();
+    final expiresAt = DateTime.now().toUtc().add(Duration(days: expiresInDays.clamp(1, 365)));
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, created_by)
+        VALUES (@id, @pid, @type, @rid, @hash, @exp, @uid)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'type': resourceType,
+        'rid': resourceId,
+        'hash': hashToken(token),
+        'exp': expiresAt,
+        'uid': createdBy,
+      },
+    );
+    return {
+      'token': token,
+      'expiresAt': expiresAt.toIso8601String(),
+      'resourceType': resourceType,
+      'resourceId': resourceId,
+    };
+  }
+
+  Future<Map<String, dynamic>?> resolveShareToken(String rawToken) async {
+    if (rawToken.isEmpty || rawToken.length > 128) return null;
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT project_id, resource_type, resource_id, expires_at
+        FROM share_tokens
+        WHERE token_hash = @hash AND revoked_at IS NULL AND expires_at > now()
+        LIMIT 1
+      '''),
+      parameters: {'hash': hashToken(rawToken)},
+    );
+    if (rows.isEmpty) return null;
+    final r = rows.first;
+    return {
+      'projectId': r[0],
+      'resourceType': r[1],
+      'resourceId': r[2],
+      'expiresAt': (r[3] as DateTime).toUtc().toIso8601String(),
+    };
+  }
 }

@@ -2,6 +2,7 @@ import 'package:go_router/go_router.dart';
 
 import '../screens/admin_users_screen.dart';
 import '../screens/analytics_screen.dart';
+import '../screens/shared_detail_screen.dart';
 import '../screens/auth_screen.dart';
 import '../screens/event_detail_screen.dart';
 import '../screens/events_screen.dart';
@@ -28,10 +29,15 @@ GoRouter createRouter() {
     refreshListenable: auth,
     redirect: (context, state) {
       final loc = state.matchedLocation;
-      final public = loc.startsWith('/login') || loc.startsWith('/signup') || loc.startsWith('/verify-email');
+      final public = loc.startsWith('/login') ||
+          loc.startsWith('/signup') ||
+          loc.startsWith('/verify-email') ||
+          loc.startsWith('/share/');
       if (!auth.isReady) return null;
       if (!auth.isLoggedIn && !public) return '/login';
-      if (auth.isLoggedIn && public) return '/projects';
+      if (auth.isLoggedIn && (loc.startsWith('/login') || loc.startsWith('/signup') || loc.startsWith('/verify-email'))) {
+        return '/projects';
+      }
       if (loc.startsWith('/admin') && !auth.isAdmin) return '/projects';
       return null;
     },
@@ -53,6 +59,10 @@ GoRouter createRouter() {
             token: s.uri.queryParameters['token'],
           ),
         ),
+      ),
+      GoRoute(
+        path: '/share/:token',
+        pageBuilder: (c, s) => scoutPage(s, SharedDetailScreen(token: s.pathParameters['token']!)),
       ),
       GoRoute(
         path: '/projects',

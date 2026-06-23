@@ -273,6 +273,43 @@ Handler apiRoutes(
     });
   });
 
+  router.post('/projects/<id>/share', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+      final type = body['type']?.toString();
+      final resourceId = body['resourceId']?.toString();
+      if (type == null || type.isEmpty || resourceId == null || resourceId.isEmpty) {
+        return jsonErr('type and resourceId required');
+      }
+      if (!{'event', 'issue'}.contains(type)) return jsonErr('type must be event or issue');
+      final rawDays = body['expiresInDays'];
+      final expiresInDays = rawDays is num ? rawDays.toInt() : int.tryParse('$rawDays') ?? 30;
+      final auth = authFrom(request)!;
+      final share = await store.createShareToken(
+        projectId: id,
+        resourceType: type,
+        resourceId: resourceId,
+        createdBy: auth.userId,
+        expiresInDays: expiresInDays,
+      );
+      if (share == null) return jsonErr('Resource not found', status: 404);
+      final token = share['token'] as String;
+      final path = '${config.dashboardUrlPath}/share/$token';
+      return Response.ok(
+        jsonEncode({
+          'ok': true,
+          'token': token,
+          'url': '${config.publicUrl}$path',
+          'path': '/share/$token',
+          'expiresAt': share['expiresAt'],
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    });
+  });
+
   router.get('/projects/<id>/geo', (Request request, String id) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);

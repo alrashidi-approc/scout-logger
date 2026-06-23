@@ -9,16 +9,26 @@ import '../theme/app_theme.dart';
 import '../utils/event_view.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../utils/share_link.dart';
 import '../widgets/event_detail_widgets.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class EventDetailScreen extends StatefulWidget {
-  const EventDetailScreen(
-      {super.key, required this.projectId, required this.eventId});
+  const EventDetailScreen({super.key, required this.projectId, required this.eventId, this.shareUrl})
+      : shared = false,
+        initialEvent = null;
+
+  const EventDetailScreen.viewOnly({super.key, required this.initialEvent, this.shareUrl})
+      : shared = true,
+        projectId = '',
+        eventId = '';
 
   final String projectId;
   final String eventId;
+  final bool shared;
+  final Map<String, dynamic>? initialEvent;
+  final String? shareUrl;
 
   @override
   State<EventDetailScreen> createState() => _EventDetailScreenState();
@@ -29,12 +39,18 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   Map<String, dynamic>? _event;
   bool _loading = true;
   bool _refreshing = false;
+  bool _sharing = false;
   Object? _error;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (widget.initialEvent != null) {
+      _event = widget.initialEvent;
+      _loading = false;
+    } else {
+      _load();
+    }
   }
 
   Future<void> _load() async {
@@ -84,6 +100,15 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         content: Text('Bug report copied — paste into your ticket')));
   }
 
+  Future<void> _share() async {
+    setState(() => _sharing = true);
+    try {
+      await copyShareLink(context, projectId: widget.projectId, type: 'event', resourceId: widget.eventId);
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AsyncScreenBody(
@@ -104,6 +129,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         : '—';
     final related = jsonListMaps(_event!['relatedEvents']);
     final pid = widget.projectId;
+    final shared = widget.shared;
     final countryCode = v.event['country'] as String?;
     final pad = pagePad(context);
     final compact = MediaQuery.sizeOf(context).width < 720;
@@ -118,12 +144,21 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             runSpacing: 8,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              TextButton.icon(
-                onPressed: () => popOrGo(context, '/p/$pid/events'),
-                icon: const Icon(Icons.arrow_back, size: 18),
-                label: const Text('Back'),
-              ),
+              if (!shared)
+                TextButton.icon(
+                  onPressed: () => popOrGo(context, '/p/$pid/events'),
+                  icon: const Icon(Icons.arrow_back, size: 18),
+                  label: const Text('Back'),
+                ),
               if (!compact) ...[
+                if (!shared)
+                  OutlinedButton.icon(
+                    onPressed: _sharing ? null : _share,
+                    icon: _sharing
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.link, size: 16),
+                    label: const Text('Share link'),
+                  ),
                 OutlinedButton.icon(
                     onPressed: () => _copyTicket(v),
                     icon: const Icon(Icons.assignment_outlined, size: 16),
@@ -133,7 +168,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                     icon: const Icon(Icons.copy, size: 16),
                     label: const Text('Copy JSON')),
               ],
-              IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+              IconButton(onPressed: shared ? null : _load, icon: const Icon(Icons.refresh)),
               if (compact) ...[
                 OutlinedButton(
                     onPressed: () => _copyTicket(v),
@@ -151,15 +186,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           const SizedBox(height: 12),
           EventQuickFacts(
             view: v,
-            onSessionTap: v.sessionId != '—'
+            onSessionTap: !shared && v.sessionId != '—'
                 ? () => context.push('/p/$pid/sessions/${v.sessionId}')
                 : null,
-            onUserTap: v.userId != '—'
+            onUserTap: !shared && v.userId != '—'
                 ? () => context.go(
                     '/p/$pid/events?days=30&q=${Uri.encodeComponent(v.userId)}')
                 : null,
-            onCountryTap:
-                countryCode != null ? () => context.go('/p/$pid/geo') : null,
+            onCountryTap: !shared && countryCode != null ? () => context.go('/p/$pid/geo') : null,
           ),
           const SizedBox(height: 16),
           EventDetailGroup(
@@ -170,13 +204,13 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
               EventFlowDiagram(view: v),
               if (v.issue != null) ...[
                 const SizedBox(height: 12),
-                _IssueLink(projectId: pid, issue: v.issue!),
+                _IssueLink(projectId: pid, issue: v.issue!, shared: shared),
               ],
               InfoSection(
                   title: 'What happened',
                   icon: Icons.info_outline,
                   child: SummaryList(lines: v.summaryLines())),
-              if (related.isNotEmpty)
+              if (!shared && related.isNotEmpty)
                 InfoSection(
                   title: 'Related events',
                   icon: Icons.link,
@@ -315,17 +349,18 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
 }
 
 class _IssueLink extends StatelessWidget {
-  const _IssueLink({required this.projectId, required this.issue});
+  const _IssueLink({required this.projectId, required this.issue, this.shared = false});
 
   final String projectId;
   final Map<String, dynamic> issue;
+  final bool shared;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => context.push('/p/$projectId/issues/${issue['id']}'),
+        onTap: shared ? null : () => context.push('/p/$projectId/issues/${issue['id']}'),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(children: [
@@ -335,20 +370,24 @@ class _IssueLink extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Linked issue',
-                      style: TextStyle(
+                  Text(shared ? 'Issue group' : 'Linked issue',
+                      style: const TextStyle(
                           fontSize: 11,
                           color: AppTheme.muted,
                           fontWeight: FontWeight.w600)),
                   Text(issue['title'] as String? ?? 'Issue',
                       style: const TextStyle(fontWeight: FontWeight.w700)),
-                  Text('${issue['eventCount']} events · ${issue['status']}',
-                      style:
-                          const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                  if (!shared)
+                    Text('${issue['eventCount']} events · ${issue['status']}',
+                        style:
+                            const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                  if (shared && issue['status'] != null)
+                    Text('${issue['status']}',
+                        style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right, color: AppTheme.muted),
+            if (!shared) const Icon(Icons.chevron_right, color: AppTheme.muted),
           ]),
         ),
       ),

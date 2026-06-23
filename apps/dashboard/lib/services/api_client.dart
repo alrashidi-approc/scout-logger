@@ -222,6 +222,27 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['event']);
   }
 
+  Future<Map<String, dynamic>> fetchShare(String token) async {
+    final res = await _client.get(_uri('/v1/share/$token'), headers: const {'Accept': 'application/json'});
+    _ok(res);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> createShareLink(
+    String projectId, {
+    required String type,
+    required String resourceId,
+    int expiresInDays = 30,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/share'),
+      headers: _headers,
+      body: jsonEncode({'type': type, 'resourceId': resourceId, 'expiresInDays': expiresInDays}),
+    );
+    _ok(res);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
   Future<List<Map<String, dynamic>>> fetchGeo(String projectId, {PeriodFilter? period}) async {
     final uri = _uri('/api/projects/$projectId/geo').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
     final res = await _client.get(uri, headers: _headers);
