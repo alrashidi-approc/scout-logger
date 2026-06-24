@@ -205,6 +205,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
               child: FilterBar(
                 period: _period,
                 onPeriodChanged: (p) => _apply(period: p),
+                includeHourPresets: true,
                 searchHint: 'Search issue title…',
                 searchValue: _search,
                 onSearch: (q) => _apply(search: q),

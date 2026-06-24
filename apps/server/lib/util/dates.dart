@@ -24,6 +24,13 @@ class TimeWindow {
       TimeWindow(since: utcTimestampDaysAgo(days.clamp(1, 365)));
 
   factory TimeWindow.fromQuery(Map<String, String> q, {int defaultDays = 7, bool optional = false}) {
+    final hoursStr = q['hours'];
+    if (hoursStr != null && hoursStr.isNotEmpty) {
+      final h = (int.tryParse(hoursStr) ?? 24).clamp(1, 720);
+      return TimeWindow(
+        since: DateTime.now().toUtc().subtract(Duration(hours: h)).toIso8601String(),
+      );
+    }
     final fromStr = q['from'];
     if (fromStr != null && fromStr.isNotEmpty) {
       final from = _parseDayUtc(fromStr);
@@ -56,6 +63,7 @@ class TimeWindow {
     final s = DateTime.parse(since!).toUtc();
     final u = until != null ? DateTime.parse(until!).toUtc() : DateTime.now().toUtc();
     final span = u.difference(s);
+    if (until == null && span.inHours <= 24) return true;
     if (until != null && span == const Duration(days: 1)) return true;
     return span.inHours <= 24;
   }

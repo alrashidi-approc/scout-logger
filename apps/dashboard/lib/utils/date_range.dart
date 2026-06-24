@@ -1,20 +1,24 @@
 import 'package:intl/intl.dart';
 
-/// Dashboard time filter — preset days or custom from/to (inclusive calendar dates).
+/// Dashboard time filter — preset days, rolling hours, or custom from/to dates.
 class PeriodFilter {
-  const PeriodFilter._({this.days, this.from, this.to});
+  const PeriodFilter._({this.days, this.from, this.to, this.hours});
 
-  const PeriodFilter.days(this.days) : from = null, to = null;
+  const PeriodFilter.days(this.days) : from = null, to = null, hours = null;
 
-  const PeriodFilter.range(this.from, this.to) : days = null;
+  const PeriodFilter.hours(this.hours) : days = null, from = null, to = null;
+
+  const PeriodFilter.range(this.from, this.to) : days = null, hours = null;
 
   static const maxCustomDays = 90;
 
   final int? days;
   final DateTime? from;
   final DateTime? to;
+  final int? hours;
 
   bool get isPreset => days != null;
+  bool get isHours => hours != null;
   bool get isCustom => from != null;
 
   int get spanDays {
@@ -23,8 +27,8 @@ class PeriodFilter {
     return t.difference(from!).inDays + 1;
   }
 
-  /// Hourly chart for 24h preset or a single custom calendar day.
-  bool get usesHourlyTrend => isPreset ? days == 1 : spanDays == 1;
+  /// Hourly chart for 24h preset, hour window, or a single custom calendar day.
+  bool get usesHourlyTrend => isHours || (isPreset ? days == 1 : spanDays == 1);
 
   static DateTime _todayLocal() {
     final n = DateTime.now();
@@ -75,6 +79,10 @@ class PeriodFilter {
   ];
 
   static PeriodFilter parse(Map<String, String> q, {int defaultDays = 7}) {
+    final hoursStr = q['hours'];
+    if (hoursStr != null && hoursStr.isNotEmpty) {
+      return PeriodFilter.hours((int.tryParse(hoursStr) ?? 24).clamp(1, 720));
+    }
     final fromStr = q['from'];
     if (fromStr != null && fromStr.isNotEmpty) {
       final from = _parseDate(fromStr);
@@ -87,6 +95,7 @@ class PeriodFilter {
   }
 
   static PeriodFilter? parseOptional(Map<String, String> q) {
+    if (q['hours'] != null && q['hours']!.isNotEmpty) return parse(q);
     final fromStr = q['from'];
     if (fromStr != null && fromStr.isNotEmpty) return parse(q);
     final daysStr = q['days'];
@@ -97,6 +106,7 @@ class PeriodFilter {
   }
 
   static Map<String, String>? queryFromUri(Map<String, String> q) {
+    if (q.containsKey('hours') && q['hours']!.isNotEmpty) return {'hours': q['hours']!};
     if (q.containsKey('from') && q['from']!.isNotEmpty) {
       return {'from': q['from']!, if (q['to'] != null && q['to']!.isNotEmpty) 'to': q['to']!};
     }
@@ -105,6 +115,7 @@ class PeriodFilter {
   }
 
   Map<String, String> toQuery() {
+    if (isHours) return {'hours': '$hours'};
     if (isPreset) return {'days': '$days'};
     return {'from': _fmt(from!), 'to': _fmt(to ?? from!)};
   }
@@ -112,6 +123,7 @@ class PeriodFilter {
   Map<String, String> mergeQuery([Map<String, String>? extra]) => {...?extra, ...toQuery()};
 
   String label() {
+    if (isHours) return hours == 1 ? 'last hour' : 'last $hours hours';
     if (isPreset) return days == 1 ? 'today' : 'last $days days';
     final f = from!;
     final t = to ?? f;
@@ -119,7 +131,10 @@ class PeriodFilter {
     return '${DateFormat.MMMd().format(f)} – ${DateFormat.MMMd().format(t)}';
   }
 
-  String comparisonLabel() => isPreset ? 'vs prior $days days' : 'vs prior period';
+  String comparisonLabel() {
+    if (isHours) return 'vs prior $hours hours';
+    return isPreset ? 'vs prior $days days' : 'vs prior period';
+  }
 
   static String? rangeError(DateTime from, DateTime to) {
     final days = to.difference(from).inDays + 1;

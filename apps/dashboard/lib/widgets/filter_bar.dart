@@ -5,13 +5,16 @@ import '../utils/date_range.dart';
 import 'period_picker.dart';
 
 class PeriodFilterBar extends StatelessWidget {
-  const PeriodFilterBar({super.key, required this.value, required this.onChanged});
+  const PeriodFilterBar({super.key, required this.value, required this.onChanged, this.includeHours = false});
 
   final PeriodFilter value;
   final ValueChanged<PeriodFilter> onChanged;
+  final bool includeHours;
 
   static const presets = [1, 7, 14, 30, 90];
+  static const hourPresets = [1, 6, 12, 24];
   static const labels = {1: '24h', 7: '7d', 14: '14d', 30: '30d', 90: '90d'};
+  static const hourLabels = {1: '1h', 6: '6h', 12: '12h', 24: '24h'};
 
   void _openPicker(BuildContext context) => showPeriodPicker(context, current: value, onSelected: onChanged);
 
@@ -25,20 +28,29 @@ class PeriodFilterBar extends StatelessWidget {
         return Row(
           children: [
             Expanded(
-              child: DropdownButtonFormField<int?>(
-                value: value.isPreset ? value.days : null,
+              child: DropdownButtonFormField<String>(
+                value: value.isHours
+                    ? 'h:${value.hours}'
+                    : value.isPreset
+                        ? 'd:${value.days}'
+                        : null,
                 isExpanded: true,
                 decoration: const InputDecoration(contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
                 items: [
-                  for (final d in presets) DropdownMenuItem(value: d, child: Text(labels[d]!, style: const TextStyle(fontSize: 13))),
-                  DropdownMenuItem(value: -1, child: Text(customSelected ? customLabel : 'Custom range…', style: const TextStyle(fontSize: 13))),
+                  if (includeHours)
+                    for (final h in hourPresets)
+                      DropdownMenuItem(value: 'h:$h', child: Text(hourLabels[h]!, style: const TextStyle(fontSize: 13))),
+                  for (final d in presets) DropdownMenuItem(value: 'd:$d', child: Text(labels[d]!, style: const TextStyle(fontSize: 13))),
+                  DropdownMenuItem(value: 'custom', child: Text(customSelected ? customLabel : 'Custom range…', style: const TextStyle(fontSize: 13))),
                 ],
                 onChanged: (v) {
                   if (v == null) return;
-                  if (v == -1) {
+                  if (v == 'custom') {
                     _openPicker(context);
-                  } else {
-                    onChanged(PeriodFilter.days(v));
+                  } else if (v.startsWith('h:')) {
+                    onChanged(PeriodFilter.hours(int.parse(v.substring(2))));
+                  } else if (v.startsWith('d:')) {
+                    onChanged(PeriodFilter.days(int.parse(v.substring(2))));
                   }
                 },
               ),
@@ -51,6 +63,18 @@ class PeriodFilterBar extends StatelessWidget {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
+            if (includeHours) ...[
+              SegmentedButton<int>(
+                segments: [for (final h in hourPresets) ButtonSegment(value: h, label: Text(hourLabels[h]!))],
+                selected: value.isHours ? {value.hours!} : {},
+                onSelectionChanged: (s) => onChanged(PeriodFilter.hours(s.first)),
+                style: ButtonStyle(
+                  visualDensity: VisualDensity.compact,
+                  textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
             SegmentedButton<int>(
               segments: [for (final d in presets) ButtonSegment(value: d, label: Text(labels[d]!))],
               selected: value.isPreset ? {value.days!} : {},
@@ -238,6 +262,7 @@ class FilterBar extends StatelessWidget {
     this.deviceNameOptions,
     this.deviceNameSelected,
     this.onDeviceNameSelected,
+    this.includeHourPresets = false,
     this.extra,
   });
 
@@ -264,13 +289,15 @@ class FilterBar extends StatelessWidget {
   final List<String>? deviceNameOptions;
   final String? deviceNameSelected;
   final ValueChanged<String?>? onDeviceNameSelected;
+  final bool includeHourPresets;
   final List<Widget>? extra;
 
   @override
   Widget build(BuildContext context) {
     final narrow = MediaQuery.sizeOf(context).width < 600;
     final children = <Widget>[
-      if (period != null && onPeriodChanged != null) PeriodFilterBar(value: period!, onChanged: onPeriodChanged!),
+      if (period != null && onPeriodChanged != null)
+        PeriodFilterBar(value: period!, onChanged: onPeriodChanged!, includeHours: includeHourPresets),
       if (searchHint != null && onSearch != null) SearchField(hint: searchHint!, initialValue: searchValue, onSubmitted: onSearch!),
       if (levelOptions != null && onLevelSelected != null)
         TypeFilterRow(label: 'Level', options: levelOptions!, selected: levelSelected, onSelected: onLevelSelected!),

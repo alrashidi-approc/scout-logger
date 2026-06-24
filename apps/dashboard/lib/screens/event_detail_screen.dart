@@ -228,28 +228,24 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             title: 'Timeline',
             icon: Icons.timeline,
             subtitle: () {
-              final parts = [
-                if (sessionEvents.isNotEmpty) '${sessionEvents.length} events',
-                if (v.breadcrumbs.isNotEmpty) '${v.breadcrumbs.length} screens',
-              ];
-              if (parts.isNotEmpty) return parts.join(' · ');
+              if (sessionEvents.isNotEmpty) {
+                final screens = sessionEvents.map((e) => str(e['route']) ?? '').where((r) => r.isNotEmpty && r != '—').toSet().length;
+                return '${sessionEvents.length} events · $screens screens';
+              }
+              if (v.breadcrumbs.isNotEmpty) return '${v.breadcrumbs.length} screens';
               return v.route != '—' ? v.route : null;
             }(),
             children: [
               if (sessionEvents.isNotEmpty) ...[
-                const Text('Session', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
-                const SizedBox(height: 8),
                 SessionTimeline(
                   events: sessionEvents,
                   onEventTap: shared ? null : (e) => context.push('/p/$pid/events/${e['id']}'),
                 ),
-              ],
-              if (sessionEvents.isNotEmpty && v.breadcrumbs.isNotEmpty) const SizedBox(height: 16),
-              if (v.breadcrumbs.isNotEmpty) ...[
+              ] else if (v.breadcrumbs.isNotEmpty) ...[
                 const Text('Screens', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
                 const SizedBox(height: 8),
                 BreadcrumbTrail(items: v.breadcrumbs),
-              ] else if (v.route != '—' && sessionEvents.isEmpty)
+              ] else if (v.route != '—')
                 SimpleTimeline(entries: [SimpleTimelineEntry(title: v.route, meta: 'Current screen')]),
             ],
           ),

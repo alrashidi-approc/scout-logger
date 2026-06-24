@@ -700,18 +700,122 @@ class SessionTimeline extends StatelessWidget {
   final void Function(Map<String, dynamic> event)? onEventTap;
 
   @override
+  Widget build(BuildContext context) => SessionScreenTimeline(events: events, onEventTap: onEventTap);
+}
+
+class SessionScreenTimeline extends StatefulWidget {
+  const SessionScreenTimeline({super.key, required this.events, this.onEventTap});
+
+  final List<Map<String, dynamic>> events;
+  final void Function(Map<String, dynamic> event)? onEventTap;
+
+  @override
+  State<SessionScreenTimeline> createState() => _SessionScreenTimelineState();
+}
+
+class _SessionScreenTimelineState extends State<SessionScreenTimeline> {
+  late Set<String> _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = _initialExpanded();
+  }
+
+  @override
+  void didUpdateWidget(covariant SessionScreenTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.events != widget.events) _expanded = _initialExpanded();
+  }
+
+  Set<String> _initialExpanded() {
+    final groups = _groupByScreen(widget.events);
+    for (final g in groups) {
+      if (g.events.any((e) => e['isCurrent'] == true)) return {g.key};
+    }
+    return groups.isNotEmpty ? {groups.first.key} : {};
+  }
+
+  static List<_ScreenGroup> _groupByScreen(List<Map<String, dynamic>> events) {
+    final map = <String, List<Map<String, dynamic>>>{};
+    final order = <String>[];
+    for (final e in events) {
+      final route = str(e['route']);
+      final key = route == null || route.isEmpty || route == '—' ? '(no screen)' : route;
+      if (!map.containsKey(key)) order.add(key);
+      map.putIfAbsent(key, () => []).add(e);
+    }
+    return [for (final k in order) _ScreenGroup(key: k, events: map[k]!)];
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return SimpleTimeline(
-      empty: 'No session events',
-      entries: events
-          .map((e) => eventTimelineEntry(
-                e,
-                highlight: e['isCurrent'] == true,
-                onTap: e['isCurrent'] == true || onEventTap == null ? null : () => onEventTap!(e),
-              ))
-          .toList(),
+    final groups = _groupByScreen(widget.events);
+    if (groups.isEmpty) {
+      return const Text('No session events', style: TextStyle(color: AppTheme.muted, fontSize: 13));
+    }
+
+    return Column(
+      children: [
+        for (final g in groups)
+          Card(
+            margin: const EdgeInsets.only(bottom: 8),
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+              side: const BorderSide(color: AppTheme.border),
+            ),
+            child: Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                key: PageStorageKey(g.key),
+                initiallyExpanded: _expanded.contains(g.key),
+                onExpansionChanged: (open) => setState(() {
+                  if (open) {
+                    _expanded.add(g.key);
+                  } else {
+                    _expanded.remove(g.key);
+                  }
+                }),
+                tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
+                childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                leading: const Icon(Icons.smartphone_outlined, size: 18, color: AppTheme.primary),
+                title: Text(
+                  g.key,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  '${g.events.length} event${g.events.length == 1 ? '' : 's'}',
+                  style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+                ),
+                children: [
+                  for (final e in g.events)
+                    SimpleTimeline(
+                      entries: [
+                        eventTimelineEntry(
+                          e,
+                          highlight: e['isCurrent'] == true,
+                          onTap: e['isCurrent'] == true || widget.onEventTap == null
+                              ? null
+                              : () => widget.onEventTap!(e),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
+}
+
+class _ScreenGroup {
+  const _ScreenGroup({required this.key, required this.events});
+  final String key;
+  final List<Map<String, dynamic>> events;
 }
 
 class RelatedEventTile extends StatelessWidget {
