@@ -124,12 +124,16 @@ class _OverviewScreenState extends State<OverviewScreen> {
         ),
         Expanded(
           child: AsyncScreenBody(
-            loading: _loading,
+            loading: _loading && _d == null,
             refreshing: _refreshing,
             error: _error,
             onRetry: _load,
             placeholderLayout: PlaceholderLayout.dashboard,
-            child: _buildBody(context, _d!, pid),
+            builder: (context) {
+              final d = _d;
+              if (d == null) return const SizedBox.shrink();
+              return _buildBody(context, d, pid);
+            },
           ),
         ),
       ],
@@ -161,7 +165,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
               StatCard(label: 'Error rate', value: '${jsonPct(d['errorRatePct'])}%', icon: Icons.speed, color: AppTheme.warning, hint: '${d['errors'] ?? 0} / ${d['events'] ?? 0} ev'),
               StatCard(label: 'Events', value: '${d['events'] ?? d['eventsToday']}', icon: Icons.show_chart, delta: _delta('events'), onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Errors', value: '${d['errors'] ?? d['errorsToday']}', icon: Icons.error_outline, color: AppTheme.error, delta: _delta('errors'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'level': 'error', 'type': 'errors'})).toString())),
-              StatCard(label: 'Users w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, hint: 'Logged-in only', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
+              StatCard(label: 'Logged-in w/ errors', value: '${d['usersAffectedByErrors'] ?? 0}', icon: Icons.person_off_outlined, color: AppTheme.accentPink, hint: 'Identified accounts only', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Peak hour', value: formatHour(jsonInt(d['peakHour'])), icon: Icons.schedule, color: AppTheme.info, hint: '${d['peakHourEvents'] ?? 0} ev'),
               StatCard(label: 'Peak error hour', value: formatHour(jsonInt(d['peakErrorHour'])), icon: Icons.warning_amber_outlined, color: AppTheme.warning, hint: '${d['peakErrorHourCount'] ?? 0} err'),
               StatCard(label: 'Logged-in users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), hint: 'Excludes guest UUIDs', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
@@ -180,26 +184,62 @@ class _OverviewScreenState extends State<OverviewScreen> {
           ],
           const SizedBox(height: 12),
           LayoutBuilder(builder: (context, c) {
-            return responsiveRow(
-              maxWidth: c.maxWidth,
-              flex: const [3, 2],
+            final compact = c.maxWidth < Breakpoints.mobile;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 DashboardPanel(
-                  title: 'Events over time',
-                  subtitle: hourlyTrend ? 'Hourly (UTC)' : null,
+                  title: 'Events vs outcomes',
+                  subtitle: 'All events compared with error-level and success-level',
                   trailing: chartLegend([
-                    _legend(AppTheme.primary, 'Events'),
+                    _legend(AppTheme.primary, 'All events'),
                     _legend(AppTheme.error, 'Errors'),
-                    _legend(AppTheme.success, 'Logged-in users'),
+                    _legend(AppTheme.success, 'Success'),
                   ]),
-                  child: TrendChart(points: trend, showUsers: true, hourly: hourlyTrend, height: c.maxWidth < Breakpoints.mobile ? 200 : 240),
+                  child: EventOutcomeChart(points: trend, hourly: hourlyTrend, height: compact ? 200 : 240),
                 ),
-                DashboardPanel(title: 'Peak error times', subtitle: 'Errors by hour (UTC)', child: HourlyChart(points: hourly, errorsOnly: true, height: c.maxWidth < Breakpoints.mobile ? 160 : 180)),
+                const SizedBox(height: 12),
+                DashboardPanel(
+                  title: 'Audience over time',
+                  subtitle: 'Logged-in users vs guest devices (anonymous install ids)',
+                  trailing: chartLegend([
+                    _legend(AppTheme.primary, 'Logged-in'),
+                    _legend(AppTheme.muted, 'Guest devices'),
+                  ]),
+                  child: UserAudienceChart(points: trend, hourly: hourlyTrend, height: compact ? 180 : 220),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    SizedBox(
+                      width: compact ? c.maxWidth : (c.maxWidth - 12) / 2,
+                      child: DashboardPanel(
+                        title: 'Peak error times',
+                        subtitle: 'Errors by hour (UTC)',
+                        trailing: chartLegend([_legend(AppTheme.error, 'Errors')]),
+                        child: HourlyChart(points: hourly, errorsOnly: true, height: compact ? 170 : 200),
+                      ),
+                    ),
+                    SizedBox(
+                      width: compact ? c.maxWidth : (c.maxWidth - 12) / 2,
+                      child: DashboardPanel(
+                        title: 'Activity by hour',
+                        subtitle: 'Events · errors · success (UTC)',
+                        trailing: chartLegend([
+                          _legend(AppTheme.primary, 'Events'),
+                          _legend(AppTheme.error, 'Errors'),
+                          _legend(AppTheme.success, 'Success'),
+                        ]),
+                        child: HourlyChart(points: hourly, height: compact ? 170 : 200),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             );
           }),
-          const SizedBox(height: 12),
-          LayoutBuilder(builder: (context, c) => DashboardPanel(title: 'Activity by hour', subtitle: 'All events (UTC)', child: HourlyChart(points: hourly, height: c.maxWidth < Breakpoints.mobile ? 160 : 180))),
           const SizedBox(height: 12),
           LayoutBuilder(builder: (context, c) {
             return responsiveRow(
@@ -293,7 +333,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
                       : Column(children: _recentIssues.map((i) => IssueCard(issue: i, onTap: () => context.push('/p/$pid/issues/${i['id']}'))).toList()),
                 ),
                 DashboardPanel(
-                  title: 'Users by country',
+                  title: 'Logged-in users by country',
                   trailing: TextButton(onPressed: () => context.go(Uri(path: '/p/$pid/geo', queryParameters: _period.toQuery()).toString()), child: const Text('Full map')),
                   child: WorldMapCompact(points: countries),
                 ),

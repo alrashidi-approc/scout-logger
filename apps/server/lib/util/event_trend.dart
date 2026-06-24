@@ -22,8 +22,12 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
   TimeWindow w, {
   required bool includeUsers,
 }) async {
-  final usersCol = includeUsers
-      ? ', COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int'
+  final audienceCols = includeUsers
+      ? ''', COUNT(*) FILTER (
+              WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
+            )::int,
+            COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
+            COUNT(DISTINCT install_id) FILTER (WHERE ${guestUserSql()})::int'''
       : '';
   final rows = await conn.execute(
     Sql.named('''
@@ -31,7 +35,7 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
              COUNT(*)::int,
              COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
              COUNT(*) FILTER (WHERE type = 'crash')::int
-             $usersCol
+             $audienceCols
       FROM events
       WHERE project_id = @pid
         AND $sqlHideSessionHeartbeat
@@ -50,7 +54,7 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
       'events': r[1],
       'errors': r[2],
       'crashes': r[3],
-      if (includeUsers) 'users': r[4],
+      if (includeUsers) ..._audienceCols(r, 4),
     };
   }
 
@@ -65,7 +69,7 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
       'events': 0,
       'errors': 0,
       'crashes': 0,
-      if (includeUsers) 'users': 0,
+      if (includeUsers) ...const {'success': 0, 'users': 0, 'loggedInUsers': 0, 'guestDevices': 0},
     });
     t = t.add(const Duration(hours: 1));
   }
@@ -89,7 +93,11 @@ Future<List<Map<String, dynamic>>> _dailyTrend(
              COUNT(*)::int,
              COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
              COUNT(*) FILTER (WHERE type = 'crash')::int
-             ${includeUsers ? ", COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int" : ''}
+             ${includeUsers ? ''', COUNT(*) FILTER (
+                    WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
+                  )::int,
+                  COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
+                  COUNT(DISTINCT install_id) FILTER (WHERE ${guestUserSql()})::int''' : ''}
       FROM events
       WHERE project_id = @pid
         AND $sqlHideSessionHeartbeat
@@ -106,7 +114,14 @@ Future<List<Map<String, dynamic>>> _dailyTrend(
             'events': r[1],
             'errors': r[2],
             'crashes': r[3],
-            if (includeUsers) 'users': r[4],
+            if (includeUsers) ..._audienceCols(r, 4),
           })
       .toList();
 }
+
+Map<String, int> _audienceCols(ResultRow r, int start) => {
+      'success': r[start] as int,
+      'users': r[start + 1] as int,
+      'loggedInUsers': r[start + 1] as int,
+      'guestDevices': r[start + 2] as int,
+    };

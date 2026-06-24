@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'trend_chart.dart';
 
 class HourlyChart extends StatelessWidget {
   const HourlyChart({super.key, required this.points, this.errorsOnly = false, this.height = 180});
@@ -16,23 +17,43 @@ class HourlyChart extends StatelessWidget {
       return SizedBox(height: height, child: const Center(child: Text('No hourly data yet', style: TextStyle(color: AppTheme.muted))));
     }
 
+    final byHour = {for (final p in points) (p['hour'] as num?)?.toInt() ?? 0: p};
     final bars = <BarChartGroupData>[];
     var maxY = 0.0;
-    for (final p in points) {
-      final h = (p['hour'] as num?)?.toInt() ?? 0;
-      final v = (errorsOnly ? (p['errors'] as num?) : (p['events'] as num?))?.toDouble() ?? 0;
-      if (v > maxY) maxY = v;
-      bars.add(BarChartGroupData(
-        x: h,
-        barRods: [BarChartRodData(toY: v, color: errorsOnly ? AppTheme.error : AppTheme.primary, width: 10, borderRadius: const BorderRadius.vertical(top: Radius.circular(4)))],
-      ));
+
+    for (var h = 0; h < 24; h++) {
+      final p = byHour[h];
+      if (errorsOnly) {
+        final v = (p?['errors'] as num?)?.toDouble() ?? 0;
+        if (v > maxY) maxY = v;
+        bars.add(BarChartGroupData(
+          x: h,
+          barRods: [BarChartRodData(toY: v, color: AppTheme.error, width: 9, borderRadius: const BorderRadius.vertical(top: Radius.circular(4)))],
+        ));
+      } else {
+        final ev = (p?['events'] as num?)?.toDouble() ?? 0;
+        final err = (p?['errors'] as num?)?.toDouble() ?? 0;
+        final ok = (p?['success'] as num?)?.toDouble() ?? 0;
+        if (ev > maxY) maxY = ev;
+        if (err > maxY) maxY = err;
+        if (ok > maxY) maxY = ok;
+        bars.add(BarChartGroupData(
+          x: h,
+          barsSpace: 3,
+          barRods: [
+            BarChartRodData(toY: ev, color: AppTheme.primary.withValues(alpha: 0.85), width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
+            BarChartRodData(toY: err, color: chartErrorColor, width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
+            BarChartRodData(toY: ok, color: chartSuccessColor, width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
+          ],
+        ));
+      }
     }
 
     return SizedBox(
       height: height,
       child: BarChart(
         BarChartData(
-          maxY: maxY <= 0 ? 5 : maxY * 1.2,
+          maxY: maxY <= 0 ? 5 : maxY * 1.15,
           gridData: FlGridData(show: true, drawVerticalLine: false, getDrawingHorizontalLine: (_) => FlLine(color: AppTheme.border.withValues(alpha: 0.5))),
           borderData: FlBorderData(show: false),
           titlesData: FlTitlesData(
@@ -42,11 +63,26 @@ class HourlyChart extends StatelessWidget {
             bottomTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,
-                getTitlesWidget: (v, _) => Text('${v.toInt()}h', style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
+                interval: 2,
+                getTitlesWidget: (v, _) => v.toInt() % 2 == 0 ? Text('${v.toInt()}h', style: const TextStyle(fontSize: 10, color: AppTheme.muted)) : const SizedBox.shrink(),
               ),
             ),
           ),
           barGroups: bars,
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (_) => AppTheme.panelElevated,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final h = group.x;
+                if (errorsOnly) {
+                  return BarTooltipItem('$h:00 UTC\nErrors: ${rod.toY.toInt()}', const TextStyle(fontSize: 11, fontWeight: FontWeight.w600));
+                }
+                final labels = ['Events', 'Errors', 'Success'];
+                final label = rodIndex < labels.length ? labels[rodIndex] : '';
+                return BarTooltipItem('$h:00 UTC\n$label: ${rod.toY.toInt()}', TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: rod.color));
+              },
+            ),
+          ),
         ),
       ),
     );

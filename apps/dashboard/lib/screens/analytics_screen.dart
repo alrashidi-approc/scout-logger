@@ -125,7 +125,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.analytics,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 
@@ -299,7 +299,7 @@ class _RetentionTab extends StatelessWidget {
     final cohorts = jsonListMaps(data?['cohorts']);
     final cells = jsonListMaps(data?['cells']);
     if (cohorts.isEmpty) {
-      return const EmptyState(icon: Icons.people_outline, title: 'No retention data yet', subtitle: 'Users appear after your app sends events with user IDs.');
+      return const EmptyState(icon: Icons.people_outline, title: 'No retention data yet', subtitle: 'Logged-in users appear after the SDK sends a real user id (not the install UUID).');
     }
 
     final maxPeriod = cells.fold<int>(0, (m, c) {
@@ -322,7 +322,7 @@ class _RetentionTab extends StatelessWidget {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('Weekly retention', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 8),
-              const Text('Rows = signup week. Columns = weeks since first seen.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+              const Text('Rows = signup week (logged-in users). Columns = weeks since first seen.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
               const SizedBox(height: 16),
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -414,7 +414,7 @@ class _ReleasesTab extends StatelessWidget {
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text('${r['release']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
                         Text(
-                          '${r['users']} users · ${r['sessions']} sessions · avg ${_fmtDur(r['avgSessionMs'])}',
+                          '${r['users']} logged-in · ${r['sessions']} sessions · avg ${_fmtDur(r['avgSessionMs'])}',
                           style: const TextStyle(color: AppTheme.muted, fontSize: 12),
                         ),
                         Text('${r['events']} events · ${r['crashes']} crashes · ${r['errors']} errors', style: const TextStyle(fontSize: 12)),
@@ -456,7 +456,7 @@ class _SessionsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (sessions.isEmpty) {
-      return const EmptyState(icon: Icons.play_circle_outline, title: 'No sessions yet', subtitle: 'Sessions are recorded when users open and close your app.');
+      return const EmptyState(icon: Icons.play_circle_outline, title: 'No sessions yet', subtitle: 'Sessions are recorded when your app sends session start/end events.');
     }
 
     return ListView.separated(

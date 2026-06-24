@@ -28,7 +28,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
   static const _navItems = [
     (Icons.dashboard_outlined, Icons.dashboard, 'Overview'),
-    (Icons.people_outline, Icons.people, 'Users'),
+    (Icons.people_outline, Icons.people, 'Logged-in users'),
     (Icons.play_circle_outline, Icons.play_circle, 'Sessions'),
     (Icons.insights_outlined, Icons.insights, 'Analytics'),
     (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),

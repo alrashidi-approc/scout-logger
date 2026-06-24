@@ -62,7 +62,7 @@ class AsyncScreenBody extends StatelessWidget {
     this.refreshing = false,
     this.error,
     required this.onRetry,
-    required this.child,
+    required this.builder,
     this.empty,
     this.placeholderLayout = PlaceholderLayout.list,
   });
@@ -71,7 +71,7 @@ class AsyncScreenBody extends StatelessWidget {
   final bool refreshing;
   final Object? error;
   final VoidCallback onRetry;
-  final Widget child;
+  final WidgetBuilder builder;
   final Widget? empty;
   final PlaceholderLayout placeholderLayout;
 
@@ -85,7 +85,7 @@ class AsyncScreenBody extends StatelessWidget {
 
     return Stack(
       children: [
-        child,
+        builder(context),
         if (refreshing)
           Positioned.fill(
             child: ColoredBox(

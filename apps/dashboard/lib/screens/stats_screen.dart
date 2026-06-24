@@ -75,10 +75,10 @@ class _StatsScreenState extends State<StatsScreen> {
   @override
   Widget build(BuildContext context) {
     return AsyncScreenBody(
-      loading: _loading,
+      loading: _loading && _data == null,
       error: _error,
       onRetry: _load,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 
@@ -214,9 +214,9 @@ class _StatsScreenState extends State<StatsScreen> {
               const SizedBox(width: 12),
               _legend(AppTheme.error, 'Errors'),
               const SizedBox(width: 12),
-              _legend(AppTheme.success, 'Users'),
+              _legend(AppTheme.success, 'Success'),
             ]),
-            child: TrendChart(points: trend, showUsers: true, hourly: hourlyTrend),
+            child: EventOutcomeChart(points: trend, hourly: hourlyTrend),
           ),
           const SizedBox(height: 16),
           LayoutBuilder(builder: (context, c) {

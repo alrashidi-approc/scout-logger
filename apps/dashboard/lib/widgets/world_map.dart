@@ -149,7 +149,7 @@ class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderS
     if (_selectedId == id) return WorldMapPanel._selected;
     if (_hoverId == id) return AppTheme.primary;
     final t = max == 0 ? 0.0 : (users / max).clamp(0.0, 1.0);
-    return Color.lerp(WorldMapPanel._land, AppTheme.primary, 0.3 + t * 0.55)!;
+    return Color.lerp(WorldMapPanel._land, AppTheme.primary, 0.3 + t * 0.55) ?? WorldMapPanel._land;
   }
 
   List<SimpleMapMarker> _markers() {
@@ -252,22 +252,25 @@ class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderS
     _focusAnim!.addListener(() {
       final t = curve.value;
       _applyTransform(
-        Offset.lerp(fromScene, scene, t)!,
-        lerpDouble(fromScale, targetScale, t)!,
+        Offset.lerp(fromScene, scene, t) ?? scene,
+        lerpDouble(fromScale, targetScale, t) ?? targetScale,
       );
     });
     _focusAnim!.forward();
   }
 
   void _focusBoundsFromLatLng(List<(double, double)> coords, {required bool tight}) {
-    if (coords.isEmpty) return;
+    if (coords.isEmpty || !mounted) return;
     final layout = _mapLayout();
     if (layout == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _focusBoundsFromLatLng(coords, tight: tight));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focusBoundsFromLatLng(coords, tight: tight);
+      });
       return;
     }
 
-    final rb = _viewportKey.currentContext!.findRenderObject() as RenderBox;
+    final rb = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (rb == null || !rb.hasSize) return;
     final vw = rb.size.width;
     final vh = rb.size.height;
     final fitScale = layout.fitScale;
@@ -407,15 +410,20 @@ class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderS
                           child: Text(
                             widget.points.isEmpty
                                 ? 'No country data yet'
-                                : '$_totalUsers users · $_totalEvents events · ${regions.length} regions · ${widget.points.length} countries',
+                                : '$_totalUsers logged-in · $_totalEvents events · ${regions.length} regions · ${widget.points.length} countries',
                             style: TextStyle(color: WorldMapPanel._label.withValues(alpha: 0.55), fontSize: 12),
                           ),
                         ),
-                        if (_selectedId != null || _hoverId != null)
-                          Text(
-                            _labelFor(_selectedId ?? _hoverId!),
-                            style: const TextStyle(color: WorldMapPanel._label, fontSize: 12, fontWeight: FontWeight.w600),
-                          ),
+                        if (_selectedId != null || _hoverId != null) ...[
+                          Builder(builder: (_) {
+                            final id = _selectedId ?? _hoverId;
+                            if (id == null) return const SizedBox.shrink();
+                            return Text(
+                              _labelFor(id),
+                              style: const TextStyle(color: WorldMapPanel._label, fontSize: 12, fontWeight: FontWeight.w600),
+                            );
+                          }),
+                        ],
                       ],
                     ),
                     if (_selectedId != null && widget.onCountryTap != null) ...[
@@ -423,7 +431,11 @@ class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderS
                       Align(
                         alignment: Alignment.centerLeft,
                         child: FilledButton.icon(
-                          onPressed: () => widget.onCountryTap!(_selectedId!.toUpperCase(), _countFor(_selectedId!)),
+                          onPressed: () {
+                            final id = _selectedId;
+                            if (id == null) return;
+                            widget.onCountryTap!(id.toUpperCase(), _countFor(id));
+                          },
                           icon: const Icon(Icons.open_in_new, size: 16),
                           label: Text('View events in ${countryLabel(_selectedId!.toUpperCase())}'),
                         ),
@@ -443,7 +455,7 @@ class WorldMapPanelState extends State<WorldMapPanel> with SingleTickerProviderS
     final users = _usersFor(id);
     final events = _countFor(id);
     final share = _totalUsers == 0 ? 0.0 : users / _totalUsers * 100;
-    return '${countryLabel(code)} · $users users · $events events (${share.toStringAsFixed(1)}%)';
+    return '${countryLabel(code)} · $users logged-in · $events events (${share.toStringAsFixed(1)}%)';
   }
 }
 
@@ -520,7 +532,7 @@ class WorldMapCompact extends StatelessWidget {
       showFooter: false,
       interactive: false,
       showMarkers: true,
-      autoFocus: true,
+      autoFocus: false,
       onCountryTap: onCountryTap,
     );
   }

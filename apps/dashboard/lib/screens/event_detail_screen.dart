@@ -117,7 +117,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.detail,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 

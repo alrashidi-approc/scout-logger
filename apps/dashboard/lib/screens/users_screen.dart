@@ -55,7 +55,6 @@ class _UsersScreenState extends State<UsersScreen> {
         _users = users;
         _hasData = true;
         _loading = false;
-
         _refreshing = false;
       });
     } catch (e) {
@@ -63,7 +62,6 @@ class _UsersScreenState extends State<UsersScreen> {
       if (mounted) setState(() {
         _error = e;
         _loading = false;
-
         _refreshing = false;
       });
     }
@@ -83,8 +81,8 @@ class _UsersScreenState extends State<UsersScreen> {
       Padding(
         padding: pageInsets(context, top: pagePad(context)),
         child: PageHeader(
-          title: 'Users',
-          subtitle: '${_users.length} logged-in users',
+          title: 'Logged-in users',
+          subtitle: '${_users.length} identified accounts · guest devices stay in Events & Sessions',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
@@ -94,49 +92,108 @@ class _UsersScreenState extends State<UsersScreen> {
       Expanded(
         child: AsyncScreenBody(
           loading: _loading,
-            refreshing: _refreshing,
+          refreshing: _refreshing,
           error: _error,
           onRetry: _load,
           placeholderLayout: PlaceholderLayout.list,
           empty: !_loading && _users.isEmpty
-              ? const EmptyState(icon: Icons.people_outline, title: 'No logged-in users yet', subtitle: 'Only identified users appear here. Guest traffic stays in Events and Sessions.')
+              ? const EmptyState(
+                  icon: Icons.people_outline,
+                  title: 'No logged-in users yet',
+                  subtitle: 'When the SDK sends a real user id (not the install UUID), they appear here with profile and device context from the client.',
+                )
               : null,
-          child: RefreshIndicator(
+          builder: (context) => RefreshIndicator(
             onRefresh: _load,
             child: ListView.builder(
               key: PageStorageKey('users-${widget.projectId}'),
               padding: pageInsets(context, top: 12, bottom: pagePad(context)),
               itemCount: _users.length,
-              itemBuilder: (_, i) {
-                final u = _users[i];
-                final last = DateTime.tryParse(u['lastSeenAt'] as String? ?? '');
-                final email = u['email'] as String?;
-                final userId = u['userId'] as String;
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  decoration: BoxDecoration(color: AppTheme.panel, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppTheme.border)),
-                  child: ListTile(
-                    onTap: () => context.push('/p/${widget.projectId}/users/${Uri.encodeComponent(userId)}'),
-                    leading: CircleAvatar(backgroundColor: AppTheme.primary.withValues(alpha: 0.15), child: const Icon(Icons.person, color: AppTheme.primary, size: 18)),
-                    title: Text(email ?? userId, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                    subtitle: Text(
-                      [
-                        if (email != null) userId,
-                        '${u['eventCount']} events · ${u['errorCount']} errors · ${u['deviceCount'] ?? 1} device${(u['deviceCount'] as int? ?? 1) == 1 ? '' : 's'}',
-                      ].join(' · '),
-                      style: const TextStyle(fontSize: 12, color: AppTheme.muted),
-                    ),
-                    trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                      Text(last != null ? DateFormat.MMMd().format(last.toLocal()) : '—', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
-                      const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
-                    ]),
-                  ),
-                );
-              },
+              itemBuilder: (_, i) => _UserCard(user: _users[i], onTap: () => context.push('/p/${widget.projectId}/users/${Uri.encodeComponent(_users[i]['userId'] as String)}')),
             ),
           ),
         ),
       ),
     ]);
+  }
+}
+
+class _UserCard extends StatelessWidget {
+  const _UserCard({required this.user, required this.onTap});
+
+  final Map<String, dynamic> user;
+  final VoidCallback onTap;
+
+  static String _shortId(String id) => id.length > 16 ? '${id.substring(0, 10)}…${id.substring(id.length - 4)}' : id;
+
+  @override
+  Widget build(BuildContext context) {
+    final email = user['email'] as String?;
+    final name = user['displayName'] as String?;
+    final username = user['username'] as String?;
+    final userId = user['userId'] as String;
+    final title = name ?? email ?? username ?? 'User ${_shortId(userId)}';
+    final subtitle = name != null
+        ? (email ?? username)
+        : (email != null && username != null ? username : null);
+    final last = DateTime.tryParse(user['lastSeenAt'] as String? ?? '');
+    final errors = user['errorCount'] as int? ?? 0;
+    final events = user['eventCount'] as int? ?? 0;
+    final contextLine = [
+      if (user['platform'] != null) '${user['platform']}',
+      if (user['appVersion'] != null) 'v${user['appVersion']}',
+      if (user['country'] != null) '${user['country']}',
+      if (user['deviceName'] != null) '${user['deviceName']}',
+    ].join(' · ');
+    final activity = [
+      if (last != null) 'Last ${DateFormat.MMMd().add_jm().format(last.toLocal())}',
+      '$events events',
+      if (errors > 0) '$errors errors',
+    ].join(' · ');
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: errors > 0 ? AppTheme.error.withValues(alpha: 0.35) : AppTheme.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: AppTheme.primary.withValues(alpha: 0.12),
+                child: Text((title.isNotEmpty ? title[0] : '?').toUpperCase(), style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w800, fontSize: 14)),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                  if (subtitle != null) Text(subtitle, style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                  if (name != null || email != null || username != null)
+                    Text(_shortId(userId), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace')),
+                  if (contextLine.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(contextLine, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+                  ],
+                  const SizedBox(height: 2),
+                  Text(
+                    activity,
+                    style: TextStyle(fontSize: 11, color: errors > 0 ? AppTheme.error : AppTheme.muted, fontWeight: errors > 0 ? FontWeight.w600 : FontWeight.w400),
+                  ),
+                ]),
+              ),
+              const Padding(padding: EdgeInsets.only(top: 2), child: Icon(Icons.chevron_right, size: 18, color: AppTheme.muted)),
+            ]),
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -70,7 +70,7 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
         error: _error,
         onRetry: _load,
         placeholderLayout: PlaceholderLayout.detail,
-        child: Column(
+        builder: (context) => Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _SharedBanner(shareUrl: _shareUrl, expiresAt: _expiresAt, onCopy: () => _copyLink(context)),

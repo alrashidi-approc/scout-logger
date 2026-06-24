@@ -235,7 +235,7 @@ class IssueCard extends StatelessWidget {
                     Wrap(spacing: 12, runSpacing: 4, children: [
                       _meta(Icons.repeat, _eventCountLabel(issue)),
                       if ((issue['affectedUsers'] as int? ?? 0) > 0)
-                        _meta(Icons.people_outline, '${issue['affectedUsers']} users'),
+                        _meta(Icons.people_outline, '${issue['affectedUsers']} logged-in'),
                       _meta(Icons.public, issue['topCountry'] as String? ?? '—'),
                       _meta(Icons.schedule, lastLabel),
                       _meta(Icons.flag_outlined, status, color: resolved ? AppTheme.success : AppTheme.muted),

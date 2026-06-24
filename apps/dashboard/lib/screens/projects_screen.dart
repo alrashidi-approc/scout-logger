@@ -136,7 +136,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.projects,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 

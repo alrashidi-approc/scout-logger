@@ -24,6 +24,7 @@ Future<void> main() async {
       context: {
         'library': details.library,
         if (details.context != null) 'context': details.context.toString(),
+        if (details.stack != null) 'stack': details.stack.toString().split('\n').take(8).join('\n'),
       },
     );
     prevFlutter?.call(details);

@@ -551,7 +551,10 @@ class AnalyticsStore {
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS h,
                COUNT(*)::int,
-               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int
+               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+               COUNT(*) FILTER (
+                 WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
+               )::int
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -649,7 +652,7 @@ class AnalyticsStore {
       'peakHourEvents': peakEvents.isEmpty ? 0 : n(peakEvents.first[1]),
       'peakErrorHour': peakErrors.isEmpty ? null : n(peakErrors.first[0]),
       'peakErrorHourCount': peakErrors.isEmpty ? 0 : n(peakErrors.first[1]),
-      'hourlyActivity': hourly.map((r) => {'hour': r[0], 'events': r[1], 'errors': r[2]}).toList(),
+      'hourlyActivity': hourly.map((r) => {'hour': r[0], 'events': r[1], 'errors': r[2], 'success': r[3]}).toList(),
       'topFailingEndpoints': endpoints.map((r) => {'endpoint': r[0], 'count': r[1]}).toList(),
       'topCrashScreens': screens.map((r) => {'screen': r[0], 'count': r[1]}).toList(),
       'byEnvironment': byEnv.map((r) => {'environment': r[0], 'count': r[1]}).toList(),
@@ -668,9 +671,34 @@ class AnalyticsStore {
                MAX(occurred_at) AS last_seen,
                COUNT(*)::int,
                COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+               COUNT(*) FILTER (WHERE type = 'crash')::int,
                COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int,
                COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int,
-               MAX(NULLIF(TRIM(payload->'user'->>'email'), '')) AS email
+               MAX(NULLIF(TRIM(payload->'user'->>'email'), '')) AS email,
+               MAX(NULLIF(TRIM(payload->'user'->>'name'), '')) AS display_name,
+               MAX(NULLIF(TRIM(payload->'user'->>'phone'), '')) AS phone,
+               MAX(NULLIF(TRIM(payload->'user'->>'username'), '')) AS username,
+               MAX(platform) AS platform,
+               MAX(app_version) AS app_version,
+               MAX(environment) AS environment,
+               MAX(release) AS release,
+               MAX(country) AS country,
+               MAX(COALESCE(NULLIF(payload->'device'->>'deviceName', ''),
+                            NULLIF(payload->'device'->>'deviceModel', ''),
+                            NULLIF(payload->'device'->>'model', ''))) AS device_name,
+               MAX(COALESCE(NULLIF(payload->'device'->'geo'->>'locale', ''),
+                            NULLIF(payload->'device'->>'locale', ''))) AS locale,
+               (SELECT e2.payload->'screen'->>'currentRoute'
+                FROM events e2
+                WHERE e2.project_id = @pid AND e2.user_id = events.user_id
+                  AND e2.payload->'screen'->>'currentRoute' IS NOT NULL
+                  AND e2.payload->'screen'->>'currentRoute' <> ''
+                ORDER BY e2.occurred_at DESC LIMIT 1) AS last_route,
+               (SELECT e2.install_id
+                FROM events e2
+                WHERE e2.project_id = @pid AND e2.user_id = events.user_id
+                  AND e2.install_id IS NOT NULL AND e2.user_id <> e2.install_id
+                ORDER BY e2.occurred_at DESC LIMIT 1) AS install_id
         FROM events
         WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -685,13 +713,26 @@ class AnalyticsStore {
         .map((r) => {
               'userId': r[0],
               'identified': true,
-              'email': r[7],
+              'email': r[8],
+              'displayName': r[9],
+              'phone': r[10],
+              'username': r[11],
+              'platform': r[12],
+              'appVersion': r[13],
+              'environment': r[14],
+              'release': r[15],
+              'country': r[16],
+              'deviceName': r[17],
+              'locale': r[18],
+              'lastRoute': r[19],
+              'installId': r[20],
               'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
               'eventCount': r[3],
               'errorCount': r[4],
-              'sessionCount': r[5],
-              'deviceCount': r[6],
+              'crashCount': r[5],
+              'sessionCount': r[6],
+              'deviceCount': r[7],
             })
         .toList();
   }
@@ -817,7 +858,31 @@ class AnalyticsStore {
 
     final profile = await conn.execute(
       Sql.named('''
-        SELECT MAX(NULLIF(TRIM(payload->'user'->>'email'), ''))
+        SELECT MAX(NULLIF(TRIM(payload->'user'->>'email'), '')),
+               MAX(NULLIF(TRIM(payload->'user'->>'name'), '')),
+               MAX(NULLIF(TRIM(payload->'user'->>'phone'), '')),
+               MAX(NULLIF(TRIM(payload->'user'->>'username'), '')),
+               MAX(platform),
+               MAX(app_version),
+               MAX(environment),
+               MAX(release),
+               MAX(country),
+               MAX(COALESCE(NULLIF(payload->'device'->>'deviceName', ''),
+                            NULLIF(payload->'device'->>'deviceModel', ''),
+                            NULLIF(payload->'device'->>'model', ''))),
+               MAX(COALESCE(NULLIF(payload->'device'->'geo'->>'locale', ''),
+                            NULLIF(payload->'device'->>'locale', ''))),
+               (SELECT e2.payload->'screen'->>'currentRoute'
+                FROM events e2
+                WHERE e2.project_id = @pid AND e2.user_id = @uid
+                  AND e2.payload->'screen'->>'currentRoute' IS NOT NULL
+                  AND e2.payload->'screen'->>'currentRoute' <> ''
+                ORDER BY e2.occurred_at DESC LIMIT 1),
+               (SELECT e2.install_id
+                FROM events e2
+                WHERE e2.project_id = @pid AND e2.user_id = @uid
+                  AND e2.install_id IS NOT NULL AND e2.user_id <> e2.install_id
+                ORDER BY e2.occurred_at DESC LIMIT 1)
         FROM events
         WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND user_id = @uid
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -827,11 +892,24 @@ class AnalyticsStore {
     );
 
     final s = stats.first;
+    final p = profile.first;
     final guestEvents = guestOnly.first[0] as int;
     return {
       'userId': userId,
       'identified': true,
-      'email': profile.first[0],
+      'email': p[0],
+      'displayName': p[1],
+      'phone': p[2],
+      'username': p[3],
+      'platform': p[4],
+      'appVersion': p[5],
+      'environment': p[6],
+      'release': p[7],
+      'topCountry': p[8],
+      'deviceName': p[9],
+      'locale': p[10],
+      'lastRoute': p[11],
+      'installId': p[12],
       'includesGuestActivity': guestEvents > 0,
       'guestEventCount': guestEvents,
       'days': w.approximateDays,
@@ -840,7 +918,6 @@ class AnalyticsStore {
       'crashCount': s[2],
       'firstSeenAt': (s[3] as DateTime).toUtc().toIso8601String(),
       'lastSeenAt': (s[4] as DateTime).toUtc().toIso8601String(),
-      'topCountry': s[5],
       'sessionCount': sessions.first[0],
       'deviceCount': devices.length,
       'devices': devices

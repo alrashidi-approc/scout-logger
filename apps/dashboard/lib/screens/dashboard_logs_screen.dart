@@ -120,7 +120,7 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
                     subtitle: 'When API calls or screens fail, entries appear here automatically.',
                   )
                 : null,
-            child: RefreshIndicator(
+            builder: (context) => RefreshIndicator(
               onRefresh: _load,
               child: ListView.builder(
                 padding: insets.copyWith(top: 12, bottom: pad),

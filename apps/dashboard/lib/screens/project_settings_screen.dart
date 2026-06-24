@@ -331,7 +331,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.settings,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 

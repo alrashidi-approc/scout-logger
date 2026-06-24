@@ -109,7 +109,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
           empty: !_loading && _sessions.isEmpty
               ? const EmptyState(icon: Icons.play_circle_outline, title: 'No sessions yet', subtitle: 'Sessions are recorded when your app sends session start/end events.')
               : null,
-          child: RefreshIndicator(
+          builder: (context) => RefreshIndicator(
             onRefresh: _load,
             child: ListView.builder(
               key: PageStorageKey('sessions-${widget.projectId}'),
@@ -130,7 +130,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
                     title: Text(started != null ? DateFormat('MMM d · HH:mm:ss').format(started.toLocal()) : '${s['id']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
                     subtitle: Text(
                       [
-                        if (s['userId'] != null) guest ? 'Guest' : 'User ${s['userId']}',
+                        if (s['userId'] != null) guest ? 'Guest device' : 'Logged-in · ${s['userId']}',
                         if (s['release'] != null) '${s['release']}',
                         _fmtDur(s['durationMs']),
                         if (summary != null) '${summary['screensVisited'] ?? 0} screens',

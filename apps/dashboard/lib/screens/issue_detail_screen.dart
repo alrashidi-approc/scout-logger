@@ -122,7 +122,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.detail,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 
@@ -152,7 +152,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
               Text(issue['title'] as String? ?? 'Issue', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
               const SizedBox(height: 8),
               Text(
-                '${issue['eventCount']} events · ${issue['affectedUsers'] ?? 0} users · ${issue['status']}',
+                '${issue['eventCount']} events · ${issue['affectedUsers'] ?? 0} logged-in · ${issue['status']}',
                 style: const TextStyle(color: AppTheme.muted),
               ),
               if (first != null && last != null)
@@ -192,7 +192,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           runSpacing: 14,
           children: [
             _statTile('Events', '${issue['eventCount']}', Icons.repeat),
-            _statTile('Users', '${issue['affectedUsers'] ?? 0}', Icons.people_outline),
+            _statTile('Logged-in', '${issue['affectedUsers'] ?? 0}', Icons.people_outline),
             _statTile('Country', issue['topCountry'] as String? ?? '—', Icons.public),
             _statTile('Status', issue['status'] as String? ?? 'open', Icons.flag_outlined),
           ],

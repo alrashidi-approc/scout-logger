@@ -85,7 +85,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.list,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 

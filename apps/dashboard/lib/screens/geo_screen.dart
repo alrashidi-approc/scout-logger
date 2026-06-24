@@ -102,7 +102,7 @@ class _GeoScreenState extends State<GeoScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.geo,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 
@@ -116,7 +116,7 @@ class _GeoScreenState extends State<GeoScreen> {
       children: [
         PageHeader(
           title: 'Geography',
-          subtitle: 'Users by connection country (IP) · profile and locale shown when different',
+          subtitle: 'Logged-in users by connection country (IP) · profile and locale shown when different',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
@@ -140,7 +140,7 @@ class _GeoScreenState extends State<GeoScreen> {
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: ActionChip(
-                        label: Text('${r['label']} · ${r['users']} users'),
+                        label: Text('${r['label']} · ${r['users']} logged-in'),
                         onPressed: () => _mapKey.currentState?.focusRegion(r['id'] as String),
                       ),
                     ),
@@ -161,7 +161,7 @@ class _GeoScreenState extends State<GeoScreen> {
           ),
           const SizedBox(height: 20),
           Text(
-            '$totalUsers users · $totalEvents events · ${regions.length} active regions · ${_geo.length} countries',
+            '$totalUsers logged-in · $totalEvents events · ${regions.length} active regions · ${_geo.length} countries',
             style: const TextStyle(color: AppTheme.muted, fontSize: 13),
           ),
           const SizedBox(height: 16),
@@ -180,7 +180,7 @@ class _GeoScreenState extends State<GeoScreen> {
                         child: Text('Source', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11), textAlign: TextAlign.center),
                       ),
                       const SizedBox(width: 8),
-                      Text('Users / events', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11)),
+                      Text('Logged-in / events', style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w700, fontSize: 11)),
                     ],
                   ),
                 ),

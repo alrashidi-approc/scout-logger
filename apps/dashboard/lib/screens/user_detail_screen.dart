@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
@@ -7,6 +8,7 @@ import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../widgets/detail_panel.dart';
 import '../widgets/event_card.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
@@ -51,7 +53,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       if (mounted) setState(() {
         _user = user;
         _loading = false;
-
         _refreshing = false;
       });
     } catch (e) {
@@ -59,7 +60,6 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       if (mounted) setState(() {
         _error = e;
         _loading = false;
-
         _refreshing = false;
       });
     }
@@ -73,7 +73,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.detail,
-      child: _buildContent(context),
+      builder: _buildContent,
     );
   }
 
@@ -82,14 +82,21 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final events = jsonListMaps(u['recentEvents']);
     final first = DateTime.tryParse(u['firstSeenAt'] as String? ?? '');
     final last = DateTime.tryParse(u['lastSeenAt'] as String? ?? '');
+    final name = u['displayName'] as String?;
+    final email = u['email'] as String?;
+    final title = name ?? email ?? widget.userId;
+    void copy(String v) => Clipboard.setData(ClipboardData(text: v));
 
     return ListView(
       padding: pageInsets(context, top: 16, bottom: pagePad(context)),
       children: [
-        TextButton.icon(onPressed: () => popOrGo(context, '/p/${widget.projectId}/users'), icon: const Icon(Icons.arrow_back, size: 18), label: const Text('Back')),
+        TextButton.icon(onPressed: () => popOrGo(context, '/p/${widget.projectId}/users'), icon: const Icon(Icons.arrow_back, size: 18), label: const Text('Logged-in users')),
         PageHeader(
-          title: u['email'] as String? ?? widget.userId,
-          subtitle: u['email'] != null ? widget.userId : 'Logged-in user · merged with pre-login activity on same device',
+          title: title,
+          subtitle: [
+            if (name != null && email != null) email,
+            if (name != null || email != null) widget.userId else 'Logged-in user · merged with pre-login activity on same device',
+          ].join(' · '),
         ),
         if (u['includesGuestActivity'] == true) ...[
           const SizedBox(height: 12),
@@ -107,18 +114,52 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           ),
         ],
         const SizedBox(height: 16),
+        DetailSection(
+          title: 'Profile',
+          child: Column(children: [
+            DetailRow(label: 'User ID', value: widget.userId, mono: true, onCopy: () => copy(widget.userId)),
+            if (name != null) DetailRow(label: 'Name', value: name),
+            if (email != null) DetailRow(label: 'Email', value: email),
+            DetailRow(label: 'Phone', value: '${u['phone'] ?? ''}'),
+            DetailRow(label: 'Username', value: '${u['username'] ?? ''}'),
+            if (first != null && last != null)
+              DetailRow(label: 'Active', value: '${DateFormat.yMMMd().format(first.toLocal())} – ${DateFormat.yMMMd().add_jm().format(last.toLocal())}'),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        DetailSection(
+          title: 'Client context',
+          child: Column(children: [
+            DetailRow(
+              label: 'Platform',
+              value: [
+                if (u['platform'] != null) '${u['platform']}',
+                if (u['appVersion'] != null) 'v${u['appVersion']}',
+              ].join(' · '),
+            ),
+            DetailRow(label: 'Device', value: '${u['deviceName'] ?? ''}'),
+            DetailRow(label: 'Country', value: '${u['topCountry'] ?? ''}'),
+            DetailRow(label: 'Release', value: '${u['release'] ?? ''}'),
+            DetailRow(label: 'Environment', value: '${u['environment'] ?? ''}'),
+          ]),
+        ),
+        const SizedBox(height: 12),
+        DetailSection(
+          title: 'Technical',
+          child: Column(children: [
+            DetailRow(label: 'Install ID', value: '${u['installId'] ?? ''}', mono: true, onCopy: u['installId'] != null ? () => copy('${u['installId']}') : null),
+            DetailRow(label: 'Locale', value: '${u['locale'] ?? ''}'),
+            DetailRow(label: 'Last screen', value: '${u['lastRoute'] ?? ''}'),
+          ]),
+        ),
+        const SizedBox(height: 12),
         Wrap(spacing: 10, runSpacing: 10, children: [
           _chip('Events', '${u['eventCount']}', Icons.show_chart),
           _chip('Errors', '${u['errorCount']}', Icons.error_outline),
           _chip('Crashes', '${u['crashCount']}', Icons.bolt),
           _chip('Sessions', '${u['sessionCount']}', Icons.play_circle_outline),
           _chip('Devices', '${u['deviceCount'] ?? 1}', Icons.devices),
-          if (u['topCountry'] != null) _chip('Country', '${u['topCountry']}', Icons.public),
         ]),
-        if (first != null && last != null) ...[
-          const SizedBox(height: 12),
-          Text('First seen ${DateFormat.yMMMd().format(first.toLocal())} · Last ${DateFormat.yMMMd().add_jm().format(last.toLocal())}', style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
-        ],
         if (jsonListMaps(u['devices']).isNotEmpty) ...[
           const SizedBox(height: 20),
           const Text('Devices', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: AppTheme.text)),
@@ -135,11 +176,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 const SizedBox(height: 4),
                 Text('${d['platform'] ?? '—'} · ${d['eventCount']} events', style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
                 const SizedBox(height: 4),
-                Text(
+                SelectableText(
                   '${d['installId']}',
                   style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace'),
                   maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
                 if (firstD != null && lastD != null)
                   Padding(
