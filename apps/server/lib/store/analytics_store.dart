@@ -175,7 +175,7 @@ class AnalyticsStore {
           e.release,
           COUNT(*)::int AS events,
           COUNT(*) FILTER (WHERE e.type = 'crash')::int AS crashes,
-          COUNT(*) FILTER (WHERE e.type IN ('error', 'network'))::int AS errors,
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
           COUNT(DISTINCT e.user_id) FILTER (WHERE ${identifiedUserSql(alias: 'e')})::int AS users,
           COALESCE(ss.sessions, 0)::int AS sessions,
           COALESCE(ss.avg_ms, 0)::int AS avg_session_ms
@@ -369,7 +369,7 @@ class AnalyticsStore {
               Sql.named('''
             SELECT
               COUNT(*)::int,
-              COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+              COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
               COUNT(*) FILTER (WHERE type = 'crash')::int,
               COUNT(*) FILTER (WHERE type = 'network')::int,
               COUNT(*) FILTER (WHERE type = 'session')::int,
@@ -386,7 +386,7 @@ class AnalyticsStore {
               Sql.named('''
             SELECT
               COUNT(*)::int,
-              COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+              COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
               COUNT(*) FILTER (WHERE type = 'crash')::int,
               COUNT(*) FILTER (WHERE type = 'network')::int,
               COUNT(*) FILTER (WHERE type = 'session')::int,
@@ -516,7 +516,7 @@ class AnalyticsStore {
         SELECT COUNT(DISTINCT user_id)::int
         FROM events
         WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
-          AND type IN ('error', 'network', 'crash')
+          AND ${sqlIsErrorEvent()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
       '''),
@@ -539,7 +539,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
         FROM events
-        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type IN ('error', 'network', 'crash')
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${sqlIsErrorEvent()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 1
@@ -551,10 +551,8 @@ class AnalyticsStore {
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS h,
                COUNT(*)::int,
-               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
-               COUNT(*) FILTER (
-                 WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
-               )::int
+               COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
+               COUNT(*) FILTER (WHERE ${sqlIsSuccessEvent()})::int
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -573,11 +571,7 @@ class AnalyticsStore {
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
           AND payload->'network'->>'url' IS NOT NULL
-          AND (
-            type IN ('error', 'crash') OR
-            type = 'network' OR
-            (payload->'network'->>'statusCode') ~ '^[0-9]+\$' AND (payload->'network'->>'statusCode')::int >= 400
-          )
+          AND ${sqlIsErrorEvent()}
         GROUP BY endpoint ORDER BY 2 DESC LIMIT 10
       '''),
       parameters: p,
@@ -591,6 +585,21 @@ class AnalyticsStore {
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
         GROUP BY screen ORDER BY 2 DESC LIMIT 10
+      '''),
+      parameters: p,
+    );
+
+    final devices = await conn.execute(
+      Sql.named('''
+        SELECT ${sqlDeviceNameExpr()} AS device,
+               COUNT(*)::int,
+               COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${sqlIsErrorEvent()}
+          AND ${sqlDeviceNameExpr()} IS NOT NULL AND ${sqlDeviceNameExpr()} <> ''
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY device ORDER BY 2 DESC LIMIT 10
       '''),
       parameters: p,
     );
@@ -611,7 +620,7 @@ class AnalyticsStore {
       Sql.named('''
         SELECT COALESCE(NULLIF(release, ''), 'unknown') AS release,
                COUNT(*)::int,
-               COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+               COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
                COUNT(*) FILTER (WHERE type = 'crash')::int
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
@@ -655,6 +664,7 @@ class AnalyticsStore {
       'hourlyActivity': hourly.map((r) => {'hour': r[0], 'events': r[1], 'errors': r[2], 'success': r[3]}).toList(),
       'topFailingEndpoints': endpoints.map((r) => {'endpoint': r[0], 'count': r[1]}).toList(),
       'topCrashScreens': screens.map((r) => {'screen': r[0], 'count': r[1]}).toList(),
+      'topErrorDevices': devices.map((r) => {'device': r[0], 'count': r[1], 'installs': r[2]}).toList(),
       'byEnvironment': byEnv.map((r) => {'environment': r[0], 'count': r[1]}).toList(),
       'eventsByRelease': byRelease.map((r) => {'release': r[0], 'count': r[1], 'errors': r[2], 'crashes': r[3]}).toList(),
       'byDeployment': byDeploy.map((r) => {'tag': r[0], 'count': r[1]}).toList(),
@@ -670,7 +680,7 @@ class AnalyticsStore {
                MIN(occurred_at) AS first_seen,
                MAX(occurred_at) AS last_seen,
                COUNT(*)::int,
-               COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+               COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
                COUNT(*) FILTER (WHERE type = 'crash')::int,
                COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int,
                COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int,
@@ -751,7 +761,7 @@ class AnalyticsStore {
           WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
         ),
         merged AS (
-          SELECT type, occurred_at, country
+          SELECT type, occurred_at, country, payload
           FROM events
           WHERE project_id = @pid
             AND $sqlHideSessionHeartbeat
@@ -767,7 +777,7 @@ class AnalyticsStore {
         )
         SELECT
           COUNT(*)::int,
-          COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
           COUNT(*) FILTER (WHERE type = 'crash')::int,
           MIN(occurred_at),
           MAX(occurred_at),

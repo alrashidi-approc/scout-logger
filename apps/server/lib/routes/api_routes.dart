@@ -3,12 +3,17 @@ import 'dart:convert';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+import 'package:scout_models/scout_models.dart';
+
 import '../config/server_config.dart';
 import '../middleware/auth_middleware.dart';
 import '../middleware/http_utils.dart';
 import '../store/analytics_store.dart';
 import '../store/auth_store.dart';
+import '../store/notification_store.dart';
+import '../store/platform_store.dart';
 import '../store/scout_store.dart';
+import '../notifications/notification_service.dart';
 import '../util/dates.dart';
 import 'admin_routes.dart';
 
@@ -43,13 +48,15 @@ Handler apiRoutes(
   ServerConfig config,
   ScoutStore store,
   AnalyticsStore analytics,
-  AuthStore authStore,
-) {
+  AuthStore authStore, {
+  NotificationService? notifications,
+  NotificationStore? notificationStore,
+}) {
   final router = Router();
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
-  router.get('/auth/me', meRoute(auth: authStore));
-  router.mount('/admin/', adminRoutes(auth: authStore));
+  router.get('/auth/me', meRoute(auth: authStore, config: config));
+  router.mount('/admin/', adminRoutes(auth: authStore, config: config, platformStore: notifications?.platformStore ?? PlatformStore(store.db)));
 
   router.get('/projects', (Request request) async {
     final auth = authFrom(request)!;
@@ -215,7 +222,8 @@ Handler apiRoutes(
         q: q['q'],
         environment: q['environment'],
         appVersion: q['appVersion'] ?? q['app_version'],
-        window: _optionalWindow(q),
+        deviceName: q['device'] ?? q['deviceName'],
+        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
       );
       return Response.ok(jsonEncode({'ok': true, 'issues': issues}), headers: {'Content-Type': 'application/json'});
     });
@@ -250,8 +258,10 @@ Handler apiRoutes(
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
       final q = request.url.queryParameters;
-      final events = await store.listEvents(
+      final page = await store.listEvents(
         id,
+        limit: int.tryParse(q['limit'] ?? '') ?? 50,
+        offset: int.tryParse(q['offset'] ?? '') ?? 0,
         type: q['type'] ?? q['kind'],
         level: q['level'],
         category: q['category'],
@@ -259,9 +269,22 @@ Handler apiRoutes(
         country: q['country'],
         environment: q['environment'],
         appVersion: q['appVersion'] ?? q['app_version'],
-        window: _optionalWindow(q),
+        deviceName: q['device'] ?? q['deviceName'],
+        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
       );
-      return Response.ok(jsonEncode({'ok': true, 'events': events}), headers: {'Content-Type': 'application/json'});
+      return Response.ok(
+        jsonEncode({
+          'ok': true,
+          'events': page['events'],
+          'pagination': {
+            'total': page['total'],
+            'limit': page['limit'],
+            'offset': page['offset'],
+            'hasMore': page['hasMore'],
+          },
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
     });
   });
 
@@ -433,6 +456,80 @@ Handler apiRoutes(
       }
     });
   });
+
+  if (notifications != null && notificationStore != null) {
+    router.get('/projects/<id>/notifications', (Request request, String id) async {
+      return _api(() async {
+        final guard = await _projectGuard(request, id, authStore);
+        if (guard != null) return guard;
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        final configJson = await notificationStore.getClientConfig(
+          id,
+          platform: await notifications.platformStore.getNotificationPolicy(),
+        );
+        return Response.ok(jsonEncode({'ok': true, 'notifications': configJson}), headers: {'Content-Type': 'application/json'});
+      });
+    });
+
+    router.patch('/projects/<id>/notifications', (Request request, String id) async {
+      return _api(() async {
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        try {
+          final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+          await notificationStore.updateConfig(id, body);
+          final configJson = await notificationStore.getClientConfig(
+            id,
+            platform: await notifications.platformStore.getNotificationPolicy(),
+          );
+          return Response.ok(jsonEncode({'ok': true, 'notifications': configJson}), headers: {'Content-Type': 'application/json'});
+        } on ArgumentError {
+          return jsonErr('Project not found', status: 404);
+        }
+      });
+    });
+
+    router.post('/projects/<id>/notifications/test', (Request request, String id) async {
+      return _api(() async {
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final channel = body['channel']?.toString();
+        if (channel == null || !kNotificationChannels.contains(channel)) return jsonErr('channel is required');
+        final config = await notificationStore.getConfig(id);
+        final platform = await notifications.platformStore.getNotificationPolicy();
+        await notifications.sendTest(projectId: id, channel: channel, notifications: config, platform: platform);
+        return Response.ok(jsonEncode({'ok': true}), headers: {'Content-Type': 'application/json'});
+      });
+    });
+
+    router.get('/projects/<id>/notifications/deliveries', (Request request, String id) async {
+      return _api(() async {
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50;
+        final deliveries = await notificationStore.listDeliveries(id, limit: limit.clamp(1, 200));
+        return Response.ok(jsonEncode({'ok': true, 'deliveries': deliveries}), headers: {'Content-Type': 'application/json'});
+      });
+    });
+  }
 
   router.get('/projects/<id>/members', (Request request, String id) async {
     return _api(() async {

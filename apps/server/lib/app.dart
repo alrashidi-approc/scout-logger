@@ -18,6 +18,8 @@ import 'services/jwt_service.dart';
 import 'services/key_cipher.dart';
 import 'store/analytics_store.dart';
 import 'store/auth_store.dart';
+import 'store/notification_store.dart';
+import 'notifications/notification_service.dart';
 import 'store/scout_store.dart';
 
 Handler createApp({
@@ -27,6 +29,8 @@ Handler createApp({
   AuthStore? authStore,
   JwtService? jwt,
   EmailService? email,
+  NotificationService? notifications,
+  NotificationStore? notificationStore,
 }) {
   final cipher = KeyCipher(config.encryptionKey);
   final auth = authStore ?? AuthStore(store.db, cipher: cipher);
@@ -40,7 +44,14 @@ Handler createApp({
   final router = Router();
   final geo = GeoEnricher(enabled: config.geoEnabled);
   final web = dashboardWebHandler(config);
-  final api = apiRoutes(config, store, analytics ?? AnalyticsStore(store.db), auth);
+  final api = apiRoutes(
+    config,
+    store,
+    analytics ?? AnalyticsStore(store.db),
+    auth,
+    notifications: notifications,
+    notificationStore: notificationStore,
+  );
   final dash = config.dashboardWebPath;
 
   router.get('/health', (_) => Response.ok('{"ok":true}', headers: {'Content-Type': 'application/json'}));

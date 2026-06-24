@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:scout_models/scout_models.dart';
+
 import '../theme/app_theme.dart';
 import '../utils/issue_view.dart';
 import '../utils/user_identity.dart';
@@ -26,9 +28,13 @@ class EventCard extends StatelessWidget {
     final route = event['route']?.toString() ?? '—';
     final url = event['networkUrl']?.toString() ?? '';
     final status = event['statusCode']?.toString() ?? '';
+    final networkFault = type == 'network' && status.isNotEmpty
+        ? classifyNetworkFault({'statusCode': int.tryParse(status)})
+        : null;
     final env = event['environment']?.toString() ?? '—';
     final guest = event['isGuest'] == true || isGuestEvent(event);
-    final errorFocus = effectiveLevel == 'error' || type == 'crash';
+    final isCriticalNet = networkFault?.faultClass == NetworkFaultClass.critical;
+    final errorFocus = effectiveLevel == 'error' || type == 'crash' || isCriticalNet;
     final compact = MediaQuery.sizeOf(context).width < 720;
 
     final endpointLabel = url.isEmpty ? null : (status.isNotEmpty ? '$status · ${_shortLabel(url)}' : _shortLabel(url));
@@ -77,6 +83,12 @@ class EventCard extends StatelessWidget {
                         Wrap(spacing: 6, runSpacing: 6, children: [
                           LevelBadge(level: effectiveLevel, type: type, compact: true),
                           LevelBadge(type: type, compact: true, transportOnly: true),
+                          if (networkFault != null && networkFault.faultClass != NetworkFaultClass.success)
+                            NetworkFaultBadge(
+                              faultClass: networkFault.faultClass.name,
+                              label: networkFault.label,
+                              compact: true,
+                            ),
                           if (guest) const GuestBadge(compact: true),
                           if (category != null && category.isNotEmpty) _pill(category.toUpperCase(), AppTheme.muted),
                         ]),
@@ -236,6 +248,8 @@ class IssueCard extends StatelessWidget {
                       _meta(Icons.repeat, _eventCountLabel(issue)),
                       if ((issue['affectedUsers'] as int? ?? 0) > 0)
                         _meta(Icons.people_outline, '${issue['affectedUsers']} logged-in'),
+                      if (issue['topDevice'] != null)
+                        _meta(Icons.devices, '${issue['topDevice']}'),
                       _meta(Icons.public, issue['topCountry'] as String? ?? '—'),
                       _meta(Icons.schedule, lastLabel),
                       _meta(Icons.flag_outlined, status, color: resolved ? AppTheme.success : AppTheme.muted),

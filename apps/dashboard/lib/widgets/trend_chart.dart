@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../theme/app_theme.dart';
 
+const chartEventsColor = AppTheme.primary;
 const chartErrorColor = AppTheme.error;
 const chartSuccessColor = AppTheme.success;
 
@@ -32,9 +33,9 @@ class EventOutcomeChart extends StatelessWidget {
         hourly: hourly,
         maxY: top,
         series: [
-          _Series(events, AppTheme.primary, 'All events', fill: 0.14),
-          _Series(errors, chartErrorColor, 'Errors', fill: 0.12),
-          _Series(success, chartSuccessColor, 'Success', fill: 0.08, width: 2),
+          _Series(events, chartEventsColor, 'All events', fill: 0.14, width: 2.5),
+          _Series(errors, chartErrorColor, 'Errors (subset)', fill: 0),
+          _Series(success, chartSuccessColor, 'Success (subset)', fill: 0, width: 2),
         ],
       )),
     );
@@ -147,7 +148,7 @@ LineChartData _lineData({
           dashArray: s.dashed ? [6, 4] : null,
           dotData: const FlDotData(show: false),
           belowBarData: BarAreaData(
-            show: !s.dashed,
+            show: s.fill > 0,
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
@@ -167,11 +168,18 @@ LineChartData _lineData({
               : hourly
                   ? '${DateFormat('MMM d, HH:mm').format(d.toUtc())} UTC\n'
                   : '${dayFmt.format(d)}\n';
-          return spots.asMap().entries.map((e) {
+          final ev = i >= 0 && i < points.length ? (points[i]['events'] as num?)?.toDouble() ?? 0 : 0;
+          final err = i >= 0 && i < points.length ? (points[i]['errors'] as num?)?.toDouble() ?? 0 : 0;
+          final rate = ev > 0 ? (err / ev * 100).toStringAsFixed(1) : '0';
+          final items = spots.asMap().entries.map((e) {
             final spot = e.value;
             final label = series[e.key].label;
             return LineTooltipItem('$when$label: ${spot.y.toInt()}', TextStyle(color: spot.bar.color, fontWeight: FontWeight.w700));
           }).toList();
+          if (ev > 0) {
+            items.add(LineTooltipItem('${when}Error rate: $rate%', const TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w600)));
+          }
+          return items;
         },
       ),
     ),

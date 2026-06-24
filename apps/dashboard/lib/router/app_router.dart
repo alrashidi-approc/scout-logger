@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import '../screens/admin_notifications_screen.dart';
 import '../screens/admin_users_screen.dart';
 import '../screens/analytics_screen.dart';
 import '../screens/shared_detail_screen.dart';
@@ -11,6 +12,7 @@ import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
 import '../screens/overview_screen.dart';
 import '../screens/dashboard_logs_screen.dart';
+import '../screens/project_notifications_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/session_detail_screen.dart';
@@ -38,7 +40,8 @@ GoRouter createRouter() {
       if (auth.isLoggedIn && (loc.startsWith('/login') || loc.startsWith('/signup') || loc.startsWith('/verify-email'))) {
         return '/projects';
       }
-      if (loc.startsWith('/admin') && !auth.isAdmin) return '/projects';
+      if (loc.startsWith('/admin/users') && !auth.isAdmin) return '/projects';
+      if (loc.startsWith('/admin/notifications') && !auth.isPlatformOwner) return '/projects';
       return null;
     },
     routes: [
@@ -71,6 +74,10 @@ GoRouter createRouter() {
       GoRoute(
         path: '/admin/users',
         pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: AdminUsersScreen())),
+      ),
+      GoRoute(
+        path: '/admin/notifications',
+        pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: AdminNotificationsScreen())),
       ),
       ShellRoute(
         builder: (context, state, child) {
@@ -177,6 +184,7 @@ GoRouter createRouter() {
                   initialQuery: q['q'],
                   initialEnvironment: q['environment'],
                   initialAppVersion: q['appVersion'],
+                  initialDeviceName: q['device'] ?? q['deviceName'],
                 ),
               );
             },
@@ -209,6 +217,8 @@ GoRouter createRouter() {
                   initialCountry: q['country'],
                   initialEnvironment: q['environment'],
                   initialAppVersion: q['appVersion'],
+                  initialDeviceName: q['device'] ?? q['deviceName'],
+                  initialOffset: int.tryParse(q['offset'] ?? '') ?? 0,
                 ),
               );
             },
@@ -242,6 +252,10 @@ GoRouter createRouter() {
           GoRoute(
             path: '/p/:projectId/settings',
             pageBuilder: (c, s) => scoutPage(s, ProjectSettingsScreen(projectId: s.pathParameters['projectId']!)),
+          ),
+          GoRoute(
+            path: '/p/:projectId/notifications',
+            pageBuilder: (c, s) => scoutPage(s, ProjectNotificationsScreen(projectId: s.pathParameters['projectId']!)),
           ),
         ],
       ),

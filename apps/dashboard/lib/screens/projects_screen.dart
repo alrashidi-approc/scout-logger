@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/clipboard.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
@@ -123,10 +123,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     });
   }
 
-  void _copy(String text, String label) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$label copied')));
-  }
+  void _copy(String text, String label) => copyWithFeedback(context, text, message: '$label copied');
 
   @override
   Widget build(BuildContext context) {

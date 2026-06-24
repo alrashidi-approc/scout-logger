@@ -20,6 +20,11 @@ void main() {
     expect(normalizeStatusCodes([]), isEmpty);
   });
 
+  test('normalizeNetworkFaultByStatusCode keeps valid overrides', () {
+    expect(normalizeNetworkFaultByStatusCode({'401': 'user', '404': 'critical', 99: 'auth'}), {401: 'user', 404: 'critical'});
+    expect(normalizeNetworkFaultByStatusCode({'bogus': 'nope'}), isEmpty);
+  });
+
   test('ProjectSdkConfig mergePatch updates sdk fields', () {
     const base = ProjectSdkConfig(enabledLevels: ['error', 'info']);
     final merged = base.mergePatch({

@@ -41,7 +41,7 @@ class HourlyChart extends StatelessWidget {
           x: h,
           barsSpace: 3,
           barRods: [
-            BarChartRodData(toY: ev, color: AppTheme.primary.withValues(alpha: 0.85), width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
+            BarChartRodData(toY: ev, color: chartEventsColor, width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
             BarChartRodData(toY: err, color: chartErrorColor, width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
             BarChartRodData(toY: ok, color: chartSuccessColor, width: 5, borderRadius: const BorderRadius.vertical(top: Radius.circular(3))),
           ],

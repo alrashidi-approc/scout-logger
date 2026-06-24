@@ -372,13 +372,17 @@ class _TopBar extends StatelessWidget {
                 if (v == 'logout') {
                   await AuthService.instance.logout();
                   if (context.mounted) context.go('/login');
-                } else if (v == 'admin') {
+                } else                 if (v == 'admin') {
                   context.go('/admin/users');
+                } else if (v == 'notifications') {
+                  context.go('/admin/notifications');
                 }
               },
               itemBuilder: (_) => [
                 PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
                 if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
+                if (AuthService.instance.isPlatformOwner)
+                  const PopupMenuItem(value: 'notifications', child: Text('Notification channels')),
                 const PopupMenuItem(value: 'logout', child: Text('Sign out')),
               ],
               child: Padding(

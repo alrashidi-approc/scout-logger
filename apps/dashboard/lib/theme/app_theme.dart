@@ -10,8 +10,8 @@ class AppTheme {
   static const border = Color(0xFFE2E8F0);
   static const text = Color(0xFF0F172A);
   static const muted = Color(0xFF64748B);
-  static const primary = Color(0xFF0D9488);
-  static const primarySoft = Color(0x140D9488);
+  static const primary = Color(0xFF2563EB);
+  static const primarySoft = Color(0x142563EB);
   static const accentPurple = Color(0xFF7C3AED);
   static const accentPink = Color(0xFFDB2777);
   static const error = Color(0xFFDC2626);
@@ -48,8 +48,8 @@ class AppTheme {
         : const ColorScheme.dark(
             surface: Color(0xFF161B22),
             onSurface: Color(0xFFF1F5F9),
-            primary: Color(0xFF2DD4BF),
-            onPrimary: Color(0xFF0B0E14),
+            primary: Color(0xFF60A5FA),
+            onPrimary: Color(0xFF0F172A),
             secondary: accentPurple,
             error: error,
             outline: Color(0xFF252B36),

@@ -3,11 +3,20 @@ import 'dart:convert';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
+import '../config/server_config.dart';
+import 'package:scout_models/scout_models.dart';
+
+import '../auth/auth_principal.dart';
 import '../middleware/auth_middleware.dart';
 import '../middleware/http_utils.dart';
 import '../store/auth_store.dart';
+import '../store/platform_store.dart';
 
-Handler adminRoutes({required AuthStore auth}) {
+Handler adminRoutes({
+  required AuthStore auth,
+  required ServerConfig config,
+  required PlatformStore platformStore,
+}) {
   final router = Router();
 
   router.get('/users', (Request request) async {
@@ -36,10 +45,35 @@ Handler adminRoutes({required AuthStore auth}) {
     }
   });
 
+  router.get('/notification-policy', (Request request) async {
+    final principal = authFrom(request)!;
+    if (!isPlatformOwner(principal, config.platformOwnerEmail)) {
+      return jsonErr('Platform owner access required', status: 403);
+    }
+    final policy = await platformStore.getNotificationPolicy();
+    return Response.ok(jsonEncode({'ok': true, 'policy': policy.toJson()}), headers: {'Content-Type': 'application/json'});
+  });
+
+  router.patch('/notification-policy', (Request request) async {
+    final principal = authFrom(request)!;
+    if (!isPlatformOwner(principal, config.platformOwnerEmail)) {
+      return jsonErr('Platform owner access required', status: 403);
+    }
+    try {
+      final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+      final raw = body['policy'] is Map ? Map<String, dynamic>.from(body['policy'] as Map) : body;
+      final policy = PlatformNotificationPolicy.fromJson(raw);
+      final saved = await platformStore.updateNotificationPolicy(policy);
+      return Response.ok(jsonEncode({'ok': true, 'policy': saved.toJson()}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return jsonErr('$e', status: 500);
+    }
+  });
+
   return router.call;
 }
 
-Handler meRoute({required AuthStore auth}) {
+Handler meRoute({required AuthStore auth, required ServerConfig config}) {
   return (Request request) async {
     final principal = authFrom(request)!;
     if (principal.apiKeyBypass) {
@@ -53,6 +87,7 @@ Handler meRoute({required AuthStore auth}) {
             'globalRole': 'admin',
             'canCreateProjects': true,
             'emailVerified': true,
+            'isPlatformOwner': true,
           },
         }),
         headers: {'Content-Type': 'application/json'},
@@ -60,6 +95,8 @@ Handler meRoute({required AuthStore auth}) {
     }
     final user = await auth.findUserById(principal.userId!);
     if (user == null) return jsonErr('User not found', status: 404);
-    return Response.ok(jsonEncode({'ok': true, 'user': auth.publicUser(user)}), headers: {'Content-Type': 'application/json'});
+    final public = auth.publicUser(user);
+    public['isPlatformOwner'] = isPlatformOwner(principal, config.platformOwnerEmail);
+    return Response.ok(jsonEncode({'ok': true, 'user': public}), headers: {'Content-Type': 'application/json'});
   };
 }

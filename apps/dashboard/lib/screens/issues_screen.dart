@@ -22,6 +22,7 @@ class IssuesScreen extends StatefulWidget {
     this.initialQuery,
     this.initialEnvironment,
     this.initialAppVersion,
+    this.initialDeviceName,
   });
 
   final String projectId;
@@ -31,6 +32,7 @@ class IssuesScreen extends StatefulWidget {
   final String? initialQuery;
   final String? initialEnvironment;
   final String? initialAppVersion;
+  final String? initialDeviceName;
 
   @override
   State<IssuesScreen> createState() => _IssuesScreenState();
@@ -41,6 +43,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
   List<Map<String, dynamic>> _issues = [];
   List<String> _environments = [];
   List<String> _appVersions = [];
+  List<String> _deviceNames = [];
   bool _loading = true;
   bool _refreshing = false;
   bool _hasData = false;
@@ -51,6 +54,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
   late String _search;
   String? _environment;
   String? _appVersion;
+  String? _deviceName;
 
   @override
   void initState() {
@@ -61,6 +65,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
     _search = widget.initialQuery ?? '';
     _environment = widget.initialEnvironment;
     _appVersion = widget.initialAppVersion;
+    _deviceName = widget.initialDeviceName;
     _load();
   }
 
@@ -72,6 +77,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
     if (_search.isNotEmpty) q['q'] = _search;
     if (_environment != null) q['environment'] = _environment!;
     if (_appVersion != null) q['appVersion'] = _appVersion!;
+    if (_deviceName != null) q['device'] = _deviceName!;
     context.go(Uri(path: '/p/${widget.projectId}/issues', queryParameters: q.isEmpty ? null : q).toString());
   }
 
@@ -96,6 +102,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         q: _search.isEmpty ? null : _search,
         environment: _environment,
         appVersion: _appVersion,
+        deviceName: _deviceName,
       );
       if (!mounted) return;
       setState(() {
@@ -126,6 +133,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
       setState(() {
         _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
         _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _deviceNames = (facets['deviceNames'] as List?)?.map((e) => e.toString()).toList() ?? [];
       });
     } catch (_) {}
   }
@@ -143,6 +151,9 @@ class _IssuesScreenState extends State<IssuesScreen> {
     String? appVersion,
     bool setAppVersion = false,
     bool clearAppVersion = false,
+    String? deviceName,
+    bool setDeviceName = false,
+    bool clearDeviceName = false,
   }) {
     setState(() {
       if (reloadType) _typeFilter = type;
@@ -153,6 +164,8 @@ class _IssuesScreenState extends State<IssuesScreen> {
       if (clearEnvironment) _environment = null;
       if (setAppVersion) _appVersion = appVersion;
       if (clearAppVersion) _appVersion = null;
+      if (setDeviceName) _deviceName = deviceName;
+      if (clearDeviceName) _deviceName = null;
     });
     _syncUrl();
     _load();
@@ -204,6 +217,9 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 appVersionOptions: _appVersions,
                 appVersionSelected: _appVersion,
                 onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
+                deviceNameOptions: _deviceNames,
+                deviceNameSelected: _deviceName,
+                onDeviceNameSelected: (v) => _apply(deviceName: v, setDeviceName: true, clearDeviceName: v == null),
                 extra: [
                   Wrap(
                     spacing: 8,

@@ -201,7 +201,7 @@ class _StatsScreenState extends State<StatsScreen> {
                 value: '${d['openIssues']}',
                 icon: Icons.bug_report_outlined,
                 color: const Color(0xFF7C3AED),
-                onTap: () => context.go('/p/$pid/issues'),
+                onTap: () => context.go(Uri(path: '/p/$pid/issues', queryParameters: _period.toQuery()).toString()),
               ),
             ],
           ),

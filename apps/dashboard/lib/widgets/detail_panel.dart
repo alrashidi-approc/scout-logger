@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/clipboard.dart';
 
 class DetailSection extends StatelessWidget {
   const DetailSection({super.key, required this.title, required this.child, this.trailing});
@@ -148,10 +148,7 @@ class CodePanel extends StatelessWidget {
       trailing: IconButton(
         icon: const Icon(Icons.copy, size: 18),
         tooltip: 'Copy',
-        onPressed: () {
-          Clipboard.setData(ClipboardData(text: code));
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$title copied')));
-        },
+        onPressed: () => copyWithFeedback(context, code, message: '$title copied'),
       ),
       child: Container(
         width: double.infinity,

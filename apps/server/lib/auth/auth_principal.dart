@@ -57,3 +57,9 @@ bool canDeleteProject(AuthPrincipal auth, String? membershipRole) =>
 
 bool canManageProjectMembers(AuthPrincipal auth, String? membershipRole) =>
     auth.isAdmin || membershipRole == 'owner';
+
+bool canManageProjectNotifications(AuthPrincipal auth, String? membershipRole) =>
+    auth.isAdmin || membershipRole == 'owner';
+
+bool isPlatformOwner(AuthPrincipal auth, String platformOwnerEmail) =>
+    auth.isAdmin || auth.email?.toLowerCase() == platformOwnerEmail.toLowerCase();

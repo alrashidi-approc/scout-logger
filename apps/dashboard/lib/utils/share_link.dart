@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import '../utils/clipboard.dart';
 import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
@@ -36,7 +36,7 @@ Future<void> copyShareLink(
       resourceId: resourceId,
       expiresInDays: days,
     );
-    await Clipboard.setData(ClipboardData(text: res['url'] as String));
+    await copyToClipboard(res['url'] as String);
     if (!context.mounted) return;
 
     final expiresAt = DateTime.tryParse(res['expiresAt'] as String? ?? '');

@@ -4,6 +4,7 @@ import 'package:postgres/postgres.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../db/scout_db.dart';
+import '../notifications/notification_service.dart';
 import '../services/geo_enricher.dart';
 import '../services/key_cipher.dart';
 import '../util/dates.dart';
@@ -11,21 +12,6 @@ import '../util/event_filters.dart';
 import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/user_identity.dart';
-
-const _sqlIssueEventOnly = '''
-  (
-    e.type IN ('error', 'crash')
-    OR (
-      e.type = 'network'
-      AND LOWER(COALESCE(NULLIF(e.payload->>'level', ''), 'error')) NOT IN ('info', 'success')
-      AND (
-        NULLIF(e.payload->'network'->>'error', '') IS NOT NULL
-        OR NULLIF(e.payload->'network'->>'statusCode', '') IS NULL
-        OR NOT ((e.payload->'network'->>'statusCode') ~ '^[0-9]+\$' AND (e.payload->'network'->>'statusCode')::int < 400)
-      )
-    )
-  )
-''';
 
 const _sessionIdleMinutes = 5;
 
@@ -36,6 +22,9 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   if (type != 'network') return false;
   final network = payload['network'];
   if (network is Map) {
+    final n = Map<String, dynamic>.from(network);
+    final fault = NetworkFaultInfo.fromJson(_asMap(n['readable'])['fault']) ?? classifyNetworkFault(n);
+    if (!fault.issueWorthy) return false;
     final err = network['error'];
     if (err != null && err.toString().isNotEmpty) return true;
     final code = int.tryParse('${network['statusCode'] ?? ''}');
@@ -44,11 +33,27 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   return level == 'error' || level == 'warning';
 }
 
+Map<String, dynamic> _asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+
+Map<String, dynamic> _payloadWithNetworkReadable(
+  Map<String, dynamic> payload,
+  String type, {
+  Map<int, NetworkFaultClass>? faultOverrides,
+}) {
+  if (type != 'network' || payload['network'] is! Map) return payload;
+  final network = Map<String, dynamic>.from(payload['network'] as Map);
+  network['readable'] = networkReadableFrom(network, faultOverrides: faultOverrides);
+  return {...payload, 'network': network};
+}
+
 class ScoutStore {
-  ScoutStore(this.db, {KeyCipher? cipher}) : _cipher = cipher;
+  ScoutStore(this.db, {KeyCipher? cipher, NotificationService? notifications})
+      : _cipher = cipher,
+        _notifications = notifications;
 
   final ScoutDb db;
   final KeyCipher? _cipher;
+  final NotificationService? _notifications;
 
   Future<Map<String, dynamic>?> findProjectByIngestKey(String rawKey) async {
     final conn = await db.connect();
@@ -388,9 +393,25 @@ class ScoutStore {
       '''),
       parameters: {'pid': projectId, ...timeParams(w)},
     );
+    final deviceRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT ${sqlDeviceNameExpr()} AS device_name
+        FROM events
+        WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          AND ${sqlDeviceNameExpr()} IS NOT NULL
+          AND ${sqlDeviceNameExpr()} <> ''
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        ORDER BY 1
+        LIMIT 50
+      '''),
+      parameters: {'pid': projectId, ...timeParams(w)},
+    );
     return {
       'environments': envRows.map((r) => r[0] as String).toList(),
       'appVersions': verRows.map((r) => r[0] as String).toList(),
+      'deviceNames': deviceRows.map((r) => r[0] as String).toList(),
     };
   }
 
@@ -402,13 +423,42 @@ class ScoutStore {
   }) async {
     final conn = await db.connect();
     await closeStaleSessions(projectId: projectId, conn: conn);
+    final faultOverrides = await _networkFaultOverrides(conn, projectId);
+    ProjectNotificationConfig? notifConfig;
+    PlatformNotificationPolicy? platformPolicy;
+    if (_notifications != null) {
+      notifConfig = await _notifications!.store.getConfig(projectId);
+      platformPolicy = await _notifications!.platformStore.getNotificationPolicy();
+    }
     var accepted = 0;
     for (final event in events) {
       if (!isKnownEventType(event.type)) continue;
-      await _ingestOne(conn, projectId: projectId, keyId: keyId, event: event, enrichment: enrichment);
+      await _ingestOne(
+        conn,
+        projectId: projectId,
+        keyId: keyId,
+        event: event,
+        enrichment: enrichment,
+        faultOverrides: faultOverrides,
+        notifConfig: notifConfig,
+        platformPolicy: platformPolicy,
+      );
       accepted++;
     }
     return {'accepted': accepted, 'total': events.length};
+  }
+
+  Future<Map<int, NetworkFaultClass>> _networkFaultOverrides(Connection conn, String projectId) async {
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) return const {};
+    final raw = rows.first[0];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final sdkJson = settings['sdk'];
+    final sdk = ProjectSdkConfig.fromJson(sdkJson is Map ? Map<String, dynamic>.from(sdkJson) : null);
+    return sdk.networkFaultOverrides;
   }
 
   Future<void> _ingestOne(
@@ -417,8 +467,11 @@ class ScoutStore {
     required String keyId,
     required IngestEvent event,
     required Map<String, dynamic> enrichment,
+    Map<int, NetworkFaultClass>? faultOverrides,
+    ProjectNotificationConfig? notifConfig,
+    PlatformNotificationPolicy? platformPolicy,
   }) async {
-    final payload = event.payload;
+    final payload = _payloadWithNetworkReadable(event.payload, event.type, faultOverrides: faultOverrides);
     final occurredAt = DateTime.tryParse(event.timestamp)?.toUtc() ?? DateTime.now().toUtc();
     final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : <String, dynamic>{};
     final device = payload['device'] is Map ? Map<String, dynamic>.from(payload['device'] as Map) : <String, dynamic>{};
@@ -458,8 +511,9 @@ class ScoutStore {
     };
 
     String? issueId;
+    String? fingerprint;
     if (groupsIntoIssue(event.type) && _qualifiesForIssue(event.type, payload)) {
-      final fingerprint = eventFingerprint(event.type, payload);
+      fingerprint = eventFingerprint(event.type, payload);
       issueId = await _upsertIssue(
         conn,
         projectId: projectId,
@@ -507,6 +561,24 @@ class ScoutStore {
         'enrich': jsonEncode({...eventEnrichment, 'ingestKeyId': keyId}),
       },
     );
+
+    if (_notifications != null && notifConfig != null && platformPolicy != null) {
+      fingerprint ??= (event.type == 'error' || event.type == 'crash' || event.type == 'network')
+          ? eventFingerprint(event.type, payload)
+          : null;
+      await _notifications!.onEventIngested(
+        projectId: projectId,
+        eventId: eventId,
+        issueId: issueId,
+        type: event.type,
+        environment: environment,
+        message: message,
+        payload: payload,
+        fingerprint: fingerprint,
+        notifications: notifConfig,
+        platform: platformPolicy,
+      );
+    }
 
     if (event.type == 'session') {
       await _trackAppSession(
@@ -633,6 +705,7 @@ class ScoutStore {
     String? q,
     String? environment,
     String? appVersion,
+    String? deviceName,
     int? days,
     TimeWindow? window,
   }) async {
@@ -644,23 +717,33 @@ class ScoutStore {
                first_seen_at, last_seen_at, top_country,
                (SELECT COALESCE(NULLIF(e.payload->>'level', ''), 'error')
                 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND $_sqlIssueEventOnly
+                  AND ${sqlIsErrorEvent(alias: 'e')}
+                  AND ${sqlOccurredInWindow(alias: 'e')}
                 ORDER BY e.occurred_at DESC LIMIT 1) AS level,
                (SELECT e.payload->'network'->>'statusCode'
                 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND $_sqlIssueEventOnly
+                  AND ${sqlIsErrorEvent(alias: 'e')}
+                  AND ${sqlOccurredInWindow(alias: 'e')}
                 ORDER BY e.occurred_at DESC LIMIT 1) AS status_code,
                (SELECT COUNT(*)::int
                 FROM events e
                 WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND $_sqlIssueEventOnly
-                  AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
-                  AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
-               ) AS period_events
+                  AND ${sqlIsErrorEvent(alias: 'e')}
+                  AND ${sqlOccurredInWindow(alias: 'e')}
+               ) AS period_events,
+               (SELECT device FROM (
+                  SELECT ${sqlDeviceNameExpr(alias: 'e2')} AS device, COUNT(*)::int AS c
+                  FROM events e2
+                  WHERE e2.project_id = @pid AND e2.issue_id = issues.id AND ${sqlIsErrorEvent(alias: 'e2')}
+                    AND ${sqlOccurredInWindow(alias: 'e2')}
+                    AND ${sqlDeviceNameExpr(alias: 'e2')} IS NOT NULL AND ${sqlDeviceNameExpr(alias: 'e2')} <> ''
+                  GROUP BY device ORDER BY c DESC LIMIT 1
+                ) d) AS top_device
         FROM issues WHERE project_id = @pid
           AND EXISTS (
             SELECT 1 FROM events e
-            WHERE e.project_id = @pid AND e.issue_id = issues.id AND $_sqlIssueEventOnly
+            WHERE e.project_id = @pid AND e.issue_id = issues.id AND ${sqlIsErrorEvent(alias: 'e')}
+              AND ${sqlOccurredInWindow(alias: 'e')}
           )
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
@@ -668,12 +751,14 @@ class ScoutStore {
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
           AND (
-            @env::text IS NULL AND @ver::text IS NULL
+            @env::text IS NULL AND @ver::text IS NULL AND @device::text IS NULL
             OR EXISTS (
               SELECT 1 FROM events e
               WHERE e.project_id = @pid AND e.issue_id = issues.id
+                AND ${sqlOccurredInWindow(alias: 'e')}
                 AND (@env::text IS NULL OR COALESCE(NULLIF(e.environment, ''), NULLIF(e.payload->>'environment', ''), NULLIF(e.payload->'release'->>'environment', ''), 'unknown') = @env::text)
                 AND (@ver::text IS NULL OR COALESCE(NULLIF(e.app_version, ''), NULLIF(e.payload->'device'->>'appVersion', ''), NULLIF(e.payload->'device'->>'version', '')) = @ver::text)
+                AND (@device::text IS NULL OR ${sqlDeviceNameExpr(alias: 'e')} = @device::text)
             )
           )
         ORDER BY last_seen_at DESC LIMIT @lim
@@ -686,6 +771,7 @@ class ScoutStore {
         'q': q,
         'env': environment,
         'ver': appVersion,
+        'device': deviceName,
         ...timeParams(w),
       },
     );
@@ -708,6 +794,7 @@ class ScoutStore {
               'topCountry': r[9],
               'level': r[10],
               if (r[11] != null) 'statusCode': r[11],
+              if (r[13] != null) 'topDevice': r[13],
             };
         })
         .toList();
@@ -741,13 +828,14 @@ class ScoutStore {
     final events = await conn.execute(
       Sql.named('''
         SELECT id, type, occurred_at, user_id, release, country, message, payload, enrichment
-        FROM events e WHERE project_id = @pid AND issue_id = @iid AND $_sqlIssueEventOnly
+        FROM events e WHERE project_id = @pid AND issue_id = @iid AND ${sqlIsErrorEvent(alias: 'e')}
         ORDER BY occurred_at DESC LIMIT 20
       '''),
       parameters: {'pid': projectId, 'iid': issueId},
     );
     issue['events'] = events.map(_eventRow).toList();
     issue['geoBreakdown'] = await _issueGeo(conn, projectId, issueId);
+    issue['deviceBreakdown'] = await _issueDevices(conn, projectId, issueId);
     return issue;
   }
 
@@ -1032,9 +1120,10 @@ class ScoutStore {
         if (highlightId != null) 'isCurrent': r[0] == highlightId,
       };
 
-  Future<List<Map<String, dynamic>>> listEvents(
+  Future<Map<String, dynamic>> listEvents(
     String projectId, {
-    int limit = 100,
+    int limit = 50,
+    int offset = 0,
     String? type,
     String? level,
     String? category,
@@ -1042,28 +1131,21 @@ class ScoutStore {
     String? country,
     String? environment,
     String? appVersion,
+    String? deviceName,
     int? days,
     TimeWindow? window,
   }) async {
     final conn = await db.connect();
     final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
-    final kind = type; // query param `type` = transport kind (backward compatible)
-    final rows = await conn.execute(
-      Sql.named('''
-        SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
-               platform, environment, app_version,
-               payload->'screen'->>'currentRoute' AS route,
-               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
-               payload->'network'->>'url' AS network_url,
-               payload->'network'->>'statusCode' AS status_code,
-               payload->>'category' AS category,
-               payload->>'level' AS level
+    final kind = type;
+    final lim = limit.clamp(1, 100);
+    final off = offset < 0 ? 0 : offset;
+    final filters = '''
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
           AND (
             @kind::text IS NULL
-            OR (@kind::text = 'errors' AND type IN ('error', 'crash', 'network')
-                AND COALESCE(NULLIF(payload->>'level', ''), 'error') = 'error')
+            OR (@kind::text = 'errors' AND ${sqlIsErrorEvent()})
             OR (@kind::text <> 'errors' AND type = @kind::text)
           )
           AND (
@@ -1080,28 +1162,44 @@ class ScoutStore {
             OR session_id ILIKE '%' || @q::text || '%'
             OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
             OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
+            OR ${sqlDeviceNameExpr()} ILIKE '%' || @q::text || '%'
           )
           AND (@country::text IS NULL OR country = @country::text)
           AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') = @env::text)
           AND (@ver::text IS NULL OR COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) = @ver::text)
+          AND (@device::text IS NULL OR ${sqlDeviceNameExpr()} = @device::text)
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        ORDER BY occurred_at DESC LIMIT @lim
+    ''';
+    final params = {
+      'pid': projectId,
+      'kind': kind,
+      'level': level,
+      'category': category,
+      'q': q,
+      'country': country,
+      'env': environment,
+      'ver': appVersion,
+      'device': deviceName,
+      ...timeParams(w),
+    };
+    final total = (await conn.execute(Sql.named('SELECT COUNT(*)::int $filters'), parameters: params)).first[0] as int;
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
+               platform, environment, app_version,
+               payload->'screen'->>'currentRoute' AS route,
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category,
+               payload->>'level' AS level
+        $filters
+        ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
-      parameters: {
-        'pid': projectId,
-        'lim': limit,
-        'kind': kind,
-        'level': level,
-        'category': category,
-        'q': q,
-        'country': country,
-        'env': environment,
-        'ver': appVersion,
-        ...timeParams(w),
-      },
+      parameters: {...params, 'lim': lim, 'off': off},
     );
-    return rows
+    final events = rows
         .map((r) => {
               'id': r[0],
               'type': r[1],
@@ -1122,6 +1220,13 @@ class ScoutStore {
               'level': r[16],
             })
         .toList();
+    return {
+      'events': events,
+      'total': total,
+      'limit': lim,
+      'offset': off,
+      'hasMore': off + events.length < total,
+    };
   }
 
   Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window}) async {
@@ -1138,7 +1243,7 @@ class ScoutStore {
       Sql.named('''
         SELECT
           COUNT(*)::int,
-          COUNT(*) FILTER (WHERE type IN ('error','network'))::int,
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
           COUNT(*) FILTER (WHERE type = 'crash')::int,
           COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
         FROM events
@@ -1292,11 +1397,27 @@ class ScoutStore {
     return 'mixed';
   }
 
+  Future<List<Map<String, dynamic>>> _issueDevices(Connection conn, String projectId, String issueId) async {
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT ${sqlDeviceNameExpr(alias: 'e')} AS device,
+               COUNT(*)::int,
+               COUNT(DISTINCT install_id) FILTER (WHERE install_id IS NOT NULL)::int
+        FROM events e
+        WHERE project_id = @pid AND issue_id = @iid AND ${sqlIsErrorEvent(alias: 'e')}
+          AND ${sqlDeviceNameExpr(alias: 'e')} IS NOT NULL AND ${sqlDeviceNameExpr(alias: 'e')} <> ''
+        GROUP BY device ORDER BY COUNT(*) DESC
+      '''),
+      parameters: {'pid': projectId, 'iid': issueId},
+    );
+    return rows.map((r) => {'device': r[0], 'count': r[1], 'installs': r[2]}).toList();
+  }
+
   Future<List<Map<String, dynamic>>> _issueGeo(Connection conn, String projectId, String issueId) async {
     final rows = await conn.execute(
       Sql.named('''
         SELECT country, COUNT(*)::int FROM events e
-        WHERE project_id = @pid AND issue_id = @iid AND country IS NOT NULL AND $_sqlIssueEventOnly
+        WHERE project_id = @pid AND issue_id = @iid AND country IS NOT NULL AND ${sqlIsErrorEvent(alias: 'e')}
         GROUP BY country ORDER BY COUNT(*) DESC
       '''),
       parameters: {'pid': projectId, 'iid': issueId},
@@ -1304,17 +1425,24 @@ class ScoutStore {
     return rows.map((r) => {'country': r[0], 'count': r[1]}).toList();
   }
 
-  Map<String, dynamic> _eventRow(ResultRow r) => {
-        'id': r[0],
-        'type': r[1],
-        'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
-        'userId': r[3],
-        'release': r[4],
-        'country': r[5],
-        'message': r[6],
-        'payload': _jsonField(r[7]),
-        'enrichment': _jsonField(r[8]),
-      };
+  Map<String, dynamic> _eventRow(ResultRow r) {
+    final payload = _jsonField(r[7]);
+    final device = payload['device'] is Map ? Map<String, dynamic>.from(payload['device'] as Map) : <String, dynamic>{};
+    final deviceName = device['deviceName']?.toString() ?? device['deviceModel']?.toString() ?? device['model']?.toString();
+    return {
+      'id': r[0],
+      'type': r[1],
+      'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+      'userId': r[3],
+      'release': r[4],
+      'country': r[5],
+      'message': r[6],
+      'payload': payload,
+      'enrichment': _jsonField(r[8]),
+      if (deviceName != null) 'deviceName': deviceName,
+      if (device['platform'] != null) 'platform': device['platform'],
+    };
+  }
 
   Map<String, dynamic> _eventRowFull(ResultRow r) => {
         'id': r[0],

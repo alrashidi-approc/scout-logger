@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:scout_models/scout_models.dart';
 
-import 'network_readable.dart';
 import 'geo_source.dart';
 import 'user_identity.dart';
 
@@ -27,7 +26,8 @@ class EventView {
   Map<String, dynamic> get screen => asMap(payload['screen']);
   Map<String, dynamic> get network => asMap(payload['network']);
   Map<String, dynamic> get networkReadable => network.isEmpty ? {} : networkReadableFrom(network);
-  String get networkOutcome => str(networkReadable['outcomeLabel']) ?? '—';
+  String get networkOutcome => str(networkReadable['faultLabel']) ?? str(networkReadable['outcomeLabel']) ?? '—';
+  NetworkFaultInfo? get networkFault => NetworkFaultInfo.fromJson(networkReadable['fault']);
   Map<String, dynamic> get custom => asMap(payload['custom']);
   Map<String, dynamic>? get issue => event['issue'] is Map ? Map<String, dynamic>.from(event['issue'] as Map) : null;
 

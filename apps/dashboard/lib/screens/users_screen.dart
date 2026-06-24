@@ -146,10 +146,10 @@ class _UserCard extends StatelessWidget {
       if (user['deviceName'] != null) '${user['deviceName']}',
     ].join(' · ');
     final activity = [
-      if (last != null) 'Last ${DateFormat.MMMd().add_jm().format(last.toLocal())}',
-      '$events events',
-      if (errors > 0) '$errors errors',
-    ].join(' · ');
+      if (last != null) TextSpan(text: 'Last ${DateFormat.MMMd().add_jm().format(last.toLocal())} · ', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+      TextSpan(text: '$events events', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+      if (errors > 0) TextSpan(text: ' · $errors errors', style: const TextStyle(fontSize: 11, color: AppTheme.error, fontWeight: FontWeight.w600)),
+    ];
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -183,10 +183,7 @@ class _UserCard extends StatelessWidget {
                     Text(contextLine, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
                   ],
                   const SizedBox(height: 2),
-                  Text(
-                    activity,
-                    style: TextStyle(fontSize: 11, color: errors > 0 ? AppTheme.error : AppTheme.muted, fontWeight: errors > 0 ? FontWeight.w600 : FontWeight.w400),
-                  ),
+                  Text.rich(TextSpan(children: activity)),
                 ]),
               ),
               const Padding(padding: EdgeInsets.only(top: 2), child: Icon(Icons.chevron_right, size: 18, color: AppTheme.muted)),

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../screens/event_detail_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../services/api_client.dart';
+import '../utils/clipboard.dart';
 import '../theme/app_theme.dart';
 import '../widgets/page_header.dart';
 
@@ -87,10 +87,7 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
     );
   }
 
-  void _copyLink(BuildContext context) {
-    Clipboard.setData(ClipboardData(text: _shareUrl));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Share link copied')));
-  }
+  void _copyLink(BuildContext context) => copyWithFeedback(context, _shareUrl, message: 'Share link copied');
 }
 
 class _SharedBanner extends StatelessWidget {

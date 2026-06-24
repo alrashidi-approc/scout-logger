@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/clipboard.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../widgets/detail_panel.dart';
@@ -85,7 +85,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     final name = u['displayName'] as String?;
     final email = u['email'] as String?;
     final title = name ?? email ?? widget.userId;
-    void copy(String v) => Clipboard.setData(ClipboardData(text: v));
+    void copy(String v) => copyWithFeedback(context, v);
 
     return ListView(
       padding: pageInsets(context, top: 16, bottom: pagePad(context)),

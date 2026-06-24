@@ -1,4 +1,5 @@
 import 'taxonomy.dart';
+import 'network_fault.dart';
 
 /// Remote SDK knobs editable from the dashboard and fetched by mobile clients.
 class ProjectSdkConfig {
@@ -10,6 +11,7 @@ class ProjectSdkConfig {
     this.networkSlowThresholdMs,
     this.networkIgnoreStatusCodes,
     this.networkLogScope,
+    this.networkFaultByStatusCode,
   });
 
   static const defaultEnabledLevels = ['error', 'info', 'warning', 'success'];
@@ -22,6 +24,7 @@ class ProjectSdkConfig {
   final int? networkSlowThresholdMs;
   final List<int>? networkIgnoreStatusCodes;
   final String? networkLogScope;
+  final Map<int, String>? networkFaultByStatusCode;
 
   factory ProjectSdkConfig.fromJson(Map<String, dynamic>? json) {
     if (json == null || json.isEmpty) return const ProjectSdkConfig();
@@ -36,6 +39,7 @@ class ProjectSdkConfig {
       networkLogScope: json.containsKey('networkLogScope')
           ? normalizeNetworkLogScope(json['networkLogScope'])
           : null,
+      networkFaultByStatusCode: normalizeNetworkFaultByStatusCode(json['networkFaultByStatusCode']),
     );
   }
 
@@ -48,6 +52,7 @@ class ProjectSdkConfig {
         networkSlowThresholdMs: clampSlowThreshold(networkSlowThresholdMs) ?? 3000,
         networkIgnoreStatusCodes: normalizeStatusCodes(networkIgnoreStatusCodes),
         networkLogScope: normalizeNetworkLogScope(networkLogScope),
+        networkFaultByStatusCode: normalizeNetworkFaultByStatusCode(networkFaultByStatusCode),
       );
 
   ProjectSdkConfig mergePatch(Map<String, dynamic> patch) {
@@ -71,6 +76,9 @@ class ProjectSdkConfig {
       networkLogScope: m.containsKey('networkLogScope')
           ? normalizeNetworkLogScope(m['networkLogScope'])
           : networkLogScope,
+      networkFaultByStatusCode: m.containsKey('networkFaultByStatusCode')
+          ? normalizeNetworkFaultByStatusCode(m['networkFaultByStatusCode'])
+          : networkFaultByStatusCode,
     );
   }
 
@@ -82,9 +90,16 @@ class ProjectSdkConfig {
         if (networkSlowThresholdMs != null) 'networkSlowThresholdMs': networkSlowThresholdMs,
         'networkIgnoreStatusCodes': normalizeStatusCodes(networkIgnoreStatusCodes),
         'networkLogScope': normalizeNetworkLogScope(networkLogScope),
+        if (networkFaultByStatusCode != null && networkFaultByStatusCode!.isNotEmpty)
+          'networkFaultByStatusCode': {
+            for (final e in normalizeNetworkFaultByStatusCode(networkFaultByStatusCode).entries) '${e.key}': e.value,
+          },
       };
 
   Map<String, dynamic> toClientJson() => resolved().toJson();
+
+  Map<int, NetworkFaultClass> get networkFaultOverrides =>
+      parseNetworkFaultOverrides(normalizeNetworkFaultByStatusCode(networkFaultByStatusCode));
 }
 
 class ProjectRemoteConfig {
@@ -138,6 +153,19 @@ int? clampSlowThreshold(dynamic raw) {
   final n = raw is int ? raw : int.tryParse(raw.toString());
   if (n == null) return null;
   return n.clamp(500, 60000);
+}
+
+Map<int, String> normalizeNetworkFaultByStatusCode(dynamic raw) {
+  if (raw == null) return const {};
+  if (raw is! Map) return const {};
+  final out = <int, String>{};
+  for (final e in raw.entries) {
+    final code = e.key is int ? e.key as int : int.tryParse(e.key.toString());
+    if (code == null || code < 100 || code > 599) continue;
+    final cls = parseNetworkFaultClass(e.value?.toString());
+    if (cls != null && cls != NetworkFaultClass.unknown) out[code] = cls.name;
+  }
+  return Map.fromEntries(out.entries.toList()..sort((a, b) => a.key.compareTo(b.key)));
 }
 
 List<int> normalizeStatusCodes(List<dynamic>? raw) {

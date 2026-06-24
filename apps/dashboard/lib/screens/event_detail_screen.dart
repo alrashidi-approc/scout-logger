@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
@@ -9,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../utils/event_view.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
+import '../utils/clipboard.dart';
 import '../utils/share_link.dart';
 import '../widgets/event_detail_widgets.dart';
 import '../utils/screen_load.dart';
@@ -88,17 +88,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     }
   }
 
-  void _copyJson(EventView v) {
-    Clipboard.setData(ClipboardData(text: prettyJson(v.event)));
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Event JSON copied')));
-  }
+  void _copyJson(EventView v) =>
+      copyWithFeedback(context, prettyJson(v.event), message: 'Event JSON copied');
 
-  void _copyTicket(EventView v) {
-    Clipboard.setData(ClipboardData(text: bugReport(v, widget.projectId)));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Bug report copied — paste into your ticket')));
-  }
+  void _copyTicket(EventView v) => copyWithFeedback(
+        context,
+        bugReport(v, widget.projectId),
+        message: 'Bug report copied — paste into your ticket',
+      );
 
   Future<void> _share() async {
     setState(() => _sharing = true);
@@ -216,10 +213,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   title: 'Same issue',
                   icon: Icons.link,
                   subtitle: '${related.length} other occurrences of this error',
-                  child: Column(
-                    children: related
-                        .map((e) => RelatedEventTile(
-                              event: e,
+                  child: SimpleTimeline(
+                    entries: related
+                        .map((e) => eventTimelineEntry(
+                              e,
                               onTap: () => context.push('/p/$pid/events/${e['id']}'),
                             ))
                         .toList(),
@@ -230,43 +227,30 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
           EventDetailGroup(
             title: 'Timeline',
             icon: Icons.timeline,
-            subtitle: 'Breadcrumbs and screen trail',
+            subtitle: () {
+              final parts = [
+                if (sessionEvents.isNotEmpty) '${sessionEvents.length} events',
+                if (v.breadcrumbs.isNotEmpty) '${v.breadcrumbs.length} screens',
+              ];
+              if (parts.isNotEmpty) return parts.join(' · ');
+              return v.route != '—' ? v.route : null;
+            }(),
             children: [
-              if (sessionEvents.isNotEmpty)
-                InfoSection(
-                  title: 'Session context',
-                  icon: Icons.hub_outlined,
-                  subtitle: shared
-                      ? '${sessionEvents.length} events around this one (5 min window)'
-                      : '${sessionEvents.length} events in this visit · 5 min before → 1 min after',
-                  child: Column(
-                    children: sessionEvents
-                        .map((e) => RelatedEventTile(
-                              event: e,
-                              highlight: e['isCurrent'] == true,
-                              onTap: shared || e['isCurrent'] == true
-                                  ? null
-                                  : () => context.push('/p/$pid/events/${e['id']}'),
-                            ))
-                        .toList(),
-                  ),
+              if (sessionEvents.isNotEmpty) ...[
+                const Text('Session', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+                const SizedBox(height: 8),
+                SessionTimeline(
+                  events: sessionEvents,
+                  onEventTap: shared ? null : (e) => context.push('/p/$pid/events/${e['id']}'),
                 ),
-              InfoSection(
-                title: 'User journey',
-                icon: Icons.timeline,
-                subtitle: v.breadcrumbsMissingNavType
-                    ? 'Breadcrumbs — navigation type missing on some steps'
-                    : 'Breadcrumbs with navigation type (push / pop / …)',
-                child: v.breadcrumbs.isEmpty
-                    ? const Text('No breadcrumbs recorded',
-                        style: TextStyle(color: AppTheme.muted))
-                    : BreadcrumbTrail(items: v.breadcrumbs),
-              ),
-              InfoSection(
-                  title: 'Screens & trail',
-                  icon: Icons.route_outlined,
-                  subtitle: v.route,
-                  child: FieldGrid(fields: v.screenFields())),
+              ],
+              if (sessionEvents.isNotEmpty && v.breadcrumbs.isNotEmpty) const SizedBox(height: 16),
+              if (v.breadcrumbs.isNotEmpty) ...[
+                const Text('Screens', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+                const SizedBox(height: 8),
+                BreadcrumbTrail(items: v.breadcrumbs),
+              ] else if (v.route != '—' && sessionEvents.isEmpty)
+                SimpleTimeline(entries: [SimpleTimelineEntry(title: v.route, meta: 'Current screen')]),
             ],
           ),
           EventDetailGroup(

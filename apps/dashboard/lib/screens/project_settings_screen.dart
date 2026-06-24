@@ -43,6 +43,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   final _memberPasswordCtrl = TextEditingController();
   Set<int> _ignoreCodes = {};
   String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
+  Map<int, String> _faultEdits = {};
+  final _newFaultCodeCtrl = TextEditingController();
   List<Map<String, dynamic>> _members = [];
   String _newMemberRole = assignableProjectRoles.first;
   bool _addingMember = false;
@@ -51,6 +53,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   @override
   void dispose() {
     _ignoreCodesCtrl.dispose();
+    _newFaultCodeCtrl.dispose();
     _memberEmailCtrl.dispose();
     _memberPasswordCtrl.dispose();
     super.dispose();
@@ -115,6 +118,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodes = sdk.networkIgnoreStatusCodes!.toSet();
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
+          _faultEdits = _buildFaultEdits(sdk.networkFaultByStatusCode ?? const {});
           _sdkHealth = health;
           _hasData = true;
           _loading = false;
@@ -147,6 +151,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'networkSlowThresholdMs': _slowThresholdMs,
           'networkIgnoreStatusCodes': normalizeStatusCodes(_ignoreCodes.toList()),
           'networkLogScope': normalizeNetworkLogScope(_networkLogScope),
+          'networkFaultByStatusCode': _faultOverridesToSave(),
         },
       });
       if (mounted) {
@@ -169,6 +174,38 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   bool get _canDelete => _role == 'owner' || AuthService.instance.isAdmin;
 
   bool get _canManageMembers => _role == 'owner' || AuthService.instance.isAdmin;
+
+  Map<int, String> _buildFaultEdits(Map<int, String> stored) {
+    final codes = {...kPresetNetworkFaultCodes, ...stored.keys};
+    return {
+      for (final code in codes) code: stored[code] ?? defaultNetworkFaultClassName(code),
+    };
+  }
+
+  Map<int, String> _faultOverridesToSave() {
+    final out = <int, String>{};
+    for (final e in _faultEdits.entries) {
+      if (e.value != defaultNetworkFaultClassName(e.key)) out[e.key] = e.value;
+    }
+    return out;
+  }
+
+  String _faultClassLabel(String cls) => switch (cls) {
+        'critical' => 'Critical',
+        'user' => 'User / client',
+        'auth' => 'Auth',
+        'success' => 'Success (ignore)',
+        _ => cls,
+      };
+
+  void _addFaultCode() {
+    final code = int.tryParse(_newFaultCodeCtrl.text.trim());
+    if (code == null || code < 100 || code > 599) return;
+    setState(() {
+      _faultEdits[code] = defaultNetworkFaultClassName(code);
+      _newFaultCodeCtrl.clear();
+    });
+  }
 
   Future<void> _addMember() async {
     final email = _memberEmailCtrl.text.trim();
@@ -352,6 +389,18 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             ),
           ],
         ),
+        if (_canDelete) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.notifications_active_outlined, color: AppTheme.primary),
+              title: const Text('Alert notifications', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Slack, WhatsApp, and Gmail SMTP for critical events'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => context.go('/p/${widget.projectId}/notifications'),
+            ),
+          ),
+        ],
         if (_canManageMembers) ...[
           const SizedBox(height: 16),
           Card(
@@ -452,6 +501,72 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         ],
         const SizedBox(height: 16),
         SdkHealthCard(health: _sdkHealth),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Network error categories', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'Map HTTP status codes to Critical, User, Auth, or Success. Affects issue grouping and fault badges on network events.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              for (final code in (_faultEdits.keys.toList()..sort()))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 72, child: Text('HTTP $code', style: const TextStyle(fontWeight: FontWeight.w600))),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: DropdownButtonFormField<String>(
+                          value: _faultEdits[code],
+                          decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
+                          items: [
+                            for (final cls in NetworkFaultInfo.editableFaultClasses)
+                              DropdownMenuItem(value: cls.name, child: Text(_faultClassLabel(cls.name))),
+                          ],
+                          onChanged: (v) {
+                            if (v == null) return;
+                            setState(() => _faultEdits[code] = v);
+                          },
+                        ),
+                      ),
+                      if (!kPresetNetworkFaultCodes.contains(code))
+                        IconButton(
+                          tooltip: 'Remove',
+                          onPressed: () => setState(() => _faultEdits.remove(code)),
+                          icon: const Icon(Icons.close, size: 18),
+                        ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  SizedBox(
+                    width: 120,
+                    child: TextField(
+                      controller: _newFaultCodeCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(hintText: '418', isDense: true),
+                      onSubmitted: (_) => _addFaultCode(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(onPressed: _addFaultCode, child: const Text('Add code')),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => setState(() => _faultEdits = _buildFaultEdits(const {})),
+                    child: const Text('Reset defaults'),
+                  ),
+                ],
+              ),
+            ]),
+          ),
+        ),
         const SizedBox(height: 16),
         Card(
           child: Padding(

@@ -496,6 +496,152 @@ class JsonPanel extends StatelessWidget {
   }
 }
 
+class SimpleTimelineEntry {
+  const SimpleTimelineEntry({
+    required this.title,
+    this.subtitle,
+    this.meta,
+    this.highlight = false,
+    this.onTap,
+  });
+
+  final String title;
+  final String? subtitle;
+  final String? meta;
+  final bool highlight;
+  final VoidCallback? onTap;
+}
+
+class SimpleTimeline extends StatelessWidget {
+  const SimpleTimeline({super.key, required this.entries, this.empty = 'Nothing recorded'});
+
+  final List<SimpleTimelineEntry> entries;
+  final String empty;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return Text(empty, style: const TextStyle(color: AppTheme.muted, fontSize: 13));
+    }
+    return Column(
+      children: [
+        for (var i = 0; i < entries.length; i++)
+          _TimelineRow(entry: entries[i], isLast: i == entries.length - 1),
+      ],
+    );
+  }
+}
+
+class _TimelineRow extends StatelessWidget {
+  const _TimelineRow({required this.entry, required this.isLast});
+
+  final SimpleTimelineEntry entry;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    final dot = entry.highlight ? AppTheme.primary : AppTheme.muted;
+    return InkWell(
+      onTap: entry.onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 18,
+                child: Column(
+                  children: [
+                    Container(
+                      width: entry.highlight ? 10 : 7,
+                      height: entry.highlight ? 10 : 7,
+                      margin: const EdgeInsets.only(top: 5),
+                      decoration: BoxDecoration(shape: BoxShape.circle, color: dot),
+                    ),
+                    if (!isLast) Expanded(child: Container(width: 1.5, color: AppTheme.border)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: isLast ? 0 : 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: entry.highlight ? FontWeight.w800 : FontWeight.w600,
+                          height: 1.3,
+                        ),
+                      ),
+                      if (entry.subtitle != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          entry.subtitle!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontFamily: 'monospace'),
+                        ),
+                      ],
+                      if (entry.meta != null) ...[
+                        const SizedBox(height: 3),
+                        Text(entry.meta!, style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              if (entry.onTap != null)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Icon(Icons.chevron_right, size: 16, color: AppTheme.muted),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _timelineTime(String? iso) {
+  if (iso == null) return '—';
+  try {
+    return DateFormat('HH:mm:ss').format(DateTime.parse(iso).toLocal());
+  } catch (_) {
+    return iso;
+  }
+}
+
+SimpleTimelineEntry eventTimelineEntry(Map<String, dynamic> e, {bool highlight = false, VoidCallback? onTap}) {
+  final url = str(e['networkUrl']);
+  final route = str(e['route']);
+  final status = str(e['statusCode']);
+  final type = str(e['type']) ?? 'event';
+  final level = str(e['level']);
+  final fault = type == 'network' && status != null && status.isNotEmpty
+      ? classifyNetworkFault({'statusCode': int.tryParse(status)})
+      : null;
+  return SimpleTimelineEntry(
+    title: str(e['message']) ?? type,
+    subtitle: url ?? (route != null && route != '—' ? route : null),
+    meta: [
+      _timelineTime(str(e['occurredAt'])),
+      if (fault != null && fault.faultClass != NetworkFaultClass.success) fault.label else level ?? type,
+      if (status != null) 'HTTP $status',
+    ].join(' · '),
+    highlight: highlight,
+    onTap: onTap,
+  );
+}
+
 class BreadcrumbTrail extends StatelessWidget {
   const BreadcrumbTrail({super.key, required this.items});
 
@@ -504,155 +650,81 @@ class BreadcrumbTrail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) {
-      return const Text('No screen trail recorded', style: TextStyle(color: AppTheme.muted));
+      return const Text('No screen trail recorded', style: TextStyle(color: AppTheme.muted, fontSize: 13));
     }
     final missingNav = items.any((s) => s['hasNavigationType'] != true);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (missingNav)
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: AppTheme.warning.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppTheme.warning.withValues(alpha: 0.35)),
-            ),
-            child: const Text(
-              'Navigation type (push / pop / replace) is missing on some steps. '
-              'Update scout_logger_plus to send navigationType on each screenTrail item '
-              '(see packages/scout_models navigation.dart).',
-              style: TextStyle(color: AppTheme.warning, fontSize: 12, height: 1.4),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              'Navigation type missing on some steps — update screenTrail in the SDK.',
+              style: TextStyle(color: AppTheme.warning.withValues(alpha: 0.95), fontSize: 11, height: 1.35),
             ),
           ),
-        ...items.asMap().entries.map((entry) {
-          final i = entry.key;
-          final step = entry.value;
-          final label = str(step['label']) ??
-              str(step['name']) ??
-              str(step['screenName']) ??
-              str(step['route']) ??
-              str(step['message']) ??
-              'step';
-          final route = str(step['route']);
-          final time = str(step['timestamp']) ?? str(step['at']) ?? str(step['time']);
-          final nav = parseNavTransition(step);
-          final duration = step['durationMs'];
-          return IntrinsicHeight(
-            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              SizedBox(
-                width: 28,
-                child: Column(children: [
-                  Container(
-                    width: 22,
-                    height: 22,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: AppTheme.primary.withValues(alpha: 0.15),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: AppTheme.primary),
-                    ),
-                    child: Text('${i + 1}',
-                        style: const TextStyle(
-                            fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.w700)),
-                  ),
-                  if (i < items.length - 1)
-                    Expanded(child: Container(width: 2, color: AppTheme.border)),
-                ]),
-              ),
-              Expanded(
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.panelElevated,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: AppTheme.border),
-                  ),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-                            if (route != null && route != label)
-                              Text(route,
-                                  style: const TextStyle(
-                                      color: AppTheme.muted, fontSize: 11, fontFamily: 'monospace')),
-                          ],
-                        ),
-                      ),
-                      _NavBadge(nav: nav),
-                    ]),
-                    if (time != null || duration != null) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        [
-                          if (time != null) _fmtTime(time),
-                          if (duration != null) '${duration}ms on screen',
-                        ].join(' · '),
-                        style: const TextStyle(color: AppTheme.muted, fontSize: 11),
-                      ),
-                    ],
-                  ]),
-                ),
-              ),
-            ]),
-          );
-        }),
+        SimpleTimeline(
+          entries: items.map((step) {
+            final route = str(step['route']);
+            final label = str(step['label']) ??
+                str(step['name']) ??
+                str(step['screenName']) ??
+                str(step['route']) ??
+                str(step['message']) ??
+                'Screen';
+            final time = str(step['timestamp']) ?? str(step['at']) ?? str(step['time']);
+            final nav = parseNavTransition(step);
+            final meta = [
+              if (time != null) _timelineTime(time),
+              if (nav.isKnown) nav.label.toLowerCase(),
+              if (step['durationMs'] is num) '${step['durationMs']}ms',
+            ].join(' · ');
+            return SimpleTimelineEntry(
+              title: label,
+              subtitle: route != null && route != label ? route : null,
+              meta: meta.isEmpty ? null : meta,
+              highlight: identical(step, items.last),
+            );
+          }).toList(),
+        ),
       ],
     );
   }
-
-  static String _fmtTime(String iso) {
-    try {
-      return DateFormat('MMM d · HH:mm:ss').format(DateTime.parse(iso).toLocal());
-    } catch (_) {
-      return iso;
-    }
-  }
 }
 
-class _NavBadge extends StatelessWidget {
-  const _NavBadge({required this.nav});
+class SessionTimeline extends StatelessWidget {
+  const SessionTimeline({super.key, required this.events, this.onEventTap});
 
-  final NavTransition nav;
+  final List<Map<String, dynamic>> events;
+  final void Function(Map<String, dynamic> event)? onEventTap;
 
   @override
   Widget build(BuildContext context) {
-    final known = nav.isKnown;
-    final color = known ? AppTheme.primary : AppTheme.muted;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: known ? 0.15 : 0.08),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(_icon(nav), size: 12, color: color),
-          const SizedBox(width: 4),
-          Text(
-            known ? nav.label.toUpperCase() : 'NO NAV',
-            style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w700),
-          ),
-        ],
-      ),
+    return SimpleTimeline(
+      empty: 'No session events',
+      entries: events
+          .map((e) => eventTimelineEntry(
+                e,
+                highlight: e['isCurrent'] == true,
+                onTap: e['isCurrent'] == true || onEventTap == null ? null : () => onEventTap!(e),
+              ))
+          .toList(),
     );
   }
+}
 
-  static IconData _icon(NavTransition nav) => switch (nav) {
-        NavTransition.push => Icons.arrow_forward,
-        NavTransition.pop => Icons.arrow_back,
-        NavTransition.replace => Icons.swap_horiz,
-        NavTransition.remove => Icons.close,
-        NavTransition.go => Icons.route,
-        NavTransition.unknown => Icons.help_outline,
-      };
+class RelatedEventTile extends StatelessWidget {
+  const RelatedEventTile({super.key, required this.event, this.onTap, this.highlight = false});
+
+  final Map<String, dynamic> event;
+  final VoidCallback? onTap;
+  final bool highlight;
+
+  @override
+  Widget build(BuildContext context) {
+    return SimpleTimeline(entries: [eventTimelineEntry(event, highlight: highlight, onTap: onTap)]);
+  }
 }
 
 class NetworkReadablePanel extends StatelessWidget {
@@ -665,12 +737,19 @@ class NetworkReadablePanel extends StatelessWidget {
     final readable = view.networkReadable;
     if (readable.isEmpty) return const SizedBox.shrink();
 
+    final fault = view.networkFault;
+    final faultClass = fault?.faultClass.name ?? str(readable['faultClass']) ?? 'unknown';
     final outcome = str(readable['outcome']) ?? 'failed';
-    final accent = switch (outcome) {
+    final accent = switch (faultClass) {
+      'critical' => AppTheme.error,
+      'user' => AppTheme.info,
+      'auth' => AppTheme.warning,
       'success' => AppTheme.success,
-      'no_response' => AppTheme.error,
-      'http_error' => AppTheme.warning,
-      _ => AppTheme.warning,
+      _ => switch (outcome) {
+          'success' => AppTheme.success,
+          'no_response' => AppTheme.error,
+          _ => AppTheme.warning,
+        },
     };
     final request = asMap(readable['request']);
     final response = asMap(readable['response']);
@@ -692,13 +771,22 @@ class NetworkReadablePanel extends StatelessWidget {
             const SizedBox(width: 12),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: accent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(6)),
-                  child: Text(str(readable['outcomeLabel']) ?? outcome, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: accent)),
-                ),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  if (fault != null && fault.faultClass != NetworkFaultClass.success)
+                    NetworkFaultBadge(faultClass: fault.faultClass.name, label: fault.label),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(color: accent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(6)),
+                    child: Text(str(readable['outcomeLabel']) ?? outcome, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: accent)),
+                  ),
+                ]),
                 const SizedBox(height: 8),
                 Text(str(readable['title']) ?? view.message, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, height: 1.35)),
+                if (str(readable['actionHint'])?.isNotEmpty == true)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(str(readable['actionHint'])!, style: TextStyle(fontSize: 12, color: accent, height: 1.4)),
+                  ),
                 if (str(readable['duration']) != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
@@ -777,49 +865,4 @@ class NetworkReadablePanel extends StatelessWidget {
           ],
         ]),
       );
-}
-
-class RelatedEventTile extends StatelessWidget {
-  const RelatedEventTile({super.key, required this.event, this.onTap, this.highlight = false});
-
-  final Map<String, dynamic> event;
-  final VoidCallback? onTap;
-  final bool highlight;
-
-  @override
-  Widget build(BuildContext context) {
-    final level = str(event['level']);
-    final route = str(event['route']);
-    final url = str(event['networkUrl']);
-    final status = str(event['statusCode']);
-    final detail = url != null
-        ? '${status != null ? '$status · ' : ''}$url'
-        : route ?? '${event['type']} · ${event['country'] ?? '—'}';
-
-    return Material(
-      color: highlight ? AppTheme.primary.withValues(alpha: 0.08) : Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-        onTap: onTap,
-        title: Text(
-          str(event['message']) ?? str(event['type']) ?? 'Event',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontWeight: highlight ? FontWeight.w800 : FontWeight.w600, fontSize: 13),
-        ),
-        subtitle: Text('${_fmtTime(str(event['occurredAt']))} · ${level ?? event['type']} · $detail', style: const TextStyle(fontSize: 12)),
-        trailing: onTap != null ? const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted) : null,
-      ),
-    );
-  }
-
-  static String _fmtTime(String? iso) {
-    if (iso == null) return '—';
-    try {
-      return DateFormat('MMM d HH:mm').format(DateTime.parse(iso).toLocal());
-    } catch (_) {
-      return iso;
-    }
-  }
 }

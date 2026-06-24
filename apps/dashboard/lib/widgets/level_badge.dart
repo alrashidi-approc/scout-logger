@@ -77,3 +77,34 @@ class GuestBadge extends StatelessWidget {
         child: Text('GUEST', style: TextStyle(color: AppTheme.muted, fontSize: compact ? 10 : 11, fontWeight: FontWeight.w800, letterSpacing: 0.4)),
       );
 }
+
+class NetworkFaultBadge extends StatelessWidget {
+  const NetworkFaultBadge({super.key, required this.faultClass, required this.label, this.compact = false});
+
+  final String faultClass;
+  final String label;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, tag) = switch (faultClass) {
+      'critical' => (AppTheme.error, 'CRITICAL'),
+      'user' => (AppTheme.info, 'USER'),
+      'auth' => (AppTheme.warning, 'AUTH'),
+      'success' => (AppTheme.success, 'OK'),
+      _ => (AppTheme.muted, faultClass.toUpperCase()),
+    };
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10, vertical: compact ? 3 : 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Text(
+        compact ? tag : '$tag · $label',
+        style: TextStyle(color: color, fontSize: compact ? 10 : 11, fontWeight: FontWeight.w800, letterSpacing: 0.35),
+      ),
+    );
+  }
+}

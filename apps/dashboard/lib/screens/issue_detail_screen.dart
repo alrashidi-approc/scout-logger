@@ -130,6 +130,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     final issue = _issue!;
     final events = jsonListMaps(issue['events']);
     final geo = jsonListMaps(issue['geoBreakdown']);
+    final devices = jsonListMaps(issue['deviceBreakdown']);
     final status = issue['status'] as String? ?? 'open';
     final shared = widget.shared;
     final first = DateTime.tryParse(issue['firstSeenAt'] as String? ?? '');
@@ -197,6 +198,34 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             _statTile('Status', issue['status'] as String? ?? 'open', Icons.flag_outlined),
           ],
         ),
+        if (devices.isNotEmpty) ...[
+          const SizedBox(height: 20),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Affected devices', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                const SizedBox(height: 4),
+                const Text('Tap a device to see its error events', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+                const SizedBox(height: 12),
+                Wrap(spacing: 8, runSpacing: 8, children: devices.map((d) {
+                  final installs = d['installs'] as int? ?? 0;
+                  final label = installs > 0 ? '${d['device']} · $installs devices · ${d['count']} ev' : '${d['device']} · ${d['count']} ev';
+                  return ActionChip(
+                    avatar: const Icon(Icons.phone_android_outlined, size: 16),
+                    label: Text(label, style: const TextStyle(fontSize: 12)),
+                    onPressed: shared
+                        ? null
+                        : () => context.go(Uri(
+                              path: '/p/${widget.projectId}/events',
+                              queryParameters: {'device': '${d['device']}', 'type': 'errors'},
+                            ).toString()),
+                  );
+                }).toList()),
+              ]),
+            ),
+          ),
+        ],
         if (geo.isNotEmpty) ...[
           const SizedBox(height: 20),
           Card(

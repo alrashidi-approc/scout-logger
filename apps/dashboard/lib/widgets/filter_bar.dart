@@ -235,6 +235,9 @@ class FilterBar extends StatelessWidget {
     this.appVersionOptions,
     this.appVersionSelected,
     this.onAppVersionSelected,
+    this.deviceNameOptions,
+    this.deviceNameSelected,
+    this.onDeviceNameSelected,
     this.extra,
   });
 
@@ -258,6 +261,9 @@ class FilterBar extends StatelessWidget {
   final List<String>? appVersionOptions;
   final String? appVersionSelected;
   final ValueChanged<String?>? onAppVersionSelected;
+  final List<String>? deviceNameOptions;
+  final String? deviceNameSelected;
+  final ValueChanged<String?>? onDeviceNameSelected;
   final List<Widget>? extra;
 
   @override
@@ -276,6 +282,8 @@ class FilterBar extends StatelessWidget {
         FacetDropdown(label: 'Environment', options: environmentOptions!, selected: environmentSelected, onSelected: onEnvironmentSelected!),
       if (appVersionOptions != null && onAppVersionSelected != null)
         FacetDropdown(label: 'App version', options: appVersionOptions!, selected: appVersionSelected, onSelected: onAppVersionSelected!),
+      if (deviceNameOptions != null && onDeviceNameSelected != null)
+        FacetDropdown(label: 'Device', options: deviceNameOptions!, selected: deviceNameSelected, onSelected: onDeviceNameSelected!),
       if (extra != null) ...extra!,
     ];
 

@@ -27,6 +27,7 @@ class AuthService extends ChangeNotifier {
 
   bool get isLoggedIn => _token != null && _token!.isNotEmpty;
   bool get isAdmin => user?['globalRole'] == 'admin';
+  bool get isPlatformOwner => isAdmin || user?['isPlatformOwner'] == true;
   bool get canCreateProjects => isAdmin || user?['canCreateProjects'] == true;
   String get email => user?['email'] as String? ?? '';
 

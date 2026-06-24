@@ -155,6 +155,7 @@ class ScoutApi {
     String? q,
     String? environment,
     String? appVersion,
+    String? deviceName,
     PeriodFilter? period,
   }) async {
     final params = <String, String>{};
@@ -163,8 +164,9 @@ class ScoutApi {
     if (q != null && q.isNotEmpty) params['q'] = q;
     if (environment != null) params['environment'] = environment;
     if (appVersion != null) params['appVersion'] = appVersion;
-    if (period != null) params.addAll(period.toQuery());
-    final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params.isEmpty ? null : params);
+    if (deviceName != null) params['device'] = deviceName;
+    params.addAll((period ?? const PeriodFilter.days(30)).toQuery());
+    final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['issues']);
@@ -176,7 +178,7 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['issue']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchEvents(
+  Future<Map<String, dynamic>> fetchEvents(
     String projectId, {
     String? type,
     String? level,
@@ -185,9 +187,12 @@ class ScoutApi {
     String? country,
     String? environment,
     String? appVersion,
+    String? deviceName,
     PeriodFilter? period,
+    int limit = 50,
+    int offset = 0,
   }) async {
-    final params = <String, String>{};
+    final params = <String, String>{'limit': '$limit', 'offset': '$offset'};
     if (type != null) params['type'] = type;
     if (level != null) params['level'] = level;
     if (category != null) params['category'] = category;
@@ -195,11 +200,20 @@ class ScoutApi {
     if (country != null) params['country'] = country;
     if (environment != null) params['environment'] = environment;
     if (appVersion != null) params['appVersion'] = appVersion;
-    if (period != null) params.addAll(period.toQuery());
-    final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params.isEmpty ? null : params);
+    if (deviceName != null) params['device'] = deviceName;
+    params.addAll((period ?? const PeriodFilter.days(30)).toQuery());
+    final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
-    return jsonListMaps((jsonDecode(res.body) as Map)['events']);
+    final body = jsonDecode(res.body) as Map;
+    final pag = body['pagination'] is Map ? Map<String, dynamic>.from(body['pagination'] as Map) : <String, dynamic>{};
+    return {
+      'events': jsonListMaps(body['events']),
+      'total': pag['total'] as int? ?? 0,
+      'limit': pag['limit'] as int? ?? limit,
+      'offset': pag['offset'] as int? ?? offset,
+      'hasMore': pag['hasMore'] == true,
+    };
   }
 
   Future<Map<String, dynamic>> updateIssueStatus(
@@ -353,6 +367,54 @@ class ScoutApi {
   Future<void> removeProjectMember(String projectId, String userId) async {
     final res = await _client.delete(_uri('/api/projects/$projectId/members/$userId'), headers: _headers);
     _ok(res, projectId: projectId);
+  }
+
+  Future<Map<String, dynamic>> fetchProjectNotifications(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/notifications'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['notifications']);
+  }
+
+  Future<Map<String, dynamic>> updateProjectNotifications(String projectId, Map<String, dynamic> body) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/notifications'),
+      headers: _headers,
+      body: jsonEncode(body),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['notifications']);
+  }
+
+  Future<void> testProjectNotification(String projectId, String channel) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/notifications/test'),
+      headers: _headers,
+      body: jsonEncode({'channel': channel}),
+    );
+    _ok(res, projectId: projectId);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchNotificationDeliveries(String projectId, {int limit = 50}) async {
+    final uri = _uri('/api/projects/$projectId/notifications/deliveries').replace(queryParameters: {'limit': '$limit'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonListMaps((jsonDecode(res.body) as Map)['deliveries']);
+  }
+
+  Future<Map<String, dynamic>> fetchNotificationPolicy() async {
+    final res = await _client.get(_uri('/api/admin/notification-policy'), headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['policy']);
+  }
+
+  Future<Map<String, dynamic>> updateNotificationPolicy(Map<String, dynamic> policy) async {
+    final res = await _client.patch(
+      _uri('/api/admin/notification-policy'),
+      headers: _headers,
+      body: jsonEncode({'policy': policy}),
+    );
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['policy']);
   }
 
   Future<List<Map<String, dynamic>>> fetchDashboardLogs(String projectId, {String? level, int limit = 100}) async {

@@ -24,7 +24,7 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
 }) async {
   final audienceCols = includeUsers
       ? ''', COUNT(*) FILTER (
-              WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
+              WHERE ${sqlIsSuccessEvent()}
             )::int,
             COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
             COUNT(DISTINCT install_id) FILTER (WHERE ${guestUserSql()})::int'''
@@ -33,7 +33,7 @@ Future<List<Map<String, dynamic>>> _hourlyTrend(
     Sql.named('''
       SELECT date_trunc('hour', occurred_at) AS bucket,
              COUNT(*)::int,
-             COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+             COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
              COUNT(*) FILTER (WHERE type = 'crash')::int
              $audienceCols
       FROM events
@@ -91,10 +91,10 @@ Future<List<Map<String, dynamic>>> _dailyTrend(
     Sql.named('''
       SELECT (occurred_at AT TIME ZONE 'UTC')::date AS day,
              COUNT(*)::int,
-             COUNT(*) FILTER (WHERE type IN ('error','network','crash'))::int,
+             COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
              COUNT(*) FILTER (WHERE type = 'crash')::int
              ${includeUsers ? ''', COUNT(*) FILTER (
-                    WHERE LOWER(COALESCE(NULLIF(payload->>'level', ''), '')) = 'success'
+                    WHERE ${sqlIsSuccessEvent()}
                   )::int,
                   COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
                   COUNT(DISTINCT install_id) FILTER (WHERE ${guestUserSql()})::int''' : ''}

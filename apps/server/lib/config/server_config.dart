@@ -24,6 +24,7 @@ class ServerConfig {
     required this.smtpFrom,
     required this.smtpAllowInsecure,
     required this.encryptionKey,
+    required this.platformOwnerEmail,
   });
 
   factory ServerConfig.load({EnvFile? env}) {
@@ -51,6 +52,7 @@ class ServerConfig {
       smtpFrom: e['SMTP_FROM'] ?? e['SMTP_USER'] ?? 'noreply@scout.local',
       smtpAllowInsecure: _bool(e['SMTP_ALLOW_INSECURE'], defaultValue: false),
       encryptionKey: e['ENCRYPTION_KEY'] ?? jwtSecret,
+      platformOwnerEmail: (e['PLATFORM_OWNER_EMAIL'] ?? 'mohaalrashidi4@gmail.com').trim().toLowerCase(),
     );
   }
 
@@ -73,6 +75,7 @@ class ServerConfig {
   final String smtpFrom;
   final bool smtpAllowInsecure;
   final String encryptionKey;
+  final String platformOwnerEmail;
 
   String get dashboardUrlPath => '/$dashboardWebPath';
 

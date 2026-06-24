@@ -132,10 +132,10 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
                   const SizedBox(height: 8),
                   const Text('Errors, network, logs, and sessions in chronological order.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
                   const SizedBox(height: 12),
-                  ...events.map((e) => RelatedEventTile(
-                        event: e,
-                        onTap: () => context.push('/p/$pid/events/${e['id']}'),
-                      )),
+                  SessionTimeline(
+                    events: events,
+                    onEventTap: (e) => context.push('/p/$pid/events/${e['id']}'),
+                  ),
                 ]),
               ),
             ),

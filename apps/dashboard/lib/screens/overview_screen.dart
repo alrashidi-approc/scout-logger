@@ -149,6 +149,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
     final countries = jsonListMaps(d['topCountries']);
     final endpoints = jsonListMaps(d['topFailingEndpoints']);
     final screens = jsonListMaps(d['topCrashScreens']);
+    final errorDevices = jsonListMaps(d['topErrorDevices']);
     final byEnv = jsonListMaps(d['byEnvironment']);
     final byRelease = jsonListMaps(d['eventsByRelease']);
     final byDeploy = jsonListMaps(d['byDeployment']);
@@ -171,7 +172,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
               StatCard(label: 'Logged-in users', value: '${d['uniqueUsers'] ?? d['uniqueUsersToday']}', icon: Icons.people_outline, color: AppTheme.success, delta: _delta('uniqueUsers'), hint: 'Excludes guest UUIDs', onTap: () => context.go(Uri(path: '/p/$pid/users', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Sessions', value: '${d['completedSessions'] ?? 0}', icon: Icons.play_circle_outline, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Crashes', value: '${d['crashes'] ?? d['crashesToday']}', icon: Icons.bolt, color: AppTheme.error, delta: _delta('crashes'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString())),
-              StatCard(label: 'Open issues', value: '${d['openIssues']}', icon: Icons.bug_report_outlined, color: AppTheme.accentPurple, onTap: () => context.go('/p/$pid/issues')),
+              StatCard(label: 'Open issues', value: '${d['openIssues']}', icon: Icons.bug_report_outlined, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/issues', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Live sessions', value: '${d['activeSessions'] ?? 0}', icon: Icons.sensors, color: AppTheme.primary, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
             ],
           ),
@@ -189,8 +190,8 @@ class _OverviewScreenState extends State<OverviewScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 DashboardPanel(
-                  title: 'Events vs outcomes',
-                  subtitle: 'All events compared with error-level and success-level',
+                  title: 'Event volume & outcomes',
+                  subtitle: 'Total events vs error-level and success-level (subsets — not separate traffic)',
                   trailing: chartLegend([
                     _legend(AppTheme.primary, 'All events'),
                     _legend(AppTheme.error, 'Errors'),
@@ -248,12 +249,34 @@ class _OverviewScreenState extends State<OverviewScreen> {
                 Column(children: [
                   DashboardPanel(
                     title: 'Top failing endpoints',
-                    child: RankList(items: endpoints, labelOf: (i) => '${i['endpoint']}', countOf: (i) => i['count'] as int? ?? 0, onTap: (i) => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'q': '${i['endpoint']}'})).toString())),
+                    child: RankList(
+                      items: endpoints,
+                      labelOf: (i) => '${i['endpoint']}',
+                      countOf: (i) => i['count'] as int? ?? 0,
+                      onTap: (i) => context.go(Uri(
+                        path: '/p/$pid/events',
+                        queryParameters: _period.mergeQuery({'q': '${i['endpoint']}', 'type': 'errors'}),
+                      ).toString()),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   DashboardPanel(
                     title: 'Top crashing screens',
                     child: RankList(items: screens, labelOf: (i) => '${i['screen']}', countOf: (i) => i['count'] as int? ?? 0),
+                  ),
+                  const SizedBox(height: 12),
+                  DashboardPanel(
+                    title: 'Top error devices',
+                    subtitle: 'Spot device-specific bugs (storage, OS, model)',
+                    child: RankList(
+                      items: errorDevices,
+                      labelOf: (i) {
+                        final installs = i['installs'] as int? ?? 0;
+                        return installs > 0 ? '${i['device']} · $installs devices' : '${i['device']}';
+                      },
+                      countOf: (i) => i['count'] as int? ?? 0,
+                      onTap: (i) => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'device': '${i['device']}', 'type': 'errors'})).toString()),
+                    ),
                   ),
                 ]),
                 Column(children: [
@@ -327,7 +350,7 @@ class _OverviewScreenState extends State<OverviewScreen> {
               children: [
                 DashboardPanel(
                   title: 'Recent issues',
-                  trailing: TextButton(onPressed: () => context.go('/p/$pid/issues'), child: const Text('View all')),
+                  trailing: TextButton(onPressed: () => context.go(Uri(path: '/p/$pid/issues', queryParameters: _period.toQuery()).toString()), child: const Text('View all')),
                   child: _recentIssues.isEmpty
                       ? const Text('No issues yet', style: TextStyle(color: AppTheme.muted))
                       : Column(children: _recentIssues.map((i) => IssueCard(issue: i, onTap: () => context.push('/p/$pid/issues/${i['id']}'))).toList()),

@@ -48,7 +48,7 @@ Future<void> main() async {
     restorationScopeId: 'scout-dashboard',
     builder: (context, child) => ColoredBox(
       color: AppTheme.bg,
-      child: child ?? const ScoutBootstrapView(),
+      child: SelectionArea(child: child ?? const ScoutBootstrapView()),
     ),
   ));
 }
