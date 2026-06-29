@@ -10,7 +10,8 @@ class EmailService {
 
   final ServerConfig config;
 
-  bool get enabled => config.smtpHost.isNotEmpty;
+  bool get enabled =>
+      config.smtpUser.isNotEmpty && config.smtpPassword.isNotEmpty;
 
   Future<String?> sendVerification(
       {required String to, required String token}) async {

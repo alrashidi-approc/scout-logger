@@ -51,7 +51,7 @@ Future<void> main() async {
     );
     stdout.writeln('scout-logger listening on ${config.publicUrl}');
     stdout.writeln('Dashboard: ${config.dashboardPublicUrl}');
-    if (config.smtpHost.isEmpty) {
+    if (config.smtpUser.isEmpty || config.smtpPassword.isEmpty) {
       stdout.writeln('Email: SMTP not configured — new accounts are verified automatically on signup');
     }
     await serve(handler, config.host, config.port);
