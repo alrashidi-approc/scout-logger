@@ -29,6 +29,18 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
 
   bool _enabled = false;
   int _dedupMinutes = kDefaultDedupMinutes;
+  int _maxAlertsPerHour = kDefaultMaxAlertsPerHour;
+
+  bool _thresholdOn = false;
+  String _thresholdMode = 'count';
+  int _thresholdWindow = 15;
+  int _thresholdErrors = 0;
+  int _thresholdCrashes = 0;
+  double _thresholdSensitivity = 3;
+
+  bool _digestOn = false;
+  String _digestFreq = 'daily';
+  int _digestHour = 8;
   Set<String> _categories = kDefaultNotificationCategories.toSet();
   Set<String> _channels = {'slack', 'email', 'whatsapp'};
   Set<String> _environments = kDefaultNotificationEnvironments.toSet();
@@ -39,6 +51,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _slackConfigured = false;
   bool _waConfigured = false;
   bool _emailConfigured = false;
+  String? _emailUserHint;
   Map<String, bool> _platform = {'slack': true, 'whatsapp': true, 'email': true};
 
   final _slackWebhookCtrl = TextEditingController();
@@ -50,6 +63,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   final _recipientsCtrl = TextEditingController();
 
   List<Map<String, dynamic>> _deliveries = [];
+  Map<String, dynamic> _summary = {};
 
   @override
   void dispose() {
@@ -89,7 +103,9 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       ]);
       final cfg = results[0] as Map<String, dynamic>;
       final projects = results[1] as List<Map<String, dynamic>>;
-      final deliveries = results[2] as List<Map<String, dynamic>>;
+      final deliveryData = results[2] as Map<String, dynamic>;
+      final deliveries = (deliveryData['deliveries'] as List).cast<Map<String, dynamic>>();
+      final summary = Map<String, dynamic>.from(deliveryData['summary'] as Map? ?? {});
       String? role;
       for (final p in projects) {
         if (p['id'] == widget.projectId) {
@@ -103,6 +119,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         setState(() {
           _isOwner = role == 'owner' || AuthService.instance.isAdmin;
           _deliveries = deliveries;
+          _summary = summary;
           _hasData = true;
           _loading = false;
           _refreshing = false;
@@ -122,6 +139,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   void _applyConfig(Map<String, dynamic> cfg) {
     _enabled = cfg['enabled'] == true;
     _dedupMinutes = cfg['dedupMinutes'] as int? ?? kDefaultDedupMinutes;
+    _maxAlertsPerHour = cfg['maxAlertsPerHour'] as int? ?? kDefaultMaxAlertsPerHour;
     final rules = cfg['rules'] as List?;
     final rule = rules?.isNotEmpty == true ? Map<String, dynamic>.from(rules!.first as Map) : <String, dynamic>{};
     _categories = (rule['categories'] as List?)?.map((e) => e.toString()).toSet() ?? kDefaultNotificationCategories.toSet();
@@ -146,13 +164,28 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     _slackConfigured = slack['configured'] == true;
     _waConfigured = wa['configured'] == true;
     _emailConfigured = email['configured'] == true;
+    _emailUserHint = email['smtpUserHint'] as String?;
     _recipientsCtrl.text = (email['recipients'] as List?)?.join(', ') ?? '';
+
+    final t = cfg['threshold'] is Map ? Map<String, dynamic>.from(cfg['threshold'] as Map) : <String, dynamic>{};
+    _thresholdOn = t['enabled'] == true;
+    _thresholdMode = t['mode'] == 'anomaly' ? 'anomaly' : 'count';
+    _thresholdWindow = t['windowMinutes'] as int? ?? 15;
+    _thresholdErrors = t['errorCount'] as int? ?? 0;
+    _thresholdCrashes = t['crashCount'] as int? ?? 0;
+    _thresholdSensitivity = (t['sensitivity'] as num?)?.toDouble() ?? 3;
+
+    final dg = cfg['digest'] is Map ? Map<String, dynamic>.from(cfg['digest'] as Map) : <String, dynamic>{};
+    _digestOn = dg['enabled'] == true;
+    _digestFreq = dg['frequency'] == 'weekly' ? 'weekly' : 'daily';
+    _digestHour = dg['hourUtc'] as int? ?? 8;
   }
 
   Map<String, dynamic> _buildPatch() {
     final patch = <String, dynamic>{
       'enabled': _enabled,
       'dedupMinutes': _dedupMinutes,
+      'maxAlertsPerHour': _maxAlertsPerHour,
       'rules': [
         {
           'id': 'default',
@@ -178,6 +211,21 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           if (_smtpFromCtrl.text.trim().isNotEmpty) 'from': _smtpFromCtrl.text.trim(),
           'recipients': _recipientsCtrl.text.split(RegExp(r'[,\s]+')).where((s) => s.contains('@')).toList(),
         },
+      },
+      'threshold': {
+        'enabled': _thresholdOn,
+        'mode': _thresholdMode,
+        'windowMinutes': _thresholdWindow,
+        'errorCount': _thresholdErrors,
+        'crashCount': _thresholdCrashes,
+        'sensitivity': _thresholdSensitivity,
+        'channels': _channels.toList(),
+      },
+      'digest': {
+        'enabled': _digestOn,
+        'frequency': _digestFreq,
+        'hourUtc': _digestHour,
+        'channel': 'email',
       },
     };
     return patch;
@@ -257,12 +305,6 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        TextButton.icon(
-          onPressed: () => context.go('/p/${widget.projectId}/settings'),
-          icon: const Icon(Icons.arrow_back, size: 18),
-          label: const Text('Project settings'),
-        ),
         const SizedBox(height: 16),
         Card(
           child: Padding(
@@ -276,7 +318,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 onChanged: (v) => setState(() => _enabled = v),
               ),
               const SizedBox(height: 8),
-              Text('Dedup window (${_dedupMinutes} min)', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text('Dedup window ($_dedupMinutes min)', style: const TextStyle(fontWeight: FontWeight.w600)),
               Slider(
                 value: _dedupMinutes.toDouble(),
                 min: 1,
@@ -285,11 +327,28 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 label: '${_dedupMinutes}m',
                 onChanged: (v) => setState(() => _dedupMinutes = v.round()),
               ),
+              const SizedBox(height: 8),
+              Text(
+                _maxAlertsPerHour == 0 ? 'Rate limit: unlimited' : 'Rate limit: $_maxAlertsPerHour alerts/hour',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Slider(
+                value: _maxAlertsPerHour.toDouble(),
+                min: 0,
+                max: 100,
+                divisions: 100,
+                label: _maxAlertsPerHour == 0 ? 'off' : '$_maxAlertsPerHour/h',
+                onChanged: (v) => setState(() => _maxAlertsPerHour = v.round()),
+              ),
             ]),
           ),
         ),
         const SizedBox(height: 16),
         _routingCard(),
+        const SizedBox(height: 16),
+        _thresholdCard(),
+        const SizedBox(height: 16),
+        _digestCard(),
         const SizedBox(height: 16),
         _setupCard(),
         const SizedBox(height: 16),
@@ -298,6 +357,119 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       ],
     );
   }
+
+  Widget _thresholdCard() => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Spike alerts', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              subtitle: const Text('Alert when incidents cross a threshold in a time window'),
+              value: _thresholdOn,
+              onChanged: (v) => setState(() => _thresholdOn = v),
+            ),
+            if (_thresholdOn) ...[
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'count', label: Text('Fixed count'), icon: Icon(Icons.numbers, size: 16)),
+                  ButtonSegment(value: 'anomaly', label: Text('Anomaly'), icon: Icon(Icons.insights, size: 16)),
+                ],
+                selected: {_thresholdMode},
+                onSelectionChanged: (s) => setState(() => _thresholdMode = s.first),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _thresholdMode == 'anomaly'
+                    ? 'Learns a baseline and alerts on statistical spikes. The numbers below act as a noise floor (0 = ignore that metric).'
+                    : 'Alerts when counts in the window reach the numbers below (0 = off).',
+                style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+              ),
+              const SizedBox(height: 8),
+              Text('Window: $_thresholdWindow min', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Slider(
+                value: _thresholdWindow.toDouble(),
+                min: 5,
+                max: 120,
+                divisions: 23,
+                label: '${_thresholdWindow}m',
+                onChanged: (v) => setState(() => _thresholdWindow = v.round()),
+              ),
+              if (_thresholdMode == 'anomaly') ...[
+                Text('Sensitivity: ${_thresholdSensitivity.toStringAsFixed(0)}σ above baseline',
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Slider(
+                  value: _thresholdSensitivity,
+                  min: 1,
+                  max: 6,
+                  divisions: 5,
+                  label: '${_thresholdSensitivity.toStringAsFixed(0)}σ',
+                  onChanged: (v) => setState(() => _thresholdSensitivity = v),
+                ),
+              ],
+              Row(children: [
+                Expanded(
+                    child: _countField(_thresholdMode == 'anomaly' ? 'Error floor (0=off)' : 'Errors ≥ (0=off)',
+                        _thresholdErrors, (n) => setState(() => _thresholdErrors = n))),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: _countField(_thresholdMode == 'anomaly' ? 'Crash floor (0=off)' : 'Crashes ≥ (0=off)',
+                        _thresholdCrashes, (n) => setState(() => _thresholdCrashes = n))),
+              ]),
+              const SizedBox(height: 8),
+              const Text('Uses the channels selected in Routing.', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            ],
+          ]),
+        ),
+      );
+
+  Widget _countField(String label, int value, ValueChanged<int> onChanged) => TextFormField(
+        initialValue: '$value',
+        keyboardType: TextInputType.number,
+        decoration: InputDecoration(labelText: label, isDense: true),
+        onChanged: (s) => onChanged(int.tryParse(s.trim()) ?? 0),
+      );
+
+  Widget _digestCard() => Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Digest email', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              subtitle: const Text('Scheduled summary of top issues + regressions (email channel)'),
+              value: _digestOn,
+              onChanged: (v) => setState(() => _digestOn = v),
+            ),
+            if (_digestOn) ...[
+              const SizedBox(height: 8),
+              Row(children: [
+                const Text('Frequency', style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(width: 16),
+                DropdownButton<String>(
+                  value: _digestFreq,
+                  onChanged: (v) => setState(() => _digestFreq = v ?? 'daily'),
+                  items: const [
+                    DropdownMenuItem(value: 'daily', child: Text('Daily')),
+                    DropdownMenuItem(value: 'weekly', child: Text('Weekly (Mon)')),
+                  ],
+                ),
+              ]),
+              const SizedBox(height: 8),
+              Text('Send hour: ${_digestHour.toString().padLeft(2, '0')}:00 UTC', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Slider(
+                value: _digestHour.toDouble(),
+                min: 0,
+                max: 23,
+                divisions: 23,
+                label: '$_digestHour:00 UTC',
+                onChanged: (v) => setState(() => _digestHour = v.round()),
+              ),
+            ],
+          ]),
+        ),
+      );
 
   Widget _routingCard() => Card(
         child: Padding(
@@ -391,6 +563,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 'Enable Incoming Webhooks and add a webhook to your channel.',
                 'Copy the webhook URL (starts with https://hooks.slack.com/).',
                 'Paste it below and tap Save, then Send test.',
+                'Optional (Resolve/Mute buttons): in your Slack app enable Interactivity, set the Request URL to <your-server>/slack/interactions, and set SLACK_SIGNING_SECRET on the server.',
               ],
             ),
             const Divider(height: 24),
@@ -438,18 +611,23 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Channel credentials', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 6),
-            const Text('Secrets are encrypted at rest. Leave blank to keep existing values.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+            const Text('Secrets are encrypted at rest. Saved values stay set — leave a field blank to keep it.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
             if (_platform['slack'] == true) ...[
               const SizedBox(height: 16),
+              _channelHeader('Slack', _slackConfigured),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text('Slack ${_slackConfigured ? '(configured)' : ''}'),
+                title: const Text('Enabled'),
                 value: _slackOn,
                 onChanged: (v) => setState(() => _slackOn = v),
               ),
               TextField(
                 controller: _slackWebhookCtrl,
-                decoration: const InputDecoration(labelText: 'Webhook URL', hintText: 'https://hooks.slack.com/services/...'),
+                decoration: InputDecoration(
+                  labelText: 'Webhook URL',
+                  hintText: 'https://hooks.slack.com/services/...',
+                  helperText: _slackConfigured ? 'Saved — leave blank to keep current webhook' : null,
+                ),
               ),
               Align(
                 alignment: Alignment.centerLeft,
@@ -458,15 +636,30 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
             ],
             if (_platform['whatsapp'] == true) ...[
               const Divider(),
+              _channelHeader('WhatsApp', _waConfigured),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text('WhatsApp ${_waConfigured ? '(configured)' : ''}'),
+                title: const Text('Enabled'),
                 value: _waOn,
                 onChanged: (v) => setState(() => _waOn = v),
               ),
-              TextField(controller: _waPhoneCtrl, decoration: const InputDecoration(labelText: 'Phone (no +)', hintText: '9665xxxxxxxx')),
+              TextField(
+                controller: _waPhoneCtrl,
+                decoration: InputDecoration(
+                  labelText: 'Phone (no +)',
+                  hintText: '9665xxxxxxxx',
+                  helperText: _waConfigured ? 'Saved — leave blank to keep current number' : null,
+                ),
+              ),
               const SizedBox(height: 8),
-              TextField(controller: _waKeyCtrl, decoration: const InputDecoration(labelText: 'CallMeBot API key'), obscureText: true),
+              TextField(
+                controller: _waKeyCtrl,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'CallMeBot API key',
+                  helperText: _waConfigured ? 'Saved — leave blank to keep current key' : null,
+                ),
+              ),
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton(onPressed: _waOn ? () => _test('whatsapp') : null, child: const Text('Send test')),
@@ -474,15 +667,31 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
             ],
             if (_platform['email'] == true) ...[
               const Divider(),
+              _channelHeader('Email (Gmail)', _emailConfigured),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text('Email (Gmail) ${_emailConfigured ? '(configured)' : ''}'),
+                title: const Text('Enabled'),
                 value: _emailOn,
                 onChanged: (v) => setState(() => _emailOn = v),
               ),
-              TextField(controller: _smtpUserCtrl, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Gmail address')),
+              TextField(
+                controller: _smtpUserCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  labelText: 'Gmail address',
+                  hintText: _emailUserHint,
+                  helperText: _emailUserHint != null ? 'Saved: $_emailUserHint — leave blank to keep' : null,
+                ),
+              ),
               const SizedBox(height: 8),
-              TextField(controller: _smtpPassCtrl, decoration: const InputDecoration(labelText: 'App password'), obscureText: true),
+              TextField(
+                controller: _smtpPassCtrl,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: 'App password',
+                  helperText: _emailConfigured ? 'Saved — leave blank to keep current app password' : null,
+                ),
+              ),
               const SizedBox(height: 8),
               TextField(controller: _smtpFromCtrl, decoration: const InputDecoration(labelText: 'From (optional, defaults to Gmail address)')),
               const SizedBox(height: 8),
@@ -496,11 +705,44 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         ),
       );
 
+  Widget _channelHeader(String name, bool configured) => Row(
+        children: [
+          Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(width: 8),
+          if (configured)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(color: AppTheme.success.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(20)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.check_circle, size: 13, color: AppTheme.success),
+                SizedBox(width: 4),
+                Text('Saved', style: TextStyle(color: AppTheme.success, fontWeight: FontWeight.w600, fontSize: 11)),
+              ]),
+            ),
+        ],
+      );
+
+  int _stat(String k) => (_summary[k] as int?) ?? 0;
+
+  Widget _statChip(String label, int n, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(20)),
+        child: Text('$label $n', style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12)),
+      );
+
   Widget _deliveriesCard() => Card(
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Recent deliveries', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Text('Last 24 hours', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+            const SizedBox(height: 10),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              _statChip('Sent', _stat('sent'), AppTheme.success),
+              _statChip('Failed', _stat('failed'), AppTheme.error),
+              _statChip('Deduped', _stat('skipped_dedup'), AppTheme.muted),
+              _statChip('Rate-limited', _stat('rate_limited'), AppTheme.warning),
+            ]),
             const SizedBox(height: 12),
             for (final d in _deliveries.take(20))
               ListTile(

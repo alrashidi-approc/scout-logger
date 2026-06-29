@@ -9,6 +9,8 @@ import 'package:scout_server/store/notification_store.dart';
 import 'package:scout_server/store/platform_store.dart';
 import 'package:scout_server/notifications/notification_dispatcher.dart';
 import 'package:scout_server/notifications/notification_service.dart';
+import 'package:scout_server/notifications/monitor_scheduler.dart';
+import 'package:scout_server/reports/report_service.dart';
 import 'package:scout_server/store/scout_store.dart';
 import 'package:shelf/shelf_io.dart';
 
@@ -22,14 +24,24 @@ Future<void> main() async {
     final cipher = KeyCipher(config.encryptionKey);
     final platformStore = PlatformStore(db);
     final notificationStore = NotificationStore(db, cipher: cipher);
+    final dispatcher = NotificationDispatcher(cipher: cipher, slackInteractive: config.slackSigningSecret.isNotEmpty);
     final notificationService = NotificationService(
       store: notificationStore,
       platformStore: platformStore,
-      dispatcher: NotificationDispatcher(cipher: cipher),
+      dispatcher: dispatcher,
       config: config,
     );
     final store = ScoutStore(db, cipher: cipher, notifications: notificationService);
     final analytics = AnalyticsStore(db);
+
+    MonitorScheduler(
+      scout: store,
+      store: notificationStore,
+      platformStore: platformStore,
+      dispatcher: dispatcher,
+      reports: ReportService(store, analytics),
+      config: config,
+    ).start();
     final handler = createApp(
       config: config,
       store: store,

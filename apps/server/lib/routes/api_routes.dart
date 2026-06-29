@@ -14,6 +14,7 @@ import '../store/notification_store.dart';
 import '../store/platform_store.dart';
 import '../store/scout_store.dart';
 import '../notifications/notification_service.dart';
+import '../reports/report_service.dart';
 import '../util/dates.dart';
 import 'admin_routes.dart';
 
@@ -53,6 +54,7 @@ Handler apiRoutes(
   NotificationStore? notificationStore,
 }) {
   final router = Router();
+  final reportService = ReportService(store, analytics);
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
   router.get('/auth/me', meRoute(auth: authStore, config: config));
@@ -210,6 +212,17 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/reports/<type>', (Request request, String id, String type) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final reportType = ReportType.fromId(type);
+      if (reportType == null) return jsonErr('Unknown report type', status: 404);
+      final report = await reportService.build(reportType, id, _window(request.url.queryParameters, defaultDays: 30));
+      return Response.ok(jsonEncode({'ok': true, 'report': report.toJson()}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
   router.get('/projects/<id>/issues', (Request request, String id) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
@@ -245,11 +258,48 @@ Handler apiRoutes(
       if (guard != null) return guard;
       final body = await request.readAsString();
       final json = jsonDecode(body) as Map<String, dynamic>;
+      Map<String, dynamic>? issue;
+      if (json.containsKey('assigneeUserId')) {
+        final uid = json['assigneeUserId']?.toString();
+        issue = await store.assignIssue(id, issueId, uid != null && uid.isNotEmpty ? uid : null);
+      }
       final status = json['status'] as String?;
-      if (status == null || status.isEmpty) return jsonErr('status required');
-      final issue = await store.updateIssueStatus(id, issueId, status);
+      if (status != null && status.isNotEmpty) {
+        issue = await store.updateIssueStatus(id, issueId, status);
+      }
       if (issue == null) return jsonErr('Issue not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'issue': issue}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/issues/<issueId>/notes', (Request request, String id, String issueId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final notes = await store.listIssueNotes(id, issueId);
+      return Response.ok(jsonEncode({'ok': true, 'notes': notes}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.post('/projects/<id>/issues/<issueId>/notes', (Request request, String id, String issueId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      final json = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+      final text = json['body']?.toString() ?? '';
+      if (text.trim().isEmpty) return jsonErr('body is required');
+      final note = await store.addIssueNote(id, issueId, authFrom(request)?.userId, text);
+      if (note == null) return jsonErr('Issue not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'note': note}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/assignees', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final members = await authStore.listProjectMembers(id);
+      return Response.ok(jsonEncode({'ok': true, 'members': members}), headers: {'Content-Type': 'application/json'});
     });
   });
 
@@ -458,6 +508,18 @@ Handler apiRoutes(
   });
 
   if (notifications != null && notificationStore != null) {
+    router.get('/notifications/deliveries', (Request request) async {
+      return _api(() async {
+        final auth = authFrom(request)!;
+        final limit = (int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100).clamp(1, 200);
+        final hours = (int.tryParse(request.url.queryParameters['hours'] ?? '') ?? 24).clamp(1, 720);
+        final deliveries = await notificationStore.listAllDeliveries(userId: auth.userId, admin: auth.isAdmin, limit: limit);
+        final summary = await notificationStore.globalDeliverySummary(userId: auth.userId, admin: auth.isAdmin, hours: hours);
+        return Response.ok(jsonEncode({'ok': true, 'deliveries': deliveries, 'summary': summary}),
+            headers: {'Content-Type': 'application/json'});
+      });
+    });
+
     router.get('/projects/<id>/notifications', (Request request, String id) async {
       return _api(() async {
         final guard = await _projectGuard(request, id, authStore);
@@ -511,7 +573,13 @@ Handler apiRoutes(
         if (channel == null || !kNotificationChannels.contains(channel)) return jsonErr('channel is required');
         final config = await notificationStore.getConfig(id);
         final platform = await notifications.platformStore.getNotificationPolicy();
-        await notifications.sendTest(projectId: id, channel: channel, notifications: config, platform: platform);
+        try {
+          await notifications.sendTest(projectId: id, channel: channel, notifications: config, platform: platform);
+        } catch (e) {
+          // Delivery failures are config problems, not server errors — surface the reason.
+          final msg = '$e'.replaceFirst(RegExp(r'^(Exception: )?Failed after \d+ attempts: '), '');
+          return jsonErr(msg, status: 400);
+        }
         return Response.ok(jsonEncode({'ok': true}), headers: {'Content-Type': 'application/json'});
       });
     });
@@ -525,8 +593,11 @@ Handler apiRoutes(
         );
         if (denied != null) return denied;
         final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50;
+        final hours = int.tryParse(request.url.queryParameters['hours'] ?? '') ?? 24;
         final deliveries = await notificationStore.listDeliveries(id, limit: limit.clamp(1, 200));
-        return Response.ok(jsonEncode({'ok': true, 'deliveries': deliveries}), headers: {'Content-Type': 'application/json'});
+        final summary = await notificationStore.deliverySummary(id, hours: hours.clamp(1, 720));
+        return Response.ok(jsonEncode({'ok': true, 'deliveries': deliveries, 'summary': summary}),
+            headers: {'Content-Type': 'application/json'});
       });
     });
   }

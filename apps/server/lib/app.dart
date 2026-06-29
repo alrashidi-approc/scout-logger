@@ -11,6 +11,7 @@ import 'routes/auth_routes.dart';
 import 'routes/client_config_routes.dart';
 import 'routes/ingest_routes.dart';
 import 'routes/share_routes.dart';
+import 'routes/slack_routes.dart';
 import 'routes/web_routes.dart';
 import 'services/email_service.dart';
 import 'services/geo_enricher.dart';
@@ -60,6 +61,7 @@ Handler createApp({
   router.post('/v1/events/batch', ingestRoutes(store, geo));
   router.get('/v1/client/config', clientConfigRoutes(store));
   router.mount('/v1/share/', shareRoutes(store));
+  router.post('/slack/interactions', slackRoutes(config, store));
 
   router.get('/api/dashboard/config', (_) {
     return Response.ok(

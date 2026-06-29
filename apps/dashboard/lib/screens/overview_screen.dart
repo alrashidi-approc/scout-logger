@@ -173,6 +173,8 @@ class _OverviewScreenState extends State<OverviewScreen> {
               StatCard(label: 'Sessions', value: '${d['completedSessions'] ?? 0}', icon: Icons.play_circle_outline, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
               StatCard(label: 'Crashes', value: '${d['crashes'] ?? d['crashesToday']}', icon: Icons.bolt, color: AppTheme.error, delta: _delta('crashes'), deltaGoodWhenDown: true, onTap: () => context.go(Uri(path: '/p/$pid/events', queryParameters: _period.mergeQuery({'type': 'crash'})).toString())),
               StatCard(label: 'Open issues', value: '${d['openIssues']}', icon: Icons.bug_report_outlined, color: AppTheme.accentPurple, onTap: () => context.go(Uri(path: '/p/$pid/issues', queryParameters: _period.toQuery()).toString())),
+              if ((d['highSeverityIssues'] as int? ?? 0) > 0)
+                StatCard(label: 'High severity', value: '${d['highSeverityIssues']}', icon: Icons.priority_high, color: AppTheme.error, onTap: () => context.go(Uri(path: '/p/$pid/issues', queryParameters: _period.mergeQuery({'status': 'open'})).toString())),
               StatCard(label: 'Live sessions', value: '${d['activeSessions'] ?? 0}', icon: Icons.sensors, color: AppTheme.primary, onTap: () => context.go(Uri(path: '/p/$pid/sessions', queryParameters: _period.toQuery()).toString())),
             ],
           ),

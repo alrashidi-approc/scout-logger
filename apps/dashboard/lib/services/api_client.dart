@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:scout_models/scout_models.dart';
 
 import '../config/app_config.dart';
 import 'dashboard_log_service.dart';
@@ -148,6 +149,13 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['stats']);
   }
 
+  Future<Report> fetchReport(String projectId, String type, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/reports/$type').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return Report.fromJson(jsonMap((jsonDecode(res.body) as Map)['report']));
+  }
+
   Future<List<Map<String, dynamic>>> fetchIssues(
     String projectId, {
     String? type,
@@ -228,6 +236,32 @@ class ScoutApi {
     );
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['issue']);
+  }
+
+  Future<Map<String, dynamic>> assignIssue(String projectId, String issueId, String? userId) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/issues/$issueId'),
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'assigneeUserId': userId ?? ''}),
+    );
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['issue']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAssignableMembers(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/assignees'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonListMaps((jsonDecode(res.body) as Map)['members']);
+  }
+
+  Future<Map<String, dynamic>> addIssueNote(String projectId, String issueId, String body) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/issues/$issueId/notes'),
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'body': body}),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['note']);
   }
 
   Future<Map<String, dynamic>> fetchEvent(String projectId, String eventId) async {
@@ -394,11 +428,23 @@ class ScoutApi {
     _ok(res, projectId: projectId);
   }
 
-  Future<List<Map<String, dynamic>>> fetchNotificationDeliveries(String projectId, {int limit = 50}) async {
+  Future<Map<String, dynamic>> fetchNotificationDeliveries(String projectId, {int limit = 50}) async {
     final uri = _uri('/api/projects/$projectId/notifications/deliveries').replace(queryParameters: {'limit': '$limit'});
     final res = await _client.get(uri, headers: _headers);
     _ok(res, projectId: projectId);
-    return jsonListMaps((jsonDecode(res.body) as Map)['deliveries']);
+    final body = jsonDecode(res.body) as Map;
+    return {
+      'deliveries': jsonListMaps(body['deliveries']),
+      'summary': jsonMap(body['summary']),
+    };
+  }
+
+  Future<Map<String, dynamic>> fetchAllNotificationDeliveries({int limit = 100, int hours = 24}) async {
+    final uri = _uri('/api/notifications/deliveries').replace(queryParameters: {'limit': '$limit', 'hours': '$hours'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    final body = jsonDecode(res.body) as Map;
+    return {'deliveries': jsonListMaps(body['deliveries']), 'summary': jsonMap(body['summary'])};
   }
 
   Future<Map<String, dynamic>> fetchNotificationPolicy() async {

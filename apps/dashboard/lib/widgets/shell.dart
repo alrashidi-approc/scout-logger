@@ -35,6 +35,8 @@ class _DashboardShellState extends State<DashboardShell> {
     (Icons.list_alt_outlined, Icons.list_alt, 'Events'),
     (Icons.public_outlined, Icons.public, 'Geography'),
     (Icons.terminal_outlined, Icons.terminal, 'UI errors'),
+    (Icons.description_outlined, Icons.description, 'Reports'),
+    (Icons.notifications_outlined, Icons.notifications, 'Notifications'),
     (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
 
@@ -82,7 +84,9 @@ class _DashboardShellState extends State<DashboardShell> {
     if (path.contains('/events')) return 5;
     if (path.contains('/geo')) return 6;
     if (path.contains('/logs')) return 7;
-    if (path.contains('/settings')) return 8;
+    if (path.contains('/reports')) return 8;
+    if (path.contains('/notifications')) return 9;
+    if (path.contains('/settings')) return 10;
     return 0;
   }
 
@@ -98,7 +102,9 @@ class _DashboardShellState extends State<DashboardShell> {
       5 => '/p/$id/events',
       6 => '/p/$id/geo',
       7 => '/p/$id/logs',
-      8 => '/p/$id/settings',
+      8 => '/p/$id/reports',
+      9 => '/p/$id/notifications',
+      10 => '/p/$id/settings',
       _ => '/projects',
     };
     if (i > 0 && id == null) return;
@@ -110,13 +116,28 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _sidebarNav(BuildContext context, {required bool extended, required int selected}) {
     if (widget.projectId == null) {
-      return _NavTile(
-        icon: Icons.folder_outlined,
-        activeIcon: Icons.folder,
-        label: 'Projects',
-        selected: true,
-        extended: extended,
-        onTap: () => _onNav(0, context),
+      final path = GoRouterState.of(context).uri.path;
+      final onAlerts = path.startsWith('/alerts');
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _NavTile(
+            icon: Icons.folder_outlined,
+            activeIcon: Icons.folder,
+            label: 'Projects',
+            selected: !onAlerts,
+            extended: extended,
+            onTap: () => context.go('/projects'),
+          ),
+          _NavTile(
+            icon: Icons.notifications_outlined,
+            activeIcon: Icons.notifications,
+            label: 'Alerts',
+            selected: onAlerts,
+            extended: extended,
+            onTap: () => context.go('/alerts'),
+          ),
+        ],
       );
     }
 
@@ -372,7 +393,9 @@ class _TopBar extends StatelessWidget {
                 if (v == 'logout') {
                   await AuthService.instance.logout();
                   if (context.mounted) context.go('/login');
-                } else                 if (v == 'admin') {
+                } else if (v == 'alerts') {
+                  context.go('/alerts');
+                } else if (v == 'admin') {
                   context.go('/admin/users');
                 } else if (v == 'notifications') {
                   context.go('/admin/notifications');
@@ -380,6 +403,7 @@ class _TopBar extends StatelessWidget {
               },
               itemBuilder: (_) => [
                 PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
+                const PopupMenuItem(value: 'alerts', child: Text('Alerts')),
                 if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
                 if (AuthService.instance.isPlatformOwner)
                   const PopupMenuItem(value: 'notifications', child: Text('Notification channels')),

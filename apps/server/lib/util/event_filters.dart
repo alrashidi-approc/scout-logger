@@ -7,6 +7,8 @@ bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
 /// True failures only — not info/success network (OK/NET) or HTTP 2xx without error.
+/// Network faults the SDK/dashboard marked non-operational (e.g. 401/403/422, or
+/// owner-reclassified codes via `network.readable.operationalError = false`) are excluded.
 String sqlIsErrorEvent({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
   return '''
@@ -15,6 +17,7 @@ String sqlIsErrorEvent({String alias = ''}) {
   OR (
     ${p}type = 'network'
     AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
     AND (
       NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
       OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
@@ -64,6 +67,8 @@ bool isErrorEvent(String type, Map<String, dynamic> payload) {
   if (eff == 'info' || eff == 'success') return false;
   final network = payload['network'];
   if (network is! Map) return eff == 'error' || eff == 'warning';
+  final readable = network['readable'];
+  if (readable is Map && readable['operationalError'] == false) return false;
   final err = network['error'];
   if (err != null && err.toString().isNotEmpty) return true;
   final codeStr = network['statusCode']?.toString() ?? '';

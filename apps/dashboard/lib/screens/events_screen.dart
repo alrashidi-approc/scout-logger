@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
+import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
 import '../theme/app_theme.dart';
 import '../utils/screen_load.dart';
@@ -319,9 +320,9 @@ class _EventsScreenState extends State<EventsScreen> {
                   padding: insets.copyWith(top: 12),
                   sliver: SliverList(
                     delegate: SliverChildBuilderDelegate(
-                      (context, i) => EventCard(
-                        event: _events[i],
-                        onTap: () => context.push('/p/${widget.projectId}/events/${_events[i]['id']}'),
+                      (context, i) => RouteLink(
+                        path: '/p/${widget.projectId}/events/${_events[i]['id']}',
+                        builder: (open) => EventCard(event: _events[i], onTap: open),
                       ),
                       childCount: _events.length,
                     ),

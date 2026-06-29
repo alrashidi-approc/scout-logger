@@ -12,8 +12,10 @@ class EmailService {
 
   bool get enabled => config.smtpHost.isNotEmpty;
 
-  Future<String?> sendVerification({required String to, required String token}) async {
-    final link = '${config.publicUrl}${config.dashboardUrlPath}/verify-email?token=$token';
+  Future<String?> sendVerification(
+      {required String to, required String token}) async {
+    final link =
+        '${config.publicUrl}${config.dashboardUrlPath}/verify-email?token=$token';
     final subject = 'Verify your Scout Logger account';
     final body = '''
 Hello,
@@ -26,7 +28,8 @@ This link expires in 24 hours.
 
 — Scout Logger
 ''';
-    return _send(to: to, subject: subject, body: body, devLabel: 'verification link');
+    return _send(
+        to: to, subject: subject, body: body, devLabel: 'verification link');
   }
 
   Future<String?> _send({
@@ -40,14 +43,15 @@ This link expires in 24 hours.
       stdout.writeln(body.trim());
       return linkFromBody(body);
     }
-    final server = SmtpServer(
-      config.smtpHost,
-      port: config.smtpPort,
-      username: config.smtpUser.isEmpty ? null : config.smtpUser,
-      password: config.smtpPassword.isEmpty ? null : config.smtpPassword,
-      ssl: config.smtpPort == 465,
-      allowInsecure: config.smtpAllowInsecure,
-    );
+    // final server = SmtpServer(
+    //   config.smtpHost,
+    //   port: config.smtpPort,
+    //   username: config.smtpUser.isEmpty ? null : config.smtpUser,
+    //   password: config.smtpPassword.isEmpty ? null : config.smtpPassword,
+    //   ssl: config.smtpPort == 465,
+    //   allowInsecure: config.smtpAllowInsecure,
+    // );
+    final server = gmail(config.smtpUser, config.smtpPassword);
     await send(
       Message()
         ..from = Address(config.smtpFrom, 'Scout Logger')

@@ -13,6 +13,7 @@ const kNotificationChannels = {'slack', 'whatsapp', 'email'};
 const kDefaultNotificationCategories = ['crash', 'error', 'network_critical', 'network_transport'];
 const kDefaultNotificationEnvironments = ['production'];
 const kDefaultDedupMinutes = 15;
+const kDefaultMaxAlertsPerHour = 0; // 0 = unlimited
 
 const kDefaultNotificationChannels = ['slack', 'whatsapp', 'email'];
 
@@ -190,22 +191,108 @@ class EmailChannelConfig {
       };
 }
 
+/// Spike detection: alert when incident counts cross a threshold in a window.
+class ThresholdConfig {
+  const ThresholdConfig({
+    this.enabled = false,
+    this.mode = 'count',
+    this.windowMinutes = 15,
+    this.errorCount = 0,
+    this.crashCount = 0,
+    this.sensitivity = 3.0,
+    this.channels = kDefaultNotificationChannels,
+  });
+
+  final bool enabled;
+
+  /// 'count' = fixed threshold; 'anomaly' = spike vs learned baseline.
+  final String mode;
+  final int windowMinutes;
+
+  /// count mode: alert when errors in window reach this. anomaly mode: minimum
+  /// events before a spike can fire (noise floor). 0 disables the error metric.
+  final int errorCount;
+
+  /// Same as [errorCount] but for crashes.
+  final int crashCount;
+
+  /// anomaly mode: how many standard deviations above baseline triggers an alert.
+  final double sensitivity;
+  final List<String> channels;
+
+  bool get isAnomaly => mode == 'anomaly';
+
+  factory ThresholdConfig.fromJson(Map<String, dynamic>? json) => ThresholdConfig(
+        enabled: json?['enabled'] == true,
+        mode: json?['mode'] == 'anomaly' ? 'anomaly' : 'count',
+        windowMinutes: (int.tryParse('${json?['windowMinutes'] ?? ''}') ?? 15).clamp(5, 1440),
+        errorCount: (int.tryParse('${json?['errorCount'] ?? ''}') ?? 0).clamp(0, 100000),
+        crashCount: (int.tryParse('${json?['crashCount'] ?? ''}') ?? 0).clamp(0, 100000),
+        sensitivity: (double.tryParse('${json?['sensitivity'] ?? ''}') ?? 3.0).clamp(1.0, 6.0),
+        channels: _normList(json?['channels'] as List?, kNotificationChannels, kDefaultNotificationChannels),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'mode': mode,
+        'windowMinutes': windowMinutes,
+        'errorCount': errorCount,
+        'crashCount': crashCount,
+        'sensitivity': sensitivity,
+        'channels': channels,
+      };
+}
+
+/// Scheduled summary email of top issues + regressions.
+class DigestConfig {
+  const DigestConfig({this.enabled = false, this.frequency = 'daily', this.hourUtc = 8, this.channel = 'email'});
+
+  final bool enabled;
+
+  /// 'daily' or 'weekly' (weekly fires on Mondays).
+  final String frequency;
+  final int hourUtc;
+  final String channel;
+
+  factory DigestConfig.fromJson(Map<String, dynamic>? json) => DigestConfig(
+        enabled: json?['enabled'] == true,
+        frequency: json?['frequency'] == 'weekly' ? 'weekly' : 'daily',
+        hourUtc: (int.tryParse('${json?['hourUtc'] ?? ''}') ?? 8).clamp(0, 23),
+        channel: kNotificationChannels.contains(json?['channel']) ? json!['channel'] as String : 'email',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'frequency': frequency,
+        'hourUtc': hourUtc,
+        'channel': channel,
+      };
+}
+
 class ProjectNotificationConfig {
   const ProjectNotificationConfig({
     this.enabled = false,
     this.dedupMinutes = kDefaultDedupMinutes,
+    this.maxAlertsPerHour = kDefaultMaxAlertsPerHour,
     this.rules = const [NotificationRule(id: 'default')],
     this.slack = const SlackChannelConfig(),
     this.whatsapp = const WhatsappChannelConfig(),
     this.email = const EmailChannelConfig(),
+    this.threshold = const ThresholdConfig(),
+    this.digest = const DigestConfig(),
   });
 
   final bool enabled;
   final int dedupMinutes;
+
+  /// Max alerts sent per project per rolling hour. 0 disables the cap.
+  final int maxAlertsPerHour;
   final List<NotificationRule> rules;
   final SlackChannelConfig slack;
   final WhatsappChannelConfig whatsapp;
   final EmailChannelConfig email;
+  final ThresholdConfig threshold;
+  final DigestConfig digest;
 
   factory ProjectNotificationConfig.fromJson(Map<String, dynamic>? json) {
     if (json == null || json.isEmpty) return const ProjectNotificationConfig();
@@ -217,22 +304,28 @@ class ProjectNotificationConfig {
     return ProjectNotificationConfig(
       enabled: json['enabled'] == true,
       dedupMinutes: _clampDedup(json['dedupMinutes']),
+      maxAlertsPerHour: _clampRate(json['maxAlertsPerHour']),
       rules: rules,
       slack: SlackChannelConfig.fromJson(channels['slack'] is Map ? Map<String, dynamic>.from(channels['slack'] as Map) : null),
       whatsapp: WhatsappChannelConfig.fromJson(channels['whatsapp'] is Map ? Map<String, dynamic>.from(channels['whatsapp'] as Map) : null),
       email: EmailChannelConfig.fromJson(channels['email'] is Map ? Map<String, dynamic>.from(channels['email'] as Map) : null),
+      threshold: ThresholdConfig.fromJson(json['threshold'] is Map ? Map<String, dynamic>.from(json['threshold'] as Map) : null),
+      digest: DigestConfig.fromJson(json['digest'] is Map ? Map<String, dynamic>.from(json['digest'] as Map) : null),
     );
   }
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
         'dedupMinutes': dedupMinutes,
+        'maxAlertsPerHour': maxAlertsPerHour,
         'rules': rules.map((r) => r.toJson()).toList(),
         'channels': {
           'slack': slack.toJson(),
           'whatsapp': whatsapp.toJson(),
           'email': email.toJson(),
         },
+        'threshold': threshold.toJson(),
+        'digest': digest.toJson(),
       };
 
   Map<String, dynamic> toClientJson({
@@ -245,6 +338,7 @@ class ProjectNotificationConfig {
       {
         'enabled': enabled,
         'dedupMinutes': dedupMinutes,
+        'maxAlertsPerHour': maxAlertsPerHour,
         'rules': rules.map((r) => r.toJson()).toList(),
         'platform': platform.toJson(),
         'channels': {
@@ -252,6 +346,8 @@ class ProjectNotificationConfig {
           'whatsapp': whatsapp.toClientJson(configured: whatsappConfigured),
           'email': email.toClientJson(configured: emailConfigured, smtpUserHint: emailUserHint),
         },
+        'threshold': threshold.toJson(),
+        'digest': digest.toJson(),
       };
 }
 
@@ -281,4 +377,10 @@ int _clampDedup(dynamic raw) {
   final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
   if (n == null) return kDefaultDedupMinutes;
   return n.clamp(1, 1440);
+}
+
+int _clampRate(dynamic raw) {
+  final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
+  if (n == null) return kDefaultMaxAlertsPerHour;
+  return n.clamp(0, 1000);
 }

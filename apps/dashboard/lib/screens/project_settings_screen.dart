@@ -389,18 +389,6 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             ),
           ],
         ),
-        if (_canDelete) ...[
-          const SizedBox(height: 16),
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.notifications_active_outlined, color: AppTheme.primary),
-              title: const Text('Alert notifications', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Slack, WhatsApp, and Gmail SMTP for critical events'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => context.go('/p/${widget.projectId}/notifications'),
-            ),
-          ),
-        ],
         if (_canManageMembers) ...[
           const SizedBox(height: 16),
           Card(

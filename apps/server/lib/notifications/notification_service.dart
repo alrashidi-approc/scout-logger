@@ -31,6 +31,7 @@ class NotificationService {
     required String? message,
     required Map<String, dynamic> payload,
     required String? fingerprint,
+    bool regression = false,
     required ProjectNotificationConfig notifications,
     required PlatformNotificationPolicy platform,
   }) async {
@@ -48,6 +49,7 @@ class NotificationService {
       message: message,
       payload: payload,
       fingerprint: fingerprint,
+      issueId: issueId,
       dashboardBaseUrl: '${config.publicUrl}${config.dashboardUrlPath}',
     );
     if (jobs.isEmpty) return;
@@ -57,9 +59,10 @@ class NotificationService {
         projectId: projectId,
         eventId: eventId,
         issueId: issueId,
-        job: job,
+        job: regression ? job.asRegression() : job,
         notifications: notifications,
         projectName: projectName,
+        regression: regression,
       ));
     }
   }
@@ -71,13 +74,16 @@ class NotificationService {
     required NotificationJob job,
     required ProjectNotificationConfig notifications,
     required String projectName,
+    bool regression = false,
   }) async {
-    final dup = await store.recentlyDelivered(
-      projectId: projectId,
-      dedupKey: job.dedupKey,
-      channel: job.channel,
-      withinMinutes: notifications.dedupMinutes,
-    );
+    // Regressions always alert and bypass the dedup window.
+    final dup = !regression &&
+        await store.recentlyDelivered(
+          projectId: projectId,
+          dedupKey: job.dedupKey,
+          channel: job.channel,
+          withinMinutes: notifications.dedupMinutes,
+        );
     if (dup) {
       await store.logDelivery(
         projectId: projectId,
@@ -87,6 +93,20 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'skipped_dedup',
+      );
+      return;
+    }
+
+    final cap = notifications.maxAlertsPerHour;
+    if (cap > 0 && await store.sentCountSince(projectId, minutes: 60) >= cap) {
+      await store.logDelivery(
+        projectId: projectId,
+        eventId: eventId,
+        issueId: issueId,
+        dedupKey: job.dedupKey,
+        category: job.category,
+        channel: job.channel,
+        status: 'rate_limited',
       );
       return;
     }

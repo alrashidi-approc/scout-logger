@@ -80,10 +80,17 @@ class NotificationStore {
     return ProjectNotificationConfig(
       enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
       dedupMinutes: patch.containsKey('dedupMinutes') ? _clampDedup(patch['dedupMinutes']) : current.dedupMinutes,
+      maxAlertsPerHour: patch.containsKey('maxAlertsPerHour') ? _clampRate(patch['maxAlertsPerHour']) : current.maxAlertsPerHour,
       rules: rules,
       slack: _mergeSlack(current.slack, slackPatch),
       whatsapp: _mergeWhatsapp(current.whatsapp, waPatch),
       email: _mergeEmail(current.email, emailPatch),
+      threshold: patch['threshold'] is Map
+          ? ThresholdConfig.fromJson(Map<String, dynamic>.from(patch['threshold'] as Map))
+          : current.threshold,
+      digest: patch['digest'] is Map
+          ? DigestConfig.fromJson(Map<String, dynamic>.from(patch['digest'] as Map))
+          : current.digest,
     );
   }
 
@@ -143,6 +150,27 @@ class NotificationStore {
     return n.clamp(1, 1440);
   }
 
+  int _clampRate(dynamic raw) {
+    final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
+    if (n == null) return kDefaultMaxAlertsPerHour;
+    return n.clamp(0, 1000);
+  }
+
+  /// Count alerts actually sent for a project within the last [minutes].
+  Future<int> sentCountSince(String projectId, {int minutes = 60}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(*)::int FROM notification_deliveries
+        WHERE project_id = @pid
+          AND status = 'sent'
+          AND created_at >= now() - (@mins::text || ' minutes')::interval
+      '''),
+      parameters: {'pid': projectId, 'mins': minutes},
+    );
+    return (rows.first[0] as int?) ?? 0;
+  }
+
   Future<bool> recentlyDelivered({
     required String projectId,
     required String dedupKey,
@@ -198,6 +226,21 @@ class NotificationStore {
     );
   }
 
+  /// Delivery counts grouped by status over the last [hours].
+  Future<Map<String, int>> deliverySummary(String projectId, {int hours = 24}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT status, COUNT(*)::int FROM notification_deliveries
+        WHERE project_id = @pid
+          AND created_at >= now() - (@hrs::text || ' hours')::interval
+        GROUP BY status
+      '''),
+      parameters: {'pid': projectId, 'hrs': hours},
+    );
+    return {for (final r in rows) r[0] as String: (r[1] as int?) ?? 0};
+  }
+
   Future<List<Map<String, dynamic>>> listDeliveries(String projectId, {int limit = 50}) async {
     final conn = await db.connect();
     final rows = await conn.execute(
@@ -222,6 +265,76 @@ class NotificationStore {
               'createdAt': (r[7] as DateTime?)?.toUtc().toIso8601String(),
             })
         .toList();
+  }
+
+  /// Deliveries across every project the user can access (admin = all), newest first.
+  Future<List<Map<String, dynamic>>> listAllDeliveries({String? userId, bool admin = false, int limit = 100}) async {
+    if (!admin && userId == null) return const [];
+    final conn = await db.connect();
+    final scope = admin
+        ? ''
+        : 'JOIN project_memberships m ON m.project_id = d.project_id AND m.user_id = @uid';
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT d.id, d.project_id, p.name, d.event_id, d.issue_id, d.category, d.channel, d.status, d.error_message, d.created_at
+        FROM notification_deliveries d
+        JOIN projects p ON p.id = d.project_id
+        $scope
+        ORDER BY d.created_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {'lim': limit, if (!admin) 'uid': userId},
+    );
+    return rows
+        .map((r) => {
+              'id': r[0],
+              'projectId': r[1],
+              'projectName': r[2],
+              'eventId': r[3],
+              'issueId': r[4],
+              'category': r[5],
+              'channel': r[6],
+              'status': r[7],
+              'errorMessage': r[8],
+              'createdAt': (r[9] as DateTime?)?.toUtc().toIso8601String(),
+            })
+        .toList();
+  }
+
+  /// Delivery counts by status across the user's projects over the last [hours].
+  Future<Map<String, int>> globalDeliverySummary({String? userId, bool admin = false, int hours = 24}) async {
+    if (!admin && userId == null) return const {};
+    final conn = await db.connect();
+    final scope = admin
+        ? ''
+        : 'JOIN project_memberships m ON m.project_id = d.project_id AND m.user_id = @uid';
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT d.status, COUNT(*)::int FROM notification_deliveries d
+        $scope
+        WHERE d.created_at >= now() - (@hrs::text || ' hours')::interval
+        GROUP BY d.status
+      '''),
+      parameters: {'hrs': hours, if (!admin) 'uid': userId},
+    );
+    return {for (final r in rows) r[0] as String: (r[1] as int?) ?? 0};
+  }
+
+  /// All projects that have notifications enabled, with name + parsed config.
+  Future<List<({String id, String name, ProjectNotificationConfig config})>> allEnabledConfigs() async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named("SELECT id, name, settings FROM projects WHERE settings->'notifications'->>'enabled' = 'true'"),
+    );
+    final out = <({String id, String name, ProjectNotificationConfig config})>[];
+    for (final r in rows) {
+      final settings = r[2] is Map ? Map<String, dynamic>.from(r[2] as Map) : <String, dynamic>{};
+      final config = ProjectNotificationConfig.fromJson(
+        settings['notifications'] is Map ? Map<String, dynamic>.from(settings['notifications'] as Map) : null,
+      );
+      out.add((id: r[0] as String, name: r[1] as String? ?? r[0] as String, config: config));
+    }
+    return out;
   }
 
   Future<String?> projectName(String projectId) async {

@@ -48,6 +48,30 @@ void main() {
     test('network info level is not an error', () {
       expect(isErrorEvent('network', {'level': 'info', 'network': {}}), isFalse);
     });
+
+    test('non-operational fault (401) is excluded even with 4xx status', () {
+      expect(
+        isErrorEvent('network', {
+          'network': {
+            'statusCode': 401,
+            'readable': {'operationalError': false},
+          },
+        }),
+        isFalse,
+      );
+    });
+
+    test('operational fault (500) still counts as error', () {
+      expect(
+        isErrorEvent('network', {
+          'network': {
+            'statusCode': 500,
+            'readable': {'operationalError': true},
+          },
+        }),
+        isTrue,
+      );
+    });
   });
 
   group('isSuccessEvent', () {

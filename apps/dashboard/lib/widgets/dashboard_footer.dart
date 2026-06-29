@@ -8,7 +8,7 @@ class DashboardFooter extends StatelessWidget {
 
   final bool compact;
 
-  static const _version = '0.1.0';
+  static const _version = '0.1.1';
 
   @override
   Widget build(BuildContext context) {

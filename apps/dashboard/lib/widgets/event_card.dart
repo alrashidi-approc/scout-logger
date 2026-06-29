@@ -228,6 +228,8 @@ class IssueCard extends StatelessWidget {
                   children: [
                     LevelBadge(level: level, type: type, compact: compact),
                     if (type == 'network') LevelBadge(type: type, compact: compact, transportOnly: true),
+                    if (!resolved && (issue['severity'] == 'high' || issue['severity'] == 'medium'))
+                      _severityBadge(issue['severity'] as String),
                   ],
                 ),
                 SizedBox(width: compact ? 10 : 12),
@@ -274,6 +276,16 @@ class IssueCard extends StatelessWidget {
     final total = issue['totalEventCount'] as int?;
     if (total != null && total != count) return '$count events · $total total';
     return '$count events';
+  }
+
+  Widget _severityBadge(String severity) {
+    final color = severity == 'high' ? AppTheme.error : AppTheme.warning;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(6)),
+      child: Text(severity.toUpperCase(),
+          style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 10, letterSpacing: 0.4)),
+    );
   }
 
   Widget _meta(IconData icon, String text, {Color? color}) => Row(

@@ -1,5 +1,6 @@
 import 'package:scout_models/scout_models.dart';
 
+import '../util/insights.dart';
 import 'notification_categories.dart';
 
 class NotificationJob {
@@ -10,6 +11,7 @@ class NotificationJob {
     required this.title,
     required this.body,
     required this.eventUrl,
+    this.issueId,
   });
 
   final String channel;
@@ -18,6 +20,20 @@ class NotificationJob {
   final String title;
   final String body;
   final String eventUrl;
+
+  /// Issue this alert belongs to (enables Slack action buttons).
+  final String? issueId;
+
+  /// A copy flagged as a regression (resolved issue reopened).
+  NotificationJob asRegression() => NotificationJob(
+        channel: channel,
+        category: category,
+        dedupKey: dedupKey,
+        title: '🔁 Regression: $title',
+        body: 'A resolved issue has reoccurred.\n$body',
+        eventUrl: eventUrl,
+        issueId: issueId,
+      );
 }
 
 List<NotificationJob> routeNotifications({
@@ -31,6 +47,7 @@ List<NotificationJob> routeNotifications({
   required String? message,
   required Map<String, dynamic> payload,
   required String? fingerprint,
+  String? issueId,
   required String dashboardBaseUrl,
 }) {
   if (!config.enabled) return const [];
@@ -61,7 +78,7 @@ List<NotificationJob> routeNotifications({
     for (final category in matched) {
       for (final channel in rule.channels) {
         if (!platform.channelAllowed(channel)) continue;
-        if (!_channelReady(config, channel)) continue;
+        if (!channelReady(config, channel)) continue;
         final key = '$channel:$dedupBase:$category';
         if (!seen.add(key)) continue;
         jobs.add(NotificationJob(
@@ -71,6 +88,7 @@ List<NotificationJob> routeNotifications({
           title: title,
           body: body,
           eventUrl: eventUrl,
+          issueId: issueId,
         ));
       }
     }
@@ -78,7 +96,7 @@ List<NotificationJob> routeNotifications({
   return jobs;
 }
 
-bool _channelReady(ProjectNotificationConfig config, String channel) => switch (channel) {
+bool channelReady(ProjectNotificationConfig config, String channel) => switch (channel) {
       'slack' => config.slack.enabled && (config.slack.webhookUrlEnc?.isNotEmpty ?? false),
       'whatsapp' => config.whatsapp.enabled &&
           (config.whatsapp.phoneEnc?.isNotEmpty ?? false) &&
@@ -113,6 +131,8 @@ String _alertBody({
     ..writeln('Type: $type · $environment')
     ..writeln('Categories: ${categories.join(', ')}');
   if (message != null && message.isNotEmpty) buf.writeln('Message: $message');
+  final culprit = stackCulpritFromTrace(stackFromPayload(payload));
+  if (culprit != null) buf.writeln('Likely source: $culprit');
   if (type == 'network' && payload['network'] is Map) {
     final n = Map<String, dynamic>.from(payload['network'] as Map);
     final method = n['method']?.toString();

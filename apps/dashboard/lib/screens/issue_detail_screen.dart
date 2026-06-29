@@ -40,7 +40,16 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   bool _refreshing = false;
   bool _updating = false;
   bool _sharing = false;
+  bool _addingNote = false;
+  List<Map<String, dynamic>> _members = [];
+  final _noteCtrl = TextEditingController();
   Object? _error;
+
+  @override
+  void dispose() {
+    _noteCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -67,6 +76,11 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     });
     try {
       final issue = await _api.fetchIssue(widget.projectId, widget.issueId);
+      if (!widget.shared && _members.isEmpty) {
+        try {
+          _members = await _api.fetchAssignableMembers(widget.projectId);
+        } catch (_) {}
+      }
       if (mounted) setState(() {
         _issue = issue;
         _loading = false;
@@ -94,12 +108,53 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           _updating = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(status == 'resolved' ? 'Issue marked resolved' : 'Issue reopened')),
+          SnackBar(content: Text(switch (status) {
+            'resolved' => 'Issue marked resolved',
+            'ignored' => 'Issue muted — alerts paused',
+            _ => 'Issue reopened',
+          })),
         );
       }
     } catch (e) {
       if (mounted) {
         setState(() => _updating = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _assign(String? userId) async {
+    setState(() => _updating = true);
+    try {
+      final issue = await _api.assignIssue(widget.projectId, widget.issueId, userId);
+      if (mounted) setState(() {
+        _issue = issue;
+        _updating = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() => _updating = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _addNote() async {
+    final text = _noteCtrl.text.trim();
+    if (text.isEmpty) return;
+    setState(() => _addingNote = true);
+    try {
+      final note = await _api.addIssueNote(widget.projectId, widget.issueId, text);
+      if (mounted) {
+        setState(() {
+          (_issue!['notes'] as List).add(note);
+          _noteCtrl.clear();
+          _addingNote = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _addingNote = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
     }
@@ -172,19 +227,31 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                   : const Icon(Icons.link, size: 18),
               label: const Text('Share link'),
             ),
-          if (!shared && status == 'open')
+          if (!shared && status == 'open') ...[
             FilledButton.icon(
               onPressed: _updating ? null : () => _setStatus('resolved'),
               icon: _updating
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.check_circle_outline, size: 18),
               label: const Text('Resolve'),
-            )
-          else if (!shared && status == 'resolved')
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _updating ? null : () => _setStatus('ignored'),
+              icon: const Icon(Icons.notifications_off_outlined, size: 18),
+              label: const Text('Mute'),
+            ),
+          ] else if (!shared && status == 'resolved')
             OutlinedButton.icon(
               onPressed: _updating ? null : () => _setStatus('open'),
               icon: const Icon(Icons.replay, size: 18),
               label: const Text('Reopen'),
+            )
+          else if (!shared && status == 'ignored')
+            OutlinedButton.icon(
+              onPressed: _updating ? null : () => _setStatus('open'),
+              icon: const Icon(Icons.notifications_active_outlined, size: 18),
+              label: const Text('Unmute'),
             ),
         ]),
         const SizedBox(height: 24),
@@ -198,6 +265,16 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             _statTile('Status', issue['status'] as String? ?? 'open', Icons.flag_outlined),
           ],
         ),
+        if (issue['insights'] is Map) ...[
+          const SizedBox(height: 20),
+          _insightsCard(Map<String, dynamic>.from(issue['insights'] as Map)),
+        ],
+        if (!shared) ...[
+          const SizedBox(height: 20),
+          _assigneeCard(issue),
+          const SizedBox(height: 20),
+          _notesCard(issue),
+        ],
         if (devices.isNotEmpty) ...[
           const SizedBox(height: 20),
           Card(
@@ -250,6 +327,145 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
               onTap: shared ? null : () => context.push('/p/${widget.projectId}/events/${e['id']}'),
             )),
       ],
+    );
+  }
+
+  String _memberLabel(Map<String, dynamic> m) {
+    final name = (m['displayName'] as String?)?.trim();
+    return name != null && name.isNotEmpty ? '$name (${m['email']})' : '${m['email']}';
+  }
+
+  Widget _assigneeCard(Map<String, dynamic> issue) {
+    final current = issue['assigneeUserId'] as String?;
+    final hasCurrent = current != null && _members.any((m) => m['userId'] == current);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(children: [
+          const Icon(Icons.person_outline, size: 20, color: AppTheme.muted),
+          const SizedBox(width: 12),
+          const Text('Assignee', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          const Spacer(),
+          DropdownButton<String?>(
+            value: hasCurrent ? current : null,
+            hint: const Text('Unassigned'),
+            onChanged: _updating ? null : _assign,
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+              for (final m in _members)
+                DropdownMenuItem<String?>(value: m['userId'] as String, child: Text(_memberLabel(m))),
+            ],
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _notesCard(Map<String, dynamic> issue) {
+    final notes = (issue['notes'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Notes', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          const SizedBox(height: 12),
+          if (notes.isEmpty)
+            const Text('No notes yet', style: TextStyle(color: AppTheme.muted, fontSize: 13))
+          else
+            for (final n in notes) ...[
+              Text(n['body'] as String? ?? '', style: const TextStyle(fontSize: 14)),
+              Text(
+                '${n['authorName'] ?? n['authorEmail'] ?? 'Unknown'} · ${_noteTime(n['createdAt'] as String?)}',
+                style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+              ),
+              const Divider(height: 20),
+            ],
+          Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _noteCtrl,
+                minLines: 1,
+                maxLines: 4,
+                decoration: const InputDecoration(hintText: 'Add a note…', isDense: true),
+                onSubmitted: (_) => _addNote(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _addingNote ? null : _addNote,
+              child: _addingNote
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Add'),
+            ),
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  String _noteTime(String? iso) {
+    final d = DateTime.tryParse(iso ?? '');
+    return d == null ? '' : DateFormat.yMMMd().add_jm().format(d.toLocal());
+  }
+
+  Color _sevColor(String s) => switch (s) {
+        'high' => AppTheme.error,
+        'medium' => AppTheme.warning,
+        _ => AppTheme.muted,
+      };
+
+  Widget _insightsCard(Map<String, dynamic> insights) {
+    final severity = insights['severity'] as String? ?? 'low';
+    final reasons = (insights['severityReasons'] as List?)?.cast<String>() ?? const [];
+    final culprit = insights['culprit'] as String?;
+    final correlations = (insights['correlations'] as List?)?.cast<Map>() ?? const [];
+    final color = _sevColor(severity);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.auto_awesome, size: 18, color: AppTheme.muted),
+            const SizedBox(width: 8),
+            const Text('Insights', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(color: color.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(20)),
+              child: Text('${severity.toUpperCase()} severity',
+                  style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 12)),
+            ),
+          ]),
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(reasons.join(' · '), style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+          ],
+          if (culprit != null) ...[
+            const SizedBox(height: 14),
+            const Text('Likely source', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: AppTheme.muted.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(8)),
+              child: Text(culprit, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            ),
+          ],
+          if (correlations.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text('Common factors', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final c in correlations)
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  label: Text('${c['label']}: ${c['value']} · ${((c['ratio'] as num) * 100).round()}%',
+                      style: const TextStyle(fontSize: 12)),
+                ),
+            ]),
+          ],
+        ]),
+      ),
     );
   }
 

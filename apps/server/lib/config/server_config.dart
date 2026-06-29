@@ -25,6 +25,7 @@ class ServerConfig {
     required this.smtpAllowInsecure,
     required this.encryptionKey,
     required this.platformOwnerEmail,
+    required this.slackSigningSecret,
   });
 
   factory ServerConfig.load({EnvFile? env}) {
@@ -53,6 +54,7 @@ class ServerConfig {
       smtpAllowInsecure: _bool(e['SMTP_ALLOW_INSECURE'], defaultValue: false),
       encryptionKey: e['ENCRYPTION_KEY'] ?? jwtSecret,
       platformOwnerEmail: (e['PLATFORM_OWNER_EMAIL'] ?? 'mohaalrashidi4@gmail.com').trim().toLowerCase(),
+      slackSigningSecret: (e['SLACK_SIGNING_SECRET'] ?? '').trim(),
     );
   }
 
@@ -76,6 +78,9 @@ class ServerConfig {
   final bool smtpAllowInsecure;
   final String encryptionKey;
   final String platformOwnerEmail;
+
+  /// Slack app signing secret for verifying interactive button callbacks.
+  final String slackSigningSecret;
 
   String get dashboardUrlPath => '/$dashboardWebPath';
 

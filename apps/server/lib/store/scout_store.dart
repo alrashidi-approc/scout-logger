@@ -11,6 +11,7 @@ import '../util/dates.dart';
 import '../util/event_filters.dart';
 import '../util/event_trend.dart';
 import '../util/ids.dart';
+import '../util/insights.dart';
 import '../util/user_identity.dart';
 
 const _sessionIdleMinutes = 5;
@@ -34,6 +35,18 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
 }
 
 Map<String, dynamic> _asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+
+/// Result of grouping an event into an issue.
+class IssueUpsert {
+  const IssueUpsert({required this.id, required this.muted, required this.regression});
+
+  /// Issue is muted (status `ignored`) — suppress notifications.
+  final bool muted;
+
+  /// Resolved issue reopened by this event — a regression worth alerting on.
+  final bool regression;
+  final String id;
+}
 
 Map<String, dynamic> _payloadWithNetworkReadable(
   Map<String, dynamic> payload,
@@ -426,9 +439,10 @@ class ScoutStore {
     final faultOverrides = await _networkFaultOverrides(conn, projectId);
     ProjectNotificationConfig? notifConfig;
     PlatformNotificationPolicy? platformPolicy;
-    if (_notifications != null) {
-      notifConfig = await _notifications!.store.getConfig(projectId);
-      platformPolicy = await _notifications!.platformStore.getNotificationPolicy();
+    final notifications = _notifications;
+    if (notifications != null) {
+      notifConfig = await notifications.store.getConfig(projectId);
+      platformPolicy = await notifications.platformStore.getNotificationPolicy();
     }
     var accepted = 0;
     for (final event in events) {
@@ -512,9 +526,11 @@ class ScoutStore {
 
     String? issueId;
     String? fingerprint;
+    var issueMuted = false;
+    var issueRegression = false;
     if (groupsIntoIssue(event.type) && _qualifiesForIssue(event.type, payload)) {
       fingerprint = eventFingerprint(event.type, payload);
-      issueId = await _upsertIssue(
+      final upsert = await _upsertIssue(
         conn,
         projectId: projectId,
         fingerprint: fingerprint,
@@ -525,6 +541,9 @@ class ScoutStore {
         installId: installId,
         country: country,
       );
+      issueId = upsert.id;
+      issueMuted = upsert.muted;
+      issueRegression = upsert.regression;
     }
 
     final eventId = newId();
@@ -562,11 +581,12 @@ class ScoutStore {
       },
     );
 
-    if (_notifications != null && notifConfig != null && platformPolicy != null) {
+    final notifications = _notifications;
+    if (notifications != null && notifConfig != null && platformPolicy != null && !issueMuted) {
       fingerprint ??= (event.type == 'error' || event.type == 'crash' || event.type == 'network')
           ? eventFingerprint(event.type, payload)
           : null;
-      await _notifications!.onEventIngested(
+      await notifications.onEventIngested(
         projectId: projectId,
         eventId: eventId,
         issueId: issueId,
@@ -575,6 +595,7 @@ class ScoutStore {
         message: message,
         payload: payload,
         fingerprint: fingerprint,
+        regression: issueRegression,
         notifications: notifConfig,
         platform: platformPolicy,
       );
@@ -643,7 +664,7 @@ class ScoutStore {
     );
   }
 
-  Future<String> _upsertIssue(
+  Future<IssueUpsert> _upsertIssue(
     Connection conn, {
     required String projectId,
     required String fingerprint,
@@ -655,24 +676,29 @@ class ScoutStore {
     String? country,
   }) async {
     final existing = await conn.execute(
-      Sql.named('SELECT id, affected_users, top_country FROM issues WHERE project_id = @pid AND fingerprint = @fp'),
+      Sql.named('SELECT id, status FROM issues WHERE project_id = @pid AND fingerprint = @fp'),
       parameters: {'pid': projectId, 'fp': fingerprint},
     );
 
     if (existing.isNotEmpty) {
       final id = existing.first[0] as String;
+      final status = existing.first[1] as String? ?? 'open';
+      final muted = status == 'ignored';
+      final regression = status == 'resolved';
       await conn.execute(
         Sql.named('''
           UPDATE issues SET
             last_seen_at = GREATEST(last_seen_at, @at),
             event_count = event_count + 1,
             title = COALESCE(NULLIF(@title, ''), title),
-            top_country = COALESCE(top_country, @country)
+            top_country = COALESCE(top_country, @country),
+            status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END,
+            regressed_at = CASE WHEN status = 'resolved' THEN @at ELSE regressed_at END
           WHERE id = @id
         '''),
         parameters: {'id': id, 'at': occurredAt, 'title': title, 'country': country},
       );
-      return id;
+      return IssueUpsert(id: id, muted: muted, regression: regression);
     }
 
     final id = newId();
@@ -694,7 +720,7 @@ class ScoutStore {
         'country': country,
       },
     );
-    return id;
+    return IssueUpsert(id: id, muted: false, regression: false);
   }
 
   Future<List<Map<String, dynamic>>> listIssues(
@@ -747,7 +773,16 @@ class ScoutStore {
           )
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
-          AND (@q::text IS NULL OR title ILIKE '%' || @q::text || '%')
+          AND (
+            @q::text IS NULL
+            OR title ILIKE '%' || @q::text || '%'
+            OR EXISTS (
+              SELECT 1 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
+                AND (e.message ILIKE '%' || @q::text || '%'
+                  OR e.payload->>'stack' ILIKE '%' || @q::text || '%'
+                  OR e.payload->'network'->>'url' ILIKE '%' || @q::text || '%')
+            )
+          )
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
           AND (
@@ -780,6 +815,13 @@ class ScoutStore {
           final totalEvents = r[5] as int;
           final periodEvents = r[12] as int;
           final inPeriod = w.since != null;
+          final lastSeen = r[8] as DateTime;
+          final sev = computeIssueSeverity(
+            eventCount: inPeriod ? periodEvents : totalEvents,
+            affectedUsers: (r[6] as int?) ?? 0,
+            hoursSinceLastSeen: DateTime.now().toUtc().difference(lastSeen.toUtc()).inHours,
+            isCrash: r[2] == 'crash',
+          );
           return {
               'id': r[0],
               'fingerprint': r[1],
@@ -790,11 +832,12 @@ class ScoutStore {
               if (inPeriod) 'totalEventCount': totalEvents,
               'affectedUsers': r[6],
               'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
-              'lastSeenAt': (r[8] as DateTime).toUtc().toIso8601String(),
+              'lastSeenAt': lastSeen.toUtc().toIso8601String(),
               'topCountry': r[9],
               'level': r[10],
               if (r[11] != null) 'statusCode': r[11],
               if (r[13] != null) 'topDevice': r[13],
+              'severity': sev.severity,
             };
         })
         .toList();
@@ -804,9 +847,11 @@ class ScoutStore {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        SELECT id, project_id, fingerprint, type, title, status, first_seen_at, last_seen_at,
-               event_count, affected_users, top_country
-        FROM issues WHERE project_id = @pid AND id = @id
+        SELECT i.id, i.project_id, i.fingerprint, i.type, i.title, i.status, i.first_seen_at, i.last_seen_at,
+               i.event_count, i.affected_users, i.top_country, i.assignee_user_id, u.email, u.display_name
+        FROM issues i
+        LEFT JOIN dashboard_users u ON u.id = i.assignee_user_id
+        WHERE i.project_id = @pid AND i.id = @id
       '''),
       parameters: {'pid': projectId, 'id': issueId},
     );
@@ -824,7 +869,11 @@ class ScoutStore {
       'eventCount': r[8],
       'affectedUsers': r[9],
       'topCountry': r[10],
+      if (r[11] != null) 'assigneeUserId': r[11],
+      if (r[11] != null) 'assigneeEmail': r[12],
+      if (r[11] != null) 'assigneeName': r[13],
     };
+    issue['notes'] = await listIssueNotes(projectId, issueId);
     final events = await conn.execute(
       Sql.named('''
         SELECT id, type, occurred_at, user_id, release, country, message, payload, enrichment
@@ -836,7 +885,86 @@ class ScoutStore {
     issue['events'] = events.map(_eventRow).toList();
     issue['geoBreakdown'] = await _issueGeo(conn, projectId, issueId);
     issue['deviceBreakdown'] = await _issueDevices(conn, projectId, issueId);
+    issue['insights'] = await _issueInsights(conn, projectId, issueId, issue);
     return issue;
+  }
+
+  /// Zero-cost heuristics: stack culprit, dominant correlations, severity score.
+  Future<Map<String, dynamic>> _issueInsights(
+    Connection conn,
+    String projectId,
+    String issueId,
+    Map<String, dynamic> issue,
+  ) async {
+    final correlations = <Map<String, dynamic>>[];
+    for (final (col, label) in [
+      ('app_version', 'App version'),
+      ('platform', 'Platform'),
+      ('country', 'Country'),
+      ('environment', 'Environment'),
+    ]) {
+      final c = await _topCorrelation(conn, projectId, issueId, col);
+      if (c != null && c.ratio >= 0.6 && c.value != 'unknown') {
+        correlations.add({'label': label, 'value': c.value, 'ratio': c.ratio, 'count': c.count});
+      }
+    }
+
+    final culprit = await _stackCulprit(conn, projectId, issueId);
+
+    final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
+    final sev = computeIssueSeverity(
+      eventCount: (issue['eventCount'] as int?) ?? 0,
+      affectedUsers: (issue['affectedUsers'] as int?) ?? 0,
+      hoursSinceLastSeen: last == null ? 9999 : DateTime.now().toUtc().difference(last).inHours,
+      isCrash: (issue['type'] as String?) == 'crash',
+    );
+
+    return {
+      'severity': sev.severity,
+      'severityReasons': sev.reasons,
+      if (culprit != null) 'culprit': culprit,
+      'correlations': correlations,
+    };
+  }
+
+  Future<({String value, double ratio, int count})?> _topCorrelation(
+    Connection conn,
+    String projectId,
+    String issueId,
+    String column,
+  ) async {
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF($column, ''), 'unknown') AS v,
+               COUNT(*)::int AS c,
+               SUM(COUNT(*)) OVER ()::int AS total
+        FROM events e
+        WHERE project_id = @pid AND issue_id = @iid AND ${sqlIsErrorEvent(alias: 'e')}
+        GROUP BY v ORDER BY c DESC LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'iid': issueId},
+    );
+    if (rows.isEmpty) return null;
+    final value = rows.first[0] as String;
+    final count = (rows.first[1] as int?) ?? 0;
+    final total = (rows.first[2] as int?) ?? 0;
+    if (total == 0) return null;
+    return (value: value, ratio: count / total, count: count);
+  }
+
+  Future<String?> _stackCulprit(Connection conn, String projectId, String issueId) async {
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(payload->>'stack', payload->>'stackTrace')
+        FROM events e
+        WHERE project_id = @pid AND issue_id = @iid
+          AND (payload ? 'stack' OR payload ? 'stackTrace')
+        ORDER BY occurred_at DESC LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'iid': issueId},
+    );
+    if (rows.isEmpty || rows.first[0] == null) return null;
+    return stackCulpritFromTrace(rows.first[0] as String);
   }
 
   Future<Map<String, dynamic>?> updateIssueStatus(String projectId, String issueId, String status) async {
@@ -846,7 +974,9 @@ class ScoutStore {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        UPDATE issues SET status = @status
+        UPDATE issues SET
+          status = @status,
+          resolved_at = CASE WHEN @status = 'resolved' THEN now() ELSE NULL END
         WHERE project_id = @pid AND id = @id
         RETURNING id
       '''),
@@ -854,6 +984,181 @@ class ScoutStore {
     );
     if (rows.isEmpty) return null;
     return getIssue(projectId, issueId);
+  }
+
+  /// Error + crash event counts in the last [minutes] (for spike detection).
+  Future<({int errors, int crashes})> incidentCounts(String projectId, {required int minutes}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
+          COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes
+        FROM events e
+        WHERE project_id = @pid AND occurred_at >= now() - (@mins::text || ' minutes')::interval
+      '''),
+      parameters: {'pid': projectId, 'mins': minutes},
+    );
+    final r = rows.first;
+    return (errors: (r[0] as int?) ?? 0, crashes: (r[1] as int?) ?? 0);
+  }
+
+  /// Per-window counts for the current window (index 0) plus [lookback] prior
+  /// windows, for anomaly detection. Returns both metrics as count lists where
+  /// index 0 is the most recent (current) window.
+  Future<({List<int> errors, List<int> crashes})> windowedCounts(
+    String projectId, {
+    required int windowMinutes,
+    int lookback = 24,
+  }) async {
+    final conn = await db.connect();
+    final total = windowMinutes * (lookback + 1);
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT
+          floor(extract(epoch from (now() - occurred_at)) / (@win * 60))::int AS bucket,
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
+          COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes
+        FROM events e
+        WHERE project_id = @pid AND occurred_at >= now() - (@total::text || ' minutes')::interval
+        GROUP BY bucket
+      '''),
+      parameters: {'pid': projectId, 'win': windowMinutes, 'total': total},
+    );
+    final errors = List<int>.filled(lookback + 1, 0);
+    final crashes = List<int>.filled(lookback + 1, 0);
+    for (final r in rows) {
+      final bucket = (r[0] as int?) ?? -1;
+      if (bucket < 0 || bucket > lookback) continue;
+      errors[bucket] = (r[1] as int?) ?? 0;
+      crashes[bucket] = (r[2] as int?) ?? 0;
+    }
+    return (errors: errors, crashes: crashes);
+  }
+
+  /// Top issues by event volume in the last [hours] + regression count (for digests).
+  Future<({List<Map<String, dynamic>> issues, int regressions, int newIssues})> digestData(
+    String projectId, {
+    required int hours,
+    int limit = 10,
+  }) async {
+    final conn = await db.connect();
+    final top = await conn.execute(
+      Sql.named('''
+        SELECT i.title, i.type, COUNT(e.id)::int AS c
+        FROM issues i
+        JOIN events e ON e.issue_id = i.id AND e.project_id = @pid AND ${sqlIsErrorEvent(alias: 'e')}
+          AND e.occurred_at >= now() - (@hrs::text || ' hours')::interval
+        WHERE i.project_id = @pid
+        GROUP BY i.id, i.title, i.type
+        ORDER BY c DESC LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'hrs': hours, 'lim': limit},
+    );
+    final counts = await conn.execute(
+      Sql.named('''
+        SELECT
+          COUNT(*) FILTER (WHERE regressed_at >= now() - (@hrs::text || ' hours')::interval)::int,
+          COUNT(*) FILTER (WHERE first_seen_at >= now() - (@hrs::text || ' hours')::interval)::int
+        FROM issues WHERE project_id = @pid
+      '''),
+      parameters: {'pid': projectId, 'hrs': hours},
+    );
+    return (
+      issues: top.map((r) => {'title': r[0], 'type': r[1], 'count': r[2]}).toList(),
+      regressions: (counts.first[0] as int?) ?? 0,
+      newIssues: (counts.first[1] as int?) ?? 0,
+    );
+  }
+
+  /// Update issue status by id alone (used by Slack action callbacks).
+  /// Returns the issue title + project on success.
+  Future<({String projectId, String title})?> updateIssueStatusById(String issueId, String status) async {
+    if (!{'open', 'resolved', 'ignored'}.contains(status)) throw ArgumentError('Invalid status');
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        UPDATE issues SET
+          status = @status,
+          resolved_at = CASE WHEN @status = 'resolved' THEN now() ELSE NULL END
+        WHERE id = @id
+        RETURNING project_id, title
+      '''),
+      parameters: {'id': issueId, 'status': status},
+    );
+    if (rows.isEmpty) return null;
+    return (projectId: rows.first[0] as String, title: rows.first[1] as String? ?? 'Issue');
+  }
+
+  /// Assign (or unassign when [userId] is null) an issue to a project member.
+  Future<Map<String, dynamic>?> assignIssue(String projectId, String issueId, String? userId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('UPDATE issues SET assignee_user_id = @uid WHERE project_id = @pid AND id = @id RETURNING id'),
+      parameters: {'pid': projectId, 'id': issueId, 'uid': userId},
+    );
+    if (rows.isEmpty) return null;
+    return getIssue(projectId, issueId);
+  }
+
+  Future<List<Map<String, dynamic>>> listIssueNotes(String projectId, String issueId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT n.id, n.body, n.created_at, n.author_id, u.email, u.display_name
+        FROM issue_notes n
+        LEFT JOIN dashboard_users u ON u.id = n.author_id
+        WHERE n.project_id = @pid AND n.issue_id = @iid
+        ORDER BY n.created_at ASC
+      '''),
+      parameters: {'pid': projectId, 'iid': issueId},
+    );
+    return rows
+        .map((r) => {
+              'id': r[0],
+              'body': r[1],
+              'createdAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'authorId': r[3],
+              'authorEmail': r[4],
+              'authorName': r[5],
+            })
+        .toList();
+  }
+
+  Future<Map<String, dynamic>?> addIssueNote(String projectId, String issueId, String? authorId, String body) async {
+    final text = body.trim();
+    if (text.isEmpty) throw ArgumentError('Note cannot be empty');
+    final conn = await db.connect();
+    final exists = await conn.execute(
+      Sql.named('SELECT 1 FROM issues WHERE project_id = @pid AND id = @id'),
+      parameters: {'pid': projectId, 'id': issueId},
+    );
+    if (exists.isEmpty) return null;
+    final id = newId();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO issue_notes (id, project_id, issue_id, author_id, body)
+        VALUES (@id, @pid, @iid, @aid, @body)
+      '''),
+      parameters: {'id': id, 'pid': projectId, 'iid': issueId, 'aid': authorId, 'body': text},
+    );
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT n.id, n.body, n.created_at, n.author_id, u.email, u.display_name
+        FROM issue_notes n LEFT JOIN dashboard_users u ON u.id = n.author_id
+        WHERE n.id = @id
+      '''),
+      parameters: {'id': id},
+    );
+    final r = rows.first;
+    return {
+      'id': r[0],
+      'body': r[1],
+      'createdAt': (r[2] as DateTime).toUtc().toIso8601String(),
+      'authorId': r[3],
+      'authorEmail': r[4],
+      'authorName': r[5],
+    };
   }
 
   Future<Map<String, dynamic>?> getEvent(String projectId, String eventId) async {
@@ -1162,6 +1467,8 @@ class ScoutStore {
             OR session_id ILIKE '%' || @q::text || '%'
             OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
             OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
+            OR payload->>'stack' ILIKE '%' || @q::text || '%'
+            OR payload->>'stackTrace' ILIKE '%' || @q::text || '%'
             OR ${sqlDeviceNameExpr()} ILIKE '%' || @q::text || '%'
           )
           AND (@country::text IS NULL OR country = @country::text)
@@ -1256,10 +1563,23 @@ class ScoutStore {
     );
     final s = stats.first;
 
-    final openIssues = await conn.execute(
-      Sql.named('SELECT COUNT(*)::int FROM issues WHERE project_id = @pid AND status = \'open\''),
+    final openRows = await conn.execute(
+      Sql.named("SELECT type, event_count, affected_users, last_seen_at FROM issues WHERE project_id = @pid AND status = 'open'"),
       parameters: {'pid': projectId},
     );
+    final nowUtc = DateTime.now().toUtc();
+    var openCount = 0;
+    var highSeverity = 0;
+    for (final r in openRows) {
+      openCount++;
+      final sev = computeIssueSeverity(
+        eventCount: (r[1] as int?) ?? 0,
+        affectedUsers: (r[2] as int?) ?? 0,
+        hoursSinceLastSeen: nowUtc.difference((r[3] as DateTime).toUtc()).inHours,
+        isCrash: r[0] == 'crash',
+      );
+      if (sev.severity == 'high') highSeverity++;
+    }
 
     final sessions = await conn.execute(
       Sql.named('''
@@ -1326,7 +1646,8 @@ class ScoutStore {
       'avgSessionDurationMs': sess[1] == null ? null : _i(sess[1]),
       'sessionsCompletedToday': _i(sess[2]),
       'uniqueUsers7d': _i(sess[3]),
-      'openIssues': _i(openIssues.first[0]),
+      'openIssues': openCount,
+      'highSeverityIssues': highSeverity,
       'topCountries': countries.map((r) => {'country': r[0], 'count': r[1]}).toList(),
       'trendGranularity': trendGranularity(w),
       'dailyTrend': trend,

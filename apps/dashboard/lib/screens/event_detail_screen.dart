@@ -15,11 +15,16 @@ import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
 class EventDetailScreen extends StatefulWidget {
-  const EventDetailScreen({super.key, required this.projectId, required this.eventId, this.shareUrl})
+  const EventDetailScreen(
+      {super.key,
+      required this.projectId,
+      required this.eventId,
+      this.shareUrl})
       : shared = false,
         initialEvent = null;
 
-  const EventDetailScreen.viewOnly({super.key, required this.initialEvent, this.shareUrl})
+  const EventDetailScreen.viewOnly(
+      {super.key, required this.initialEvent, this.shareUrl})
       : shared = true,
         projectId = '',
         eventId = '';
@@ -76,7 +81,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
         });
       }
     } catch (e) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
+      DashboardLogService.record(
+          projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
         setState(() {
           _error = e;
@@ -88,8 +94,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     }
   }
 
-  void _copyJson(EventView v) =>
-      copyWithFeedback(context, prettyJson(v.event), message: 'Event JSON copied');
+  void _copyJson(EventView v) => copyWithFeedback(context, prettyJson(v.event),
+      message: 'Event JSON copied');
 
   void _copyTicket(EventView v) => copyWithFeedback(
         context,
@@ -100,7 +106,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   Future<void> _share() async {
     setState(() => _sharing = true);
     try {
-      await copyShareLink(context, projectId: widget.projectId, type: 'event', resourceId: widget.eventId);
+      await copyShareLink(context,
+          projectId: widget.projectId,
+          type: 'event',
+          resourceId: widget.eventId);
     } finally {
       if (mounted) setState(() => _sharing = false);
     }
@@ -153,7 +162,10 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   OutlinedButton.icon(
                     onPressed: _sharing ? null : _share,
                     icon: _sharing
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.link, size: 16),
                     label: const Text('Share link'),
                   ),
@@ -166,7 +178,9 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                     icon: const Icon(Icons.copy, size: 16),
                     label: const Text('Copy JSON')),
               ],
-              IconButton(onPressed: shared ? null : _load, icon: const Icon(Icons.refresh)),
+              IconButton(
+                  onPressed: shared ? null : _load,
+                  icon: const Icon(Icons.refresh)),
               if (compact) ...[
                 OutlinedButton(
                     onPressed: () => _copyTicket(v),
@@ -191,7 +205,9 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                 ? () => context.go(
                     '/p/$pid/events?days=30&q=${Uri.encodeComponent(v.userId)}')
                 : null,
-            onCountryTap: !shared && countryCode != null ? () => context.go('/p/$pid/geo') : null,
+            onCountryTap: !shared && countryCode != null
+                ? () => context.go('/p/$pid/geo')
+                : null,
           ),
           const SizedBox(height: 16),
           EventDetailGroup(
@@ -217,7 +233,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                     entries: related
                         .map((e) => eventTimelineEntry(
                               e,
-                              onTap: () => context.push('/p/$pid/events/${e['id']}'),
+                              onTap: () =>
+                                  context.push('/p/$pid/events/${e['id']}'),
                             ))
                         .toList(),
                   ),
@@ -229,24 +246,37 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
             icon: Icons.timeline,
             subtitle: () {
               if (sessionEvents.isNotEmpty) {
-                final screens = sessionEvents.map((e) => str(e['route']) ?? '').where((r) => r.isNotEmpty && r != '—').toSet().length;
+                final screens = sessionEvents
+                    .map((e) => str(e['route']) ?? '')
+                    .where((r) => r.isNotEmpty && r != '—')
+                    .toSet()
+                    .length;
                 return '${sessionEvents.length} events · $screens screens';
               }
-              if (v.breadcrumbs.isNotEmpty) return '${v.breadcrumbs.length} screens';
+              if (v.breadcrumbs.isNotEmpty)
+                return '${v.breadcrumbs.length} screens';
               return v.route != '—' ? v.route : null;
             }(),
             children: [
               if (sessionEvents.isNotEmpty) ...[
                 SessionTimeline(
                   events: sessionEvents,
-                  onEventTap: shared ? null : (e) => context.push('/p/$pid/events/${e['id']}'),
+                  onEventTap: shared
+                      ? null
+                      : (e) => context.push('/p/$pid/events/${e['id']}'),
                 ),
               ] else if (v.breadcrumbs.isNotEmpty) ...[
-                const Text('Screens', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+                const Text('Screens',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: AppTheme.muted)),
                 const SizedBox(height: 8),
                 BreadcrumbTrail(items: v.breadcrumbs),
               ] else if (v.route != '—')
-                SimpleTimeline(entries: [SimpleTimelineEntry(title: v.route, meta: 'Current screen')]),
+                SimpleTimeline(entries: [
+                  SimpleTimelineEntry(title: v.route, meta: 'Current screen')
+                ]),
             ],
           ),
           EventDetailGroup(
@@ -347,7 +377,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
 }
 
 class _IssueLink extends StatelessWidget {
-  const _IssueLink({required this.projectId, required this.issue, this.shared = false});
+  const _IssueLink(
+      {required this.projectId, required this.issue, this.shared = false});
 
   final String projectId;
   final Map<String, dynamic> issue;
@@ -358,7 +389,9 @@ class _IssueLink extends StatelessWidget {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: shared ? null : () => context.push('/p/$projectId/issues/${issue['id']}'),
+        onTap: shared
+            ? null
+            : () => context.push('/p/$projectId/issues/${issue['id']}'),
         child: Padding(
           padding: const EdgeInsets.all(14),
           child: Row(children: [
@@ -377,11 +410,12 @@ class _IssueLink extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w700)),
                   if (!shared)
                     Text('${issue['eventCount']} events · ${issue['status']}',
-                        style:
-                            const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.muted)),
                   if (shared && issue['status'] != null)
                     Text('${issue['status']}',
-                        style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.muted)),
                 ],
               ),
             ),

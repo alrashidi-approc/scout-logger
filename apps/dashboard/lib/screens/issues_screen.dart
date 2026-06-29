@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../widgets/event_card.dart';
+import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
 import '../theme/app_theme.dart';
 import '../utils/screen_load.dart';
@@ -41,6 +42,17 @@ class IssuesScreen extends StatefulWidget {
 class _IssuesScreenState extends State<IssuesScreen> {
   final _api = ScoutApi();
   List<Map<String, dynamic>> _issues = [];
+  bool _sortBySeverity = false;
+
+  static const _sevRank = {'high': 0, 'medium': 1, 'low': 2};
+
+  List<Map<String, dynamic>> get _displayIssues {
+    if (!_sortBySeverity) return _issues;
+    final sorted = [..._issues];
+    sorted.sort((a, b) =>
+        (_sevRank[a['severity']] ?? 3).compareTo(_sevRank[b['severity']] ?? 3));
+    return sorted;
+  }
   List<String> _environments = [];
   List<String> _appVersions = [];
   List<String> _deviceNames = [];
@@ -228,6 +240,13 @@ class _IssuesScreenState extends State<IssuesScreen> {
                       FilterChip(label: const Text('All status'), selected: _statusFilter == null, onSelected: (_) => _apply(status: null, reloadStatus: true)),
                       FilterChip(label: const Text('Open'), selected: _statusFilter == 'open', onSelected: (_) => _apply(status: 'open', reloadStatus: true)),
                       FilterChip(label: const Text('Resolved'), selected: _statusFilter == 'resolved', onSelected: (_) => _apply(status: 'resolved', reloadStatus: true)),
+                      FilterChip(label: const Text('Muted'), selected: _statusFilter == 'ignored', onSelected: (_) => _apply(status: 'ignored', reloadStatus: true)),
+                      FilterChip(
+                        avatar: const Icon(Icons.sort, size: 16),
+                        label: const Text('Sort by severity'),
+                        selected: _sortBySeverity,
+                        onSelected: (v) => setState(() => _sortBySeverity = v),
+                      ),
                     ],
                   ),
                 ],
@@ -255,10 +274,13 @@ class _IssuesScreenState extends State<IssuesScreen> {
               padding: insets.copyWith(top: 12, bottom: pad),
               sliver: SliverList(
                 delegate: SliverChildBuilderDelegate(
-                  (context, i) => IssueCard(
-                    issue: _issues[i],
-                    onTap: () => context.push('/p/${widget.projectId}/issues/${_issues[i]['id']}'),
-                  ),
+                  (context, i) {
+                    final issues = _displayIssues;
+                    return RouteLink(
+                      path: '/p/${widget.projectId}/issues/${issues[i]['id']}',
+                      builder: (open) => IssueCard(issue: issues[i], onTap: open ?? () {}),
+                    );
+                  },
                   childCount: _issues.length,
                 ),
               ),

@@ -2,6 +2,7 @@ import 'package:go_router/go_router.dart';
 
 import '../screens/admin_notifications_screen.dart';
 import '../screens/admin_users_screen.dart';
+import '../screens/alerts_screen.dart';
 import '../screens/analytics_screen.dart';
 import '../screens/shared_detail_screen.dart';
 import '../screens/auth_screen.dart';
@@ -15,6 +16,7 @@ import '../screens/dashboard_logs_screen.dart';
 import '../screens/project_notifications_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
+import '../screens/reports_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/sessions_screen.dart';
 import '../screens/user_detail_screen.dart';
@@ -70,6 +72,10 @@ GoRouter createRouter() {
       GoRoute(
         path: '/projects',
         pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: ProjectsScreen())),
+      ),
+      GoRoute(
+        path: '/alerts',
+        pageBuilder: (c, s) => scoutPage(s, const DashboardShell(projectId: null, child: AlertsScreen())),
       ),
       GoRoute(
         path: '/admin/users',
@@ -248,6 +254,16 @@ GoRouter createRouter() {
           GoRoute(
             path: '/p/:projectId/logs',
             pageBuilder: (c, s) => scoutPage(s, DashboardLogsScreen(projectId: s.pathParameters['projectId']!)),
+          ),
+          GoRoute(
+            path: '/p/:projectId/reports',
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              ReportsScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
+              ),
+            ),
           ),
           GoRoute(
             path: '/p/:projectId/settings',
