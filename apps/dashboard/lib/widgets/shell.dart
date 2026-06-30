@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/link.dart';
 
 import '../services/dashboard_scope.dart';
 import '../services/api_client.dart';
@@ -90,7 +91,7 @@ class _DashboardShellState extends State<DashboardShell> {
     return 0;
   }
 
-  void _onNav(int i, BuildContext context) {
+  String _locationFor(int i, BuildContext context) {
     final id = widget.projectId;
     final periodQ = PeriodFilter.queryFromUri(GoRouterState.of(context).uri.queryParameters);
     final path = switch (i) {
@@ -107,8 +108,12 @@ class _DashboardShellState extends State<DashboardShell> {
       10 => '/p/$id/settings',
       _ => '/projects',
     };
-    if (i > 0 && id == null) return;
-    context.go(Uri(path: path, queryParameters: periodQ).toString());
+    return Uri(path: path, queryParameters: periodQ).toString();
+  }
+
+  void _onNav(int i, BuildContext context) {
+    if (i > 0 && widget.projectId == null) return;
+    context.go(_locationFor(i, context));
     if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
       Navigator.of(context).pop();
     }
@@ -127,6 +132,7 @@ class _DashboardShellState extends State<DashboardShell> {
             label: 'Projects',
             selected: !onAlerts,
             extended: extended,
+            location: '/projects',
             onTap: () => context.go('/projects'),
           ),
           _NavTile(
@@ -135,6 +141,7 @@ class _DashboardShellState extends State<DashboardShell> {
             label: 'Alerts',
             selected: onAlerts,
             extended: extended,
+            location: '/alerts',
             onTap: () => context.go('/alerts'),
           ),
         ],
@@ -163,6 +170,7 @@ class _DashboardShellState extends State<DashboardShell> {
             label: _navItems[i].$3,
             selected: selected == i,
             extended: extended,
+            location: _locationFor(i, context),
             onTap: () => _onNav(i, context),
           ),
       ],
@@ -448,39 +456,45 @@ class _TopBar extends StatelessWidget {
 }
 
 class _NavTile extends StatelessWidget {
-  const _NavTile({required this.icon, required this.activeIcon, required this.label, required this.selected, required this.extended, required this.onTap});
+  const _NavTile({required this.icon, required this.activeIcon, required this.label, required this.selected, required this.extended, required this.location, required this.onTap});
 
   final IconData icon;
   final IconData activeIcon;
   final String label;
   final bool selected;
   final bool extended;
+  final String location;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final accent = selected ? AppTheme.primary : AppTheme.muted;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          margin: EdgeInsets.symmetric(horizontal: extended ? 10 : 8, vertical: 2),
-          padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 11),
-          decoration: BoxDecoration(
-            color: selected ? AppTheme.primary.withValues(alpha: 0.1) : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-            border: selected ? Border.all(color: AppTheme.primary.withValues(alpha: 0.2)) : null,
-          ),
-          child: Row(
-            mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center,
-            children: [
-              Icon(selected ? activeIcon : icon, color: accent, size: 20),
-              if (extended) ...[
-                const SizedBox(width: 12),
-                Expanded(child: Text(label, style: TextStyle(color: accent, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w500))),
+    // Renders a real <a href> on web so the tile supports open-in-new-tab,
+    // Ctrl/Cmd+click and middle-click, while a normal click stays in-app.
+    return Link(
+      uri: Uri.parse(location),
+      builder: (context, _) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            margin: EdgeInsets.symmetric(horizontal: extended ? 10 : 8, vertical: 2),
+            padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 11),
+            decoration: BoxDecoration(
+              color: selected ? AppTheme.primary.withValues(alpha: 0.1) : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
+              border: selected ? Border.all(color: AppTheme.primary.withValues(alpha: 0.2)) : null,
+            ),
+            child: Row(
+              mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center,
+              children: [
+                Icon(selected ? activeIcon : icon, color: accent, size: 20),
+                if (extended) ...[
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(label, style: TextStyle(color: accent, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w500))),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

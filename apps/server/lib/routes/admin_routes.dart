@@ -45,6 +45,36 @@ Handler adminRoutes({
     }
   });
 
+  router.post('/users/<id>/unverify', (Request request, String id) async {
+    final principal = authFrom(request)!;
+    if (!principal.isAdmin) return jsonErr('Admin access required', status: 403);
+    if (principal.userId == id) return jsonErr('You cannot unverify your own account');
+    try {
+      final user = await auth.setUnverified(id);
+      if (user == null) return jsonErr('User not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'user': auth.publicUser(user)}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return jsonErr('$e', status: 500);
+    }
+  });
+
+  router.delete('/users/<id>', (Request request, String id) async {
+    final principal = authFrom(request)!;
+    if (!principal.isAdmin) return jsonErr('Admin access required', status: 403);
+    if (principal.userId == id) return jsonErr('You cannot delete your own account');
+    try {
+      final target = await auth.findUserById(id);
+      if (target == null) return jsonErr('User not found', status: 404);
+      if (target['globalRole'] == 'admin' && await auth.adminCount() <= 1) {
+        return jsonErr('Cannot delete the last admin');
+      }
+      await auth.deleteUser(id);
+      return Response.ok(jsonEncode({'ok': true}), headers: {'Content-Type': 'application/json'});
+    } catch (e) {
+      return jsonErr('$e', status: 500);
+    }
+  });
+
   router.get('/notification-policy', (Request request) async {
     final principal = authFrom(request)!;
     if (!isPlatformOwner(principal, config.platformOwnerEmail)) {

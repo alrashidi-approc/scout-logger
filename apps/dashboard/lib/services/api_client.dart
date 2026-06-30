@@ -72,6 +72,17 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['user']);
   }
 
+  Future<Map<String, dynamic>> unverifyAdminUser(String userId) async {
+    final res = await _client.post(_uri('/api/admin/users/$userId/unverify'), headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['user']);
+  }
+
+  Future<void> deleteAdminUser(String userId) async {
+    final res = await _client.delete(_uri('/api/admin/users/$userId'), headers: _headers);
+    _ok(res);
+  }
+
   Future<Map<String, dynamic>> fetchProjectCredentials(String projectId) async {
     final res = await _client.get(_uri('/api/projects/$projectId/credentials'), headers: _headers);
     _ok(res);

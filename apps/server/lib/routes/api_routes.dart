@@ -165,8 +165,7 @@ Handler apiRoutes(
       final q = request.url.queryParameters;
       final w = _window(q);
       try {
-        await store.closeStaleSessions(projectId: id);
-        final overview = await store.projectOverview(id, window: w);
+        final overview = await store.projectOverview(id, window: w, includeTrend: false);
         final stats = await analytics.projectStats(id, window: w);
         final insights = await analytics.dashboardInsights(id, window: w);
         final health = await store.sdkHealth(id, window: w);

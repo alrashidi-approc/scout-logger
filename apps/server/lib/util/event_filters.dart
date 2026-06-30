@@ -1,50 +1,16 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-const sqlHideSessionHeartbeat = '''
-  NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')
-''';
+/// Backed by the `is_heartbeat` generated column (see migration 014).
+const sqlHideSessionHeartbeat = 'NOT is_heartbeat';
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
-/// True failures only — not info/success network (OK/NET) or HTTP 2xx without error.
-/// Network faults the SDK/dashboard marked non-operational (e.g. 401/403/422, or
-/// owner-reclassified codes via `network.readable.operationalError = false`) are excluded.
-String sqlIsErrorEvent({String alias = ''}) {
-  final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  ${p}type IN ('error', 'crash')
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
-    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
-    AND (
-      NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
-      OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
-      OR NOT ((${p}payload->'network'->>'statusCode') ~ '^[0-9]+\$' AND (${p}payload->'network'->>'statusCode')::int < 400)
-    )
-  )
-)''';
-}
+/// True failures only — backed by the `is_error` generated column (migration 014).
+/// Classification logic lives in that migration; keep it in sync with [isErrorEvent].
+String sqlIsErrorEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_error';
 
-/// Successful outcomes — explicit OK level or healthy network (2xx, no transport error).
-String sqlIsSuccessEvent({String alias = ''}) {
-  final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) = 'success'
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) IN ('info', 'success')
-  )
-  OR (
-    ${p}type = 'network'
-    AND NULLIF(${p}payload->'network'->>'error', '') IS NULL
-    AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]+\$'
-    AND (${p}payload->'network'->>'statusCode')::int < 400
-  )
-)''';
-}
+/// Successful outcomes — backed by the `is_success` generated column (migration 014).
+String sqlIsSuccessEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_success';
 
 String sqlDeviceNameExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';

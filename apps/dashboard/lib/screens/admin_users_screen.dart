@@ -77,6 +77,36 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
+  Future<void> _unverify(Map<String, dynamic> user) async {
+    try {
+      await _api.unverifyAdminUser(user['id'] as String);
+      await _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> user) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete user?'),
+        content: Text('${user['email']} will be permanently removed, along with their project memberships.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _api.deleteAdminUser(user['id'] as String);
+      await _load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return AsyncScreenBody(
@@ -101,6 +131,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
         ..._users.map((u) {
           final verified = u['emailVerified'] == true;
           final isAdmin = u['globalRole'] == 'admin';
+          final isSelf = u['id'] == AuthService.instance.user?['id'];
           return Card(
             margin: const EdgeInsets.only(bottom: 10),
             child: Padding(
@@ -138,6 +169,22 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                   value: isAdmin || u['canCreateProjects'] == true,
                   onChanged: isAdmin ? null : (v) => _toggleCreate(u, v),
                 ),
+                if (!isSelf)
+                  Row(children: [
+                    if (verified)
+                      TextButton.icon(
+                        onPressed: () => _unverify(u),
+                        icon: const Icon(Icons.gpp_bad_outlined, size: 18),
+                        label: const Text('Force re-verify'),
+                      ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () => _delete(u),
+                      style: TextButton.styleFrom(foregroundColor: AppTheme.error),
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('Delete'),
+                    ),
+                  ]),
               ]),
             ),
           );

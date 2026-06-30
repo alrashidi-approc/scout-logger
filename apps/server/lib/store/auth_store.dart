@@ -297,6 +297,29 @@ class AuthStore {
     return (await findUserById(userId))!;
   }
 
+  Future<void> deleteUser(String userId) async {
+    final conn = await db.connect();
+    await conn.execute(Sql.named('DELETE FROM dashboard_users WHERE id = @id'), parameters: {'id': userId});
+  }
+
+  /// Clears the verified flag (and any pending tokens) so the user must
+  /// re-verify before their next login.
+  Future<Map<String, dynamic>?> setUnverified(String userId) async {
+    final conn = await db.connect();
+    await conn.execute('DELETE FROM email_verification_tokens WHERE user_id = @uid', parameters: {'uid': userId});
+    await conn.execute(
+      Sql.named('UPDATE dashboard_users SET email_verified_at = NULL WHERE id = @id'),
+      parameters: {'id': userId},
+    );
+    return findUserById(userId);
+  }
+
+  Future<int> adminCount() async {
+    final conn = await db.connect();
+    final rows = await conn.execute("SELECT COUNT(*)::int FROM dashboard_users WHERE global_role = 'admin'");
+    return rows.first[0] as int;
+  }
+
   AuthPrincipal toPrincipal(Map<String, dynamic> user) => AuthPrincipal(
         userId: user['id'] as String,
         email: user['email'] as String,

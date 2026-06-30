@@ -28,6 +28,9 @@ services:
     env_file:
       - .env
     network_mode: service:db
+    # Bypass Podman's internal DNS (aardvark) — use real upstream resolvers directly.
+    volumes:
+      - ./infra/resolv.conf:/etc/resolv.conf:ro
     depends_on:
       db:
         condition: service_healthy
@@ -43,6 +46,9 @@ services:
 networks:
   default:
     name: scout-logger_default
+    ipam:
+      config:
+        - subnet: 10.89.1.0/24
 
 volumes:
   pgdata:

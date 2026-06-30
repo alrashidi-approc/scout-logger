@@ -523,30 +523,6 @@ class AnalyticsStore {
       parameters: p,
     );
 
-    final peakEvents = await conn.execute(
-      Sql.named('''
-        SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
-        FROM events WHERE project_id = @pid
-          AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
-      '''),
-      parameters: p,
-    );
-
-    final peakErrors = await conn.execute(
-      Sql.named('''
-        SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int, COUNT(*)::int
-        FROM events
-        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${sqlIsErrorEvent()}
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY 1 ORDER BY 2 DESC LIMIT 1
-      '''),
-      parameters: p,
-    );
-
     final hourly = await conn.execute(
       Sql.named('''
         SELECT EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS h,
@@ -655,12 +631,20 @@ class AnalyticsStore {
 
     int n(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
 
+    int? peakHour, peakErrorHour;
+    var peakHourEvents = 0, peakErrorHourCount = 0;
+    for (final r in hourly) {
+      final ev = n(r[1]), err = n(r[2]);
+      if (ev > peakHourEvents) (peakHourEvents, peakHour) = (ev, n(r[0]));
+      if (err > peakErrorHourCount) (peakErrorHourCount, peakErrorHour) = (err, n(r[0]));
+    }
+
     return {
       'usersAffectedByErrors': n(usersAffected.first[0]),
-      'peakHour': peakEvents.isEmpty ? null : n(peakEvents.first[0]),
-      'peakHourEvents': peakEvents.isEmpty ? 0 : n(peakEvents.first[1]),
-      'peakErrorHour': peakErrors.isEmpty ? null : n(peakErrors.first[0]),
-      'peakErrorHourCount': peakErrors.isEmpty ? 0 : n(peakErrors.first[1]),
+      'peakHour': peakHour,
+      'peakHourEvents': peakHourEvents,
+      'peakErrorHour': peakErrorHour,
+      'peakErrorHourCount': peakErrorHourCount,
       'hourlyActivity': hourly.map((r) => {'hour': r[0], 'events': r[1], 'errors': r[2], 'success': r[3]}).toList(),
       'topFailingEndpoints': endpoints.map((r) => {'endpoint': r[0], 'count': r[1]}).toList(),
       'topCrashScreens': screens.map((r) => {'screen': r[0], 'count': r[1]}).toList(),

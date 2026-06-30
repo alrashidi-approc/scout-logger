@@ -1536,7 +1536,7 @@ class ScoutStore {
     };
   }
 
-  Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window}) async {
+  Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window, bool includeTrend = true}) async {
     final conn = await db.connect();
     await closeStaleSessions(projectId: projectId, conn: conn);
     final project = await fetchProjectById(projectId);
@@ -1633,7 +1633,7 @@ class ScoutStore {
         : (w.since != null
             ? w
             : TimeWindow(since: '${utcDateDaysAgo((periodDays > 14 ? periodDays : 14) - 1)}T00:00:00.000Z'));
-    final trend = await fetchEventTrend(conn, projectId, trendWindow);
+    final trend = includeTrend ? await fetchEventTrend(conn, projectId, trendWindow) : const <Map<String, dynamic>>[];
 
     return {
       'project': project,
