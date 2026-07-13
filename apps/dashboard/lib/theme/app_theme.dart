@@ -3,8 +3,13 @@ import 'package:flutter/material.dart';
 /// Scout dashboard design tokens — light theme (default).
 class AppTheme {
   static const bg = Color(0xFFF8FAFC);
-  static const sidebar = Color(0xFFFFFFFF);
-  static const sidebarHover = Color(0xFFF1F5F9);
+  static const sidebar = Color(0xFF0F172A);
+  static const sidebarElevated = Color(0xFF1E293B);
+  static const sidebarBorder = Color(0xFF334155);
+  static const onSidebar = Color(0xFFF1F5F9);
+  static const onSidebarMuted = Color(0xFF94A3B8);
+  static const sidebarActive = Color(0xFF60A5FA);
+  static const sidebarHover = Color(0xFF1E293B);
   static const panel = Color(0xFFFFFFFF);
   static const panelElevated = Color(0xFFF1F5F9);
   static const border = Color(0xFFE2E8F0);
@@ -95,11 +100,16 @@ class AppTheme {
       ),
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: sidebar,
-        indicatorColor: primarySoft,
-        selectedIconTheme: const IconThemeData(color: primary),
-        unselectedIconTheme: IconThemeData(color: muted),
-        selectedLabelTextStyle: const TextStyle(color: primary, fontSize: 11, fontWeight: FontWeight.w600),
-        unselectedLabelTextStyle: TextStyle(color: muted, fontSize: 11),
+        indicatorColor: primary.withValues(alpha: 0.2),
+        selectedIconTheme: const IconThemeData(color: sidebarActive),
+        unselectedIconTheme: const IconThemeData(color: onSidebarMuted),
+        selectedLabelTextStyle: const TextStyle(color: sidebarActive, fontSize: 11, fontWeight: FontWeight.w600),
+        unselectedLabelTextStyle: const TextStyle(color: onSidebarMuted, fontSize: 11),
+      ),
+      drawerTheme: const DrawerThemeData(
+        backgroundColor: sidebar,
+        surfaceTintColor: Colors.transparent,
+        scrimColor: Color(0x660F172A),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(

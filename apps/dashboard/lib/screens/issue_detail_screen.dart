@@ -10,6 +10,7 @@ import '../widgets/level_badge.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../utils/share_link.dart';
+import '../widgets/notify_team_sheet.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 
@@ -226,6 +227,17 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.link, size: 18),
               label: const Text('Share link'),
+            ),
+          if (!shared)
+            OutlinedButton.icon(
+              onPressed: () => showNotifyTeamSheet(
+                context,
+                projectId: widget.projectId,
+                resourceType: 'issue',
+                resourceId: widget.issueId,
+              ),
+              icon: const Icon(Icons.campaign_outlined, size: 18),
+              label: const Text('Notify team'),
             ),
           if (!shared && status == 'open') ...[
             FilledButton.icon(

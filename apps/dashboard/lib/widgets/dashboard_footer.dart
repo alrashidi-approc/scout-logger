@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../config/brand.dart';
+import '../config/build_info.dart';
 import '../theme/app_theme.dart';
 import 'scout_logo.dart';
 
@@ -7,8 +9,6 @@ class DashboardFooter extends StatelessWidget {
   const DashboardFooter({super.key, this.compact = false});
 
   final bool compact;
-
-  static const _version = '0.1.1';
 
   @override
   Widget build(BuildContext context) {
@@ -23,27 +23,59 @@ class DashboardFooter extends StatelessWidget {
     );
   }
 
+  Widget _versionChip() => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppTheme.primarySoft,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: AppTheme.primary.withValues(alpha: 0.2)),
+        ),
+        child: Text(
+          versionLabel,
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.primary, letterSpacing: 0.2),
+        ),
+      );
+
   Widget _wide(int year) {
     return Row(
       children: [
         const ScoutLogo(compact: true, iconSize: 28),
         const SizedBox(width: 12),
-        Text('v$_version', style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontWeight: FontWeight.w600)),
-        const SizedBox(width: 16),
-        const Text('Mobile observability', style: TextStyle(fontSize: 11, color: AppTheme.muted)),
-        const Spacer(),
-        Text('© $year Scout Logger', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+        _versionChip(),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Text(
+            Brand.slogan,
+            style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        Text('© $year ${Brand.name}', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
       ],
     );
   }
 
   Widget _compact(int year) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        const ScoutLogo(compact: true, iconSize: 24),
-        const SizedBox(width: 8),
-        Text('v$_version · © $year', style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const ScoutLogo(compact: true, iconSize: 24),
+            const SizedBox(width: 8),
+            _versionChip(),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '${Brand.slogan} · © $year',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 10, color: AppTheme.muted),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
       ],
     );
   }
@@ -58,10 +90,26 @@ class AuthFooter extends StatelessWidget {
     final year = DateTime.now().year;
     return Padding(
       padding: const EdgeInsets.only(top: 24),
-      child: Text(
-        '© $year Scout Logger · Mobile observability',
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.primarySoft,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              versionLabel,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.primary),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '© $year ${Brand.name} · ${Brand.slogan}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+          ),
+        ],
       ),
     );
   }

@@ -9,6 +9,7 @@ import '../reports/report_service.dart';
 import '../store/notification_store.dart';
 import '../store/platform_store.dart';
 import '../store/scout_store.dart';
+import '../util/dashboard_links.dart';
 import '../util/dates.dart';
 import '../util/ids.dart';
 import 'notification_dispatcher.dart';
@@ -41,7 +42,7 @@ class MonitorScheduler {
 
   void stop() => _timer?.cancel();
 
-  String get _dashboard => '${config.publicUrl}${config.dashboardUrlPath}';
+  String get _dashboard => dashboardBaseUrl(config);
 
   Future<void> runChecks() async {
     try {
@@ -65,13 +66,16 @@ class MonitorScheduler {
     final t = cfg.threshold;
     if (!t.enabled || (t.errorCount <= 0 && t.crashCount <= 0)) return;
 
+    final envLabel = _envScopeLabel(t.environments);
+    final envFilter = t.environments.contains('*') ? null : t.environments;
+
     final fired = <(String, String)>[]; // (metric, message)
     if (t.isAnomaly) {
-      final w = await scout.windowedCounts(projectId, windowMinutes: t.windowMinutes);
+      final w = await scout.windowedCounts(projectId, windowMinutes: t.windowMinutes, environments: envFilter);
       _anomaly('error', w.errors, t, fired);
       _anomaly('crash', w.crashes, t, fired);
     } else {
-      final counts = await scout.incidentCounts(projectId, minutes: t.windowMinutes);
+      final counts = await scout.incidentCounts(projectId, minutes: t.windowMinutes, environments: envFilter);
       if (t.errorCount > 0 && counts.errors >= t.errorCount) {
         fired.add(('error', '${counts.errors} errors in the last ${t.windowMinutes} min (threshold ${t.errorCount})'));
       }
@@ -82,13 +86,40 @@ class MonitorScheduler {
     if (fired.isEmpty) return;
 
     for (final (metric, summary) in fired) {
+      final dedupKey = 'threshold-$metric-${envLabel.replaceAll(' ', '_')}';
+      final hours = (t.windowMinutes / 60).ceil().clamp(1, 72);
+      final filters = <String, dynamic>{'hours': hours};
+      if (metric == 'crash') {
+        filters['type'] = 'crash';
+      } else {
+        filters['type'] = 'errors';
+        filters['level'] = 'error';
+      }
+      if (envFilter != null && envFilter.isNotEmpty) filters['environment'] = envFilter.first;
+
+      final share = await scout.createAlertShareToken(
+        projectId: projectId,
+        dedupKey: dedupKey,
+        payload: {
+          'kind': 'spike',
+          'metric': metric,
+          'title': '📈 $name: $metric spike',
+          'summary': summary,
+          'filters': filters,
+        },
+        expiresInHours: 168,
+      );
+      final eventUrl = share != null
+          ? dashboardShareUrl(config, share['token'] as String)
+          : dashboardSpikeUrl(config, projectId: projectId, metric: metric, threshold: t);
+
       final job = NotificationJob(
         channel: '',
         category: metric,
-        dedupKey: 'threshold-$metric',
+        dedupKey: dedupKey,
         title: '📈 $name: $metric spike',
-        body: 'Project: $name\n$summary',
-        eventUrl: '$_dashboard/p/$projectId/issues',
+        body: 'Project: $name\nEnvironment: $envLabel\n$summary',
+        eventUrl: eventUrl,
       );
       await _fanOut(projectId, name, cfg, platform, t.channels, job, dedupMinutes: t.windowMinutes);
     }
@@ -133,14 +164,26 @@ class MonitorScheduler {
       projectId,
       TimeWindow.lastDays(d.frequency == 'weekly' ? 7 : 1),
     );
+    final title = '🗞 ${d.frequency == 'weekly' ? 'Weekly' : 'Daily'} digest — $name';
+    final body = ReportService.toPlainText(report);
+
+    final share = await scout.createAlertShareToken(
+      projectId: projectId,
+      dedupKey: dedupKey,
+      payload: {'kind': 'digest', 'title': title, 'body': body},
+      expiresInHours: 168,
+    );
+    final eventUrl = share != null
+        ? dashboardShareUrl(config, share['token'] as String)
+        : '$_dashboard/p/$projectId/reports';
 
     final job = NotificationJob(
       channel: '',
       category: 'error',
       dedupKey: dedupKey,
-      title: '🗞 ${d.frequency == 'weekly' ? 'Weekly' : 'Daily'} digest — $name',
-      body: ReportService.toPlainText(report),
-      eventUrl: '$_dashboard/p/$projectId/reports',
+      title: title,
+      body: body,
+      eventUrl: eventUrl,
     );
     await _fanOut(projectId, name, cfg, platform, [d.channel], job, dedupMinutes: 60 * 23);
   }
@@ -174,6 +217,8 @@ class MonitorScheduler {
             title: job.title,
             body: job.body,
             eventUrl: job.eventUrl,
+            environment: job.environment,
+            release: job.release,
           ),
           config: cfg,
           projectName: name,
@@ -201,4 +246,9 @@ class MonitorScheduler {
       }
     }
   }
+}
+
+String _envScopeLabel(List<String> environments) {
+  if (environments.isEmpty || environments.contains('*')) return 'all environments';
+  return environments.join(', ');
 }

@@ -118,8 +118,18 @@ class ScoutApi {
     return jsonMap(jsonDecode(res.body) as Map);
   }
 
-  Future<Map<String, dynamic>> fetchFilterFacets(String projectId, {PeriodFilter? period}) async {
-    final uri = _uri('/api/projects/$projectId/facets').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+  Future<Map<String, dynamic>> fetchFilterFacets(
+    String projectId, {
+    PeriodFilter? period,
+    String? environment,
+    String? appVersion,
+    String? deviceName,
+  }) async {
+    final params = {...(period ?? const PeriodFilter.days(30)).toQuery()};
+    if (environment != null) params['environment'] = environment;
+    if (appVersion != null) params['appVersion'] = appVersion;
+    if (deviceName != null) params['device'] = deviceName;
+    final uri = _uri('/api/projects/$projectId/facets').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['facets']);
@@ -437,6 +447,31 @@ class ScoutApi {
       body: jsonEncode({'channel': channel}),
     );
     _ok(res, projectId: projectId);
+  }
+
+  Future<List<String>> fetchNotifyChannels(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/notifications/channels'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return ((jsonDecode(res.body) as Map)['channels'] as List?)?.map((e) => e.toString()).toList() ?? const [];
+  }
+
+  Future<Map<String, dynamic>> notifyTeamShare(
+    String projectId, {
+    required String resourceType,
+    required String resourceId,
+    required List<String> channels,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/notifications/share'),
+      headers: _headers,
+      body: jsonEncode({
+        'resourceType': resourceType,
+        'resourceId': resourceId,
+        'channels': channels,
+      }),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap(jsonDecode(res.body) as Map);
   }
 
   Future<Map<String, dynamic>> fetchNotificationDeliveries(String projectId, {int limit = 50}) async {

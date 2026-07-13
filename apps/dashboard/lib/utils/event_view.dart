@@ -49,7 +49,22 @@ class EventView {
   }
   String get environment => str(event['environment']) ?? str(payload['environment']) ?? '—';
   String get platform => str(device['platform']) ?? str(event['platform']) ?? '—';
-  String get appVersion => str(device['version']) ?? str(device['appVersion']) ?? str(event['appVersion']) ?? '—';
+  String get appVersion {
+    final stored = str(event['appVersion']);
+    if (stored != null && stored.isNotEmpty) return stored;
+    // Prefer appVersion — SDK sends semver+build here (e.g. 2.1.0+42).
+    final withBuild = str(device['appVersion']);
+    if (withBuild != null && withBuild.isNotEmpty) return withBuild;
+    final semver = str(device['version']);
+    if (semver != null && semver.isNotEmpty) return semver;
+    return '—';
+  }
+
+  /// True when ingest included a build number (`2.1.0+42` or device.buildNumber).
+  bool get hasAppBuildNumber =>
+      appVersion.contains('+') ||
+      str(device['buildNumber']) != null ||
+      str(device['build']) != null;
   String get userId => str(user['id']) ?? str(user['userId']) ?? str(event['userId']) ?? '—';
   String get userEmail => str(user['email']) ?? userEmailFromPayload(payload) ?? '—';
   String get installId => str(event['installId']) ?? installIdFromPayload(payload) ?? '—';

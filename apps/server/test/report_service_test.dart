@@ -19,8 +19,8 @@ void main() {
             ReportKpi(label: 'Open issues', value: '3'),
           ],
           tables: [
-            ReportTable(title: 'Top issues', columns: ['Issue', 'Events'], rows: [
-              ['Crash A', '9']
+            ReportTable(title: 'Top issues', columns: ['Issue', 'Type', 'Version', 'Events'], rows: [
+              ['Crash A', 'crash', '2.4.1', '9']
             ]),
           ],
         ),
@@ -32,17 +32,18 @@ void main() {
     expect(text, contains('• Errors: 12 (-25%)'));
     expect(text, contains('• Open issues: 3'));
     expect(text, contains('Top issues:'));
-    expect(text, contains('Crash A · 9'));
+    expect(text, contains('Crash A · crash · 2.4.1 · 9'));
   });
 
   test('balancedTopIssues collapses same endpoint regardless of status', () {
     final rows = ReportService.balancedTopIssues([
-      {'title': 'GET /users/123 (404)', 'type': 'network', 'count': 5},
-      {'title': 'GET /users/456 (500)', 'type': 'network', 'count': 7},
+      {'title': 'GET /users/123 (404)', 'type': 'network', 'count': 5, 'version': '1.0.0'},
+      {'title': 'GET /users/456 (500)', 'type': 'network', 'count': 7, 'version': '1.1.0'},
     ]);
     expect(rows.length, 1);
     expect(rows.single[0], 'GET /users/:id');
-    expect(rows.single[2], '12'); // counts summed
+    expect(rows.single[2], '1.1.0');
+    expect(rows.single[3], '12'); // counts summed
   });
 
   test('balancedTopIssues guarantees one row per category', () {

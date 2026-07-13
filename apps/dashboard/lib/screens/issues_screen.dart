@@ -140,7 +140,13 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   Future<void> _loadFacets() async {
     try {
-      final facets = await _api.fetchFilterFacets(widget.projectId, period: _period);
+      final facets = await _api.fetchFilterFacets(
+        widget.projectId,
+        period: _period,
+        environment: _environment,
+        appVersion: _appVersion,
+        deviceName: _deviceName,
+      );
       if (!mounted) return;
       setState(() {
         _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];

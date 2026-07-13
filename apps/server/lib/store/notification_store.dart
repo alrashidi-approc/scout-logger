@@ -81,6 +81,7 @@ class NotificationStore {
       enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
       dedupMinutes: patch.containsKey('dedupMinutes') ? _clampDedup(patch['dedupMinutes']) : current.dedupMinutes,
       maxAlertsPerHour: patch.containsKey('maxAlertsPerHour') ? _clampRate(patch['maxAlertsPerHour']) : current.maxAlertsPerHour,
+      groupMinutes: patch.containsKey('groupMinutes') ? _clampGroupMinutes(patch['groupMinutes']) : current.groupMinutes,
       rules: rules,
       slack: _mergeSlack(current.slack, slackPatch),
       whatsapp: _mergeWhatsapp(current.whatsapp, waPatch),
@@ -154,6 +155,12 @@ class NotificationStore {
     final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
     if (n == null) return kDefaultMaxAlertsPerHour;
     return n.clamp(0, 1000);
+  }
+
+  int _clampGroupMinutes(dynamic raw) {
+    final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
+    if (n == null) return kDefaultGroupMinutes;
+    return n.clamp(0, 60);
   }
 
   /// Count alerts actually sent for a project within the last [minutes].

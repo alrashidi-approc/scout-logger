@@ -1,14 +1,15 @@
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 
+import '../screens/access_denied_screen.dart';
 import '../screens/admin_notifications_screen.dart';
 import '../screens/admin_users_screen.dart';
 import '../screens/alerts_screen.dart';
-import '../screens/analytics_screen.dart';
 import '../screens/shared_detail_screen.dart';
+import '../screens/link_fallback_screen.dart';
 import '../screens/auth_screen.dart';
 import '../screens/event_detail_screen.dart';
 import '../screens/events_screen.dart';
-import '../screens/geo_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
 import '../screens/overview_screen.dart';
@@ -16,34 +17,56 @@ import '../screens/dashboard_logs_screen.dart';
 import '../screens/project_notifications_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
-import '../screens/reports_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/sessions_screen.dart';
 import '../screens/user_detail_screen.dart';
 import '../screens/users_screen.dart';
 import '../services/auth_service.dart';
+import '../services/project_access_service.dart';
 import '../utils/date_range.dart';
 import '../widgets/shell.dart';
+import 'deferred_screens.dart';
 import 'scout_page.dart';
 
 GoRouter createRouter() {
   final auth = AuthService.instance;
+  final access = ProjectAccessService.instance;
   return GoRouter(
     initialLocation: '/projects',
-    refreshListenable: auth,
+    refreshListenable: Listenable.merge([auth, access]),
     redirect: (context, state) {
       final loc = state.matchedLocation;
       final public = loc.startsWith('/login') ||
           loc.startsWith('/signup') ||
           loc.startsWith('/verify-email') ||
-          loc.startsWith('/share/');
+          loc.startsWith('/share/') ||
+          loc.startsWith('/access-denied') ||
+          loc.startsWith('/link-unavailable');
       if (!auth.isReady) return null;
-      if (!auth.isLoggedIn && !public) return '/login';
+      if (!auth.isLoggedIn && !public) {
+        final dest = '${state.uri.path}${state.uri.hasQuery ? '?${state.uri.query}' : ''}';
+        if (dest.isNotEmpty && dest != '/login') {
+          return '/login?from=${Uri.encodeComponent(dest)}';
+        }
+        return '/login';
+      }
       if (auth.isLoggedIn && (loc.startsWith('/login') || loc.startsWith('/signup') || loc.startsWith('/verify-email'))) {
+        final from = state.uri.queryParameters['from'];
+        if (from != null && from.startsWith('/') && !from.startsWith('/login')) return from;
         return '/projects';
       }
       if (loc.startsWith('/admin/users') && !auth.isAdmin) return '/projects';
       if (loc.startsWith('/admin/notifications') && !auth.isPlatformOwner) return '/projects';
+
+      final pid = state.pathParameters['projectId'];
+      if (pid != null && auth.isLoggedIn && access.loaded) {
+        if (!access.canAccess(pid)) {
+          return '/access-denied?project=${Uri.encodeComponent(pid)}';
+        }
+        if (loc.contains('/notifications') && !access.canManageNotifications(pid)) {
+          return '/access-denied?project=${Uri.encodeComponent(pid)}&reason=role';
+        }
+      }
       return null;
     },
     routes: [
@@ -64,6 +87,20 @@ GoRouter createRouter() {
             token: s.uri.queryParameters['token'],
           ),
         ),
+      ),
+      GoRoute(
+        path: '/access-denied',
+        pageBuilder: (c, s) => scoutPage(
+          s,
+          AccessDeniedScreen(
+            projectId: s.uri.queryParameters['project'],
+            reason: s.uri.queryParameters['reason'],
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/link-unavailable',
+        pageBuilder: (c, s) => scoutPage(s, LinkFallbackScreen(message: s.uri.queryParameters['message'])),
       ),
       GoRoute(
         path: '/share/:token',
@@ -157,7 +194,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/analytics',
             pageBuilder: (c, s) => scoutPage(
               s,
-              AnalyticsScreen(
+              DeferredAnalyticsScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialTab: s.uri.queryParameters['tab'],
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
@@ -245,7 +282,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/geo',
             pageBuilder: (c, s) => scoutPage(
               s,
-              GeoScreen(
+              DeferredGeoScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
               ),
@@ -259,7 +296,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/reports',
             pageBuilder: (c, s) => scoutPage(
               s,
-              ReportsScreen(
+              DeferredReportsScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
               ),

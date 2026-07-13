@@ -11,6 +11,8 @@ class NotificationJob {
     required this.title,
     required this.body,
     required this.eventUrl,
+    this.environment,
+    this.release,
     this.issueId,
   });
 
@@ -20,6 +22,12 @@ class NotificationJob {
   final String title;
   final String body;
   final String eventUrl;
+
+  /// SDK environment / flavor (e.g. production, staging).
+  final String? environment;
+
+  /// App release version when available.
+  final String? release;
 
   /// Issue this alert belongs to (enables Slack action buttons).
   final String? issueId;
@@ -32,6 +40,8 @@ class NotificationJob {
         title: '🔁 Regression: $title',
         body: 'A resolved issue has reoccurred.\n$body',
         eventUrl: eventUrl,
+        environment: environment,
+        release: release,
         issueId: issueId,
       );
 }
@@ -57,12 +67,14 @@ List<NotificationJob> routeNotifications({
 
   final jobs = <NotificationJob>[];
   final seen = <String>{};
-  final dedupBase = fingerprint ?? eventId;
-  final title = _alertTitle(type: type, message: message, payload: payload);
+  final dedupBase = issueId ?? fingerprint ?? eventId;
+  final release = _releaseFromPayload(payload);
+  final title = _alertTitle(type: type, environment: environment, message: message, payload: payload);
   final body = _alertBody(
     projectName: projectName,
     type: type,
     environment: environment,
+    release: release,
     message: message,
     payload: payload,
     categories: categories,
@@ -79,7 +91,7 @@ List<NotificationJob> routeNotifications({
       for (final channel in rule.channels) {
         if (!platform.channelAllowed(channel)) continue;
         if (!channelReady(config, channel)) continue;
-        final key = '$channel:$dedupBase:$category';
+        final key = '$channel:$dedupBase';
         if (!seen.add(key)) continue;
         jobs.add(NotificationJob(
           channel: channel,
@@ -88,6 +100,8 @@ List<NotificationJob> routeNotifications({
           title: title,
           body: body,
           eventUrl: eventUrl,
+          environment: environment,
+          release: release,
           issueId: issueId,
         ));
       }
@@ -95,6 +109,12 @@ List<NotificationJob> routeNotifications({
   }
   return jobs;
 }
+
+List<String> readyNotificationChannels({
+  required ProjectNotificationConfig config,
+  required PlatformNotificationPolicy platform,
+}) =>
+    kNotificationChannels.where((c) => platform.channelAllowed(c) && channelReady(config, c)).toList();
 
 bool channelReady(ProjectNotificationConfig config, String channel) => switch (channel) {
       'slack' => config.slack.enabled && (config.slack.webhookUrlEnc?.isNotEmpty ?? false),
@@ -108,28 +128,64 @@ bool channelReady(ProjectNotificationConfig config, String channel) => switch (c
       _ => false,
     };
 
-String _alertTitle({required String type, required String? message, required Map<String, dynamic> payload}) {
+String _envTag(String environment) => '[${environment.toLowerCase()}]';
+
+String? _releaseFromPayload(Map<String, dynamic> payload) {
+  final direct = payload['release'];
+  if (direct is String && direct.trim().isNotEmpty) return direct.trim();
+  if (direct is Map) {
+    final v = direct['version'] ?? direct['name'] ?? direct['id'];
+    if (v != null && v.toString().trim().isNotEmpty) return v.toString().trim();
+  }
+  final app = payload['app'];
+  if (app is Map) {
+    final v = app['version'] ?? app['build'];
+    if (v != null && v.toString().trim().isNotEmpty) return v.toString().trim();
+  }
+  return null;
+}
+
+String _alertTitle({
+  required String type,
+  required String environment,
+  required String? message,
+  required Map<String, dynamic> payload,
+}) {
+  final tag = _envTag(environment);
+  String core;
   if (type == 'network') {
     final readable = payload['network'] is Map ? (payload['network'] as Map)['readable'] : null;
-    if (readable is Map && readable['title'] != null) return readable['title'].toString();
+    if (readable is Map && readable['title'] != null) {
+      core = readable['title'].toString();
+    } else {
+      core = '${type.toUpperCase()} alert';
+    }
+  } else {
+    final msg = message?.trim();
+    if (msg != null && msg.isNotEmpty) {
+      core = msg.length > 120 ? '${msg.substring(0, 117)}…' : msg;
+    } else {
+      core = '${type.toUpperCase()} alert';
+    }
   }
-  final msg = message?.trim();
-  if (msg != null && msg.isNotEmpty) return msg.length > 120 ? '${msg.substring(0, 117)}…' : msg;
-  return '${type.toUpperCase()} alert';
+  return '$tag $core';
 }
 
 String _alertBody({
   required String projectName,
   required String type,
   required String environment,
+  required String? release,
   required String? message,
   required Map<String, dynamic> payload,
   required Set<String> categories,
 }) {
   final buf = StringBuffer()
     ..writeln('Project: $projectName')
-    ..writeln('Type: $type · $environment')
+    ..writeln('Environment: $environment')
+    ..writeln('Type: $type')
     ..writeln('Categories: ${categories.join(', ')}');
+  if (release != null) buf.writeln('Release: $release');
   if (message != null && message.isNotEmpty) buf.writeln('Message: $message');
   final culprit = stackCulpritFromTrace(stackFromPayload(payload));
   if (culprit != null) buf.writeln('Likely source: $culprit');

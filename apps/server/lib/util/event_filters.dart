@@ -1,20 +1,125 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-/// Backed by the `is_heartbeat` generated column (see migration 014).
-const sqlHideSessionHeartbeat = 'NOT is_heartbeat';
+/// Inline expression so queries work before migration 014 columns exist; keep in sync
+/// with the `is_heartbeat` generated column when present.
+const sqlHideSessionHeartbeat = '''
+  NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')
+''';
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
-/// True failures only — backed by the `is_error` generated column (migration 014).
-/// Classification logic lives in that migration; keep it in sync with [isErrorEvent].
-String sqlIsErrorEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_error';
+/// True failures only — inline expression (migration 014 adds `is_error` for indexes).
+/// Keep in sync with [isErrorEvent] and 014_event_outcome_columns.sql.
+String sqlIsErrorEvent({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return '''
+(
+  ${p}type IN ('error', 'crash')
+  OR (
+    ${p}type = 'network'
+    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
+    AND (
+      NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
+      OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
+      OR NOT ((${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$' AND (${p}payload->'network'->>'statusCode')::int < 400)
+    )
+  )
+)''';
+}
 
-/// Successful outcomes — backed by the `is_success` generated column (migration 014).
-String sqlIsSuccessEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_success';
+/// Successful outcomes — inline expression (migration 014 adds `is_success` for indexes).
+String sqlIsSuccessEvent({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return '''
+(
+  LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) = 'success'
+  OR (
+    ${p}type = 'network'
+    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) IN ('info', 'success')
+  )
+  OR (
+    ${p}type = 'network'
+    AND NULLIF(${p}payload->'network'->>'error', '') IS NULL
+    AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
+    AND (${p}payload->'network'->>'statusCode')::int < 400
+  )
+)''';
+}
 
 String sqlDeviceNameExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
   return "COALESCE(NULLIF(${p}payload->'device'->>'deviceName', ''), NULLIF(${p}payload->'device'->>'deviceModel', ''), NULLIF(${p}payload->'device'->>'model', ''))";
+}
+
+String sqlAppVersionExpr({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return "COALESCE(NULLIF(${p}app_version, ''), NULLIF(${p}payload->'device'->>'appVersion', ''), NULLIF(${p}payload->'device'->>'version', ''))";
+}
+
+String sqlEnvironmentExpr({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return "COALESCE(NULLIF(${p}environment, ''), NULLIF(${p}payload->>'environment', ''), NULLIF(${p}payload->'release'->>'environment', ''), 'unknown')";
+}
+
+/// Optional env / version / device filters — bind @env, @ver, @device (null = ignore).
+String sqlEventFacetFilters({
+  String alias = '',
+  bool applyEnvironment = true,
+  bool applyAppVersion = true,
+  bool applyDevice = true,
+}) {
+  final parts = <String>[];
+  if (applyEnvironment) {
+    parts.add('AND (@env::text IS NULL OR ${sqlEnvironmentExpr(alias: alias)} = @env::text)');
+  }
+  if (applyAppVersion) {
+    parts.add('AND (@ver::text IS NULL OR ${sqlAppVersionExpr(alias: alias)} = @ver::text)');
+  }
+  if (applyDevice) {
+    parts.add('AND (@device::text IS NULL OR ${sqlDeviceNameExpr(alias: alias)} = @device::text)');
+  }
+  return parts.join('\n          ');
+}
+
+bool hasEventFacetFilters({String? environment, String? appVersion, String? deviceName}) =>
+    environment != null || appVersion != null || deviceName != null;
+
+/// Bind only facet placeholders present in [sqlEventFacetFilters] for this query.
+Map<String, dynamic> eventFacetParameters({
+  required String projectId,
+  required Map<String, dynamic> time,
+  String? environment,
+  String? appVersion,
+  String? deviceName,
+  bool applyEnvironment = true,
+  bool applyAppVersion = true,
+  bool applyDevice = true,
+}) {
+  return {
+    'pid': projectId,
+    ...time,
+    if (applyEnvironment) 'env': environment,
+    if (applyAppVersion) 'ver': appVersion,
+    if (applyDevice) 'device': deviceName,
+  };
+}
+
+/// Events tied to an issue row, optionally scoped to the report period and facets.
+String sqlIssueEventScope({
+  String alias = 'e',
+  String issueIdExpr = 'issues.id',
+  bool requireError = true,
+  bool applyEnvironment = true,
+  bool applyAppVersion = true,
+  bool applyDevice = true,
+}) {
+  final err = requireError ? 'AND ${sqlIsErrorEvent(alias: alias)}' : '';
+  return '''
+$alias.project_id = @pid AND $alias.issue_id = $issueIdExpr
+          $err
+          AND ${sqlOccurredInWindow(alias: alias)}
+          ${sqlEventFacetFilters(alias: alias, applyEnvironment: applyEnvironment, applyAppVersion: applyAppVersion, applyDevice: applyDevice)}''';
 }
 
 String sqlOccurredInWindow({String alias = ''}) {

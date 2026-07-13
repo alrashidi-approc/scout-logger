@@ -5,6 +5,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import '../middleware/http_utils.dart';
 import '../store/scout_store.dart';
+import '../util/dates.dart';
 
 Handler shareRoutes(ScoutStore store) {
   final router = Router();
@@ -16,6 +17,62 @@ Handler shareRoutes(ScoutStore store) {
 
       final type = meta['resourceType'] as String;
       final pid = meta['projectId'] as String;
+      final projectName = await store.projectDisplayName(pid) ?? pid;
+
+      if (type == 'alert') {
+        final raw = meta['payload'];
+        final payload = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : raw is String
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+                : <String, dynamic>{};
+        final kind = payload['kind'] as String? ?? 'spike';
+
+        if (kind == 'digest') {
+          return Response.ok(
+            jsonEncode({
+              'ok': true,
+              'type': 'alert',
+              'alertKind': 'digest',
+              'projectName': projectName,
+              'title': payload['title'],
+              'body': payload['body'],
+              'expiresAt': meta['expiresAt'],
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+
+        final filters = payload['filters'] is Map ? Map<String, dynamic>.from(payload['filters'] as Map) : <String, dynamic>{};
+        final hours = (int.tryParse('${filters['hours'] ?? ''}') ?? 1).clamp(1, 72);
+        final window = TimeWindow(
+          since: DateTime.now().toUtc().subtract(Duration(hours: hours)).toIso8601String(),
+        );
+        final events = await store.listEvents(
+          pid,
+          type: filters['type'] as String?,
+          level: filters['level'] as String?,
+          environment: filters['environment'] as String?,
+          window: window,
+          limit: 50,
+        );
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'type': 'alert',
+            'alertKind': 'spike',
+            'projectName': projectName,
+            'title': payload['title'],
+            'summary': payload['summary'],
+            'metric': payload['metric'],
+            'events': events['events'],
+            'total': events['total'],
+            'expiresAt': meta['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       final rid = meta['resourceId'] as String;
 
       if (type == 'event') {
@@ -32,7 +89,7 @@ Handler shareRoutes(ScoutStore store) {
           };
         }
         return Response.ok(
-          jsonEncode({'ok': true, 'type': 'event', 'event': event, 'expiresAt': meta['expiresAt']}),
+          jsonEncode({'ok': true, 'type': 'event', 'projectName': projectName, 'event': event, 'expiresAt': meta['expiresAt']}),
           headers: {'Content-Type': 'application/json'},
         );
       }
@@ -41,7 +98,7 @@ Handler shareRoutes(ScoutStore store) {
       if (issue == null) return jsonErr('Not found', status: 404);
       issue.remove('projectId');
       return Response.ok(
-        jsonEncode({'ok': true, 'type': 'issue', 'issue': issue, 'expiresAt': meta['expiresAt']}),
+        jsonEncode({'ok': true, 'type': 'issue', 'projectName': projectName, 'issue': issue, 'expiresAt': meta['expiresAt']}),
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {

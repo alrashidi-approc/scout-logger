@@ -32,6 +32,7 @@ Future<void> main() async {
       config: config,
     );
     final store = ScoutStore(db, cipher: cipher, notifications: notificationService);
+    notificationService.scout = store;
     final analytics = AnalyticsStore(db);
 
     MonitorScheduler(

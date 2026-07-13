@@ -10,6 +10,7 @@ import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../utils/clipboard.dart';
 import '../utils/share_link.dart';
+import '../widgets/notify_team_sheet.dart';
 import '../widgets/event_detail_widgets.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
@@ -169,6 +170,17 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                         : const Icon(Icons.link, size: 16),
                     label: const Text('Share link'),
                   ),
+                if (!shared)
+                  OutlinedButton.icon(
+                    onPressed: () => showNotifyTeamSheet(
+                      context,
+                      projectId: pid,
+                      resourceType: 'event',
+                      resourceId: widget.eventId,
+                    ),
+                    icon: const Icon(Icons.campaign_outlined, size: 16),
+                    label: const Text('Notify team'),
+                  ),
                 OutlinedButton.icon(
                     onPressed: () => _copyTicket(v),
                     icon: const Icon(Icons.assignment_outlined, size: 16),
@@ -182,6 +194,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                   onPressed: shared ? null : _load,
                   icon: const Icon(Icons.refresh)),
               if (compact) ...[
+                OutlinedButton(
+                    onPressed: () => showNotifyTeamSheet(
+                          context,
+                          projectId: pid,
+                          resourceType: 'event',
+                          resourceId: widget.eventId,
+                        ),
+                    child: const Icon(Icons.campaign_outlined, size: 16)),
                 OutlinedButton(
                     onPressed: () => _copyTicket(v),
                     child: const Icon(Icons.assignment_outlined, size: 16)),

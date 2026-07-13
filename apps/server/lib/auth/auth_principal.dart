@@ -59,7 +59,7 @@ bool canManageProjectMembers(AuthPrincipal auth, String? membershipRole) =>
     auth.isAdmin || membershipRole == 'owner';
 
 bool canManageProjectNotifications(AuthPrincipal auth, String? membershipRole) =>
-    auth.isAdmin || membershipRole == 'owner';
+    auth.isAdmin || membershipRole == 'owner' || membershipRole == 'admin';
 
 bool isPlatformOwner(AuthPrincipal auth, String platformOwnerEmail) =>
     auth.isAdmin || auth.email?.toLowerCase() == platformOwnerEmail.toLowerCase();

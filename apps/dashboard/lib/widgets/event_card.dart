@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/event_view.dart';
 import '../utils/issue_view.dart';
 import '../utils/user_identity.dart';
 import 'level_badge.dart';
@@ -24,6 +25,7 @@ class EventCard extends StatelessWidget {
     final time = occurred != null ? DateFormat('MMM d, yyyy · HH:mm:ss').format(occurred.toLocal()) : '—';
     final title = event['message']?.toString() ?? type;
     final release = event['release']?.toString() ?? '—';
+    final appVer = EventView(event).appVersion;
     final device = event['deviceName']?.toString() ?? event['platform']?.toString() ?? '—';
     final route = event['route']?.toString() ?? '—';
     final url = event['networkUrl']?.toString() ?? '';
@@ -104,10 +106,11 @@ class EventCard extends StatelessWidget {
                             height: 1.3,
                           ),
                         ),
-                        if (device != '—' || release != '—' || route != '—' || endpointLabel != null) ...[
+                        if (device != '—' || appVer != '—' || release != '—' || route != '—' || endpointLabel != null) ...[
                           const SizedBox(height: 8),
                           Wrap(spacing: 5, runSpacing: 5, children: [
                             if (device != '—') _metaTag(Icons.phone_android_outlined, _shortLabel(device)),
+                            if (appVer != '—') _metaTag(Icons.layers_outlined, appVer),
                             if (release != '—') _metaTag(Icons.verified_outlined, _shortLabel(release)),
                             if (route != '—') _metaTag(Icons.route_outlined, _shortLabel(route)),
                             if (endpointLabel != null) _metaTag(Icons.lan_outlined, endpointLabel),

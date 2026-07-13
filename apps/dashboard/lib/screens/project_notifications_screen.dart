@@ -3,11 +3,20 @@ import 'package:go_router/go_router.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../services/api_client.dart';
-import '../services/auth_service.dart';
+import '../services/project_access_service.dart';
 import '../theme/app_theme.dart';
+import '../utils/notification_deliveries.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
+
+class _EnvNotifyPrefs {
+  _EnvNotifyPrefs({this.enabled = false, Set<String>? categories})
+      : categories = categories ?? kDefaultNotificationCategories.toSet();
+
+  bool enabled;
+  Set<String> categories;
+}
 
 class ProjectNotificationsScreen extends StatefulWidget {
   const ProjectNotificationsScreen({super.key, required this.projectId});
@@ -30,6 +39,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _enabled = false;
   int _dedupMinutes = kDefaultDedupMinutes;
   int _maxAlertsPerHour = kDefaultMaxAlertsPerHour;
+  int _groupMinutes = kDefaultGroupMinutes;
 
   bool _thresholdOn = false;
   String _thresholdMode = 'count';
@@ -41,9 +51,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _digestOn = false;
   String _digestFreq = 'daily';
   int _digestHour = 8;
-  Set<String> _categories = kDefaultNotificationCategories.toSet();
   Set<String> _channels = {'slack', 'email', 'whatsapp'};
-  Set<String> _environments = kDefaultNotificationEnvironments.toSet();
+  final Map<String, _EnvNotifyPrefs> _envPrefs = {};
+  List<String> _knownEnvs = const ['production', 'staging', 'development'];
+  Set<String> _thresholdEnvs = {'*'};
 
   bool _slackOn = false;
   bool _waOn = false;
@@ -96,28 +107,22 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       );
     });
     try {
+      await ProjectAccessService.instance.load();
       final results = await Future.wait([
         _api.fetchProjectNotifications(widget.projectId),
-        _api.fetchProjects(),
         _api.fetchNotificationDeliveries(widget.projectId),
+        _api.fetchFilterFacets(widget.projectId),
       ]);
       final cfg = results[0] as Map<String, dynamic>;
-      final projects = results[1] as List<Map<String, dynamic>>;
-      final deliveryData = results[2] as Map<String, dynamic>;
+      final deliveryData = results[1] as Map<String, dynamic>;
+      final facets = results[2] as Map<String, dynamic>;
       final deliveries = (deliveryData['deliveries'] as List).cast<Map<String, dynamic>>();
       final summary = Map<String, dynamic>.from(deliveryData['summary'] as Map? ?? {});
-      String? role;
-      for (final p in projects) {
-        if (p['id'] == widget.projectId) {
-          role = p['role'] as String?;
-          break;
-        }
-      }
-      if (AuthService.instance.isAdmin) role = 'owner';
-      _applyConfig(cfg);
+      _applyConfig(cfg, facets);
       if (mounted) {
         setState(() {
-          _isOwner = role == 'owner' || AuthService.instance.isAdmin;
+          // API only returns config for owners/admins — trust that, not a stale role cache.
+          _isOwner = true;
           _deliveries = deliveries;
           _summary = summary;
           _hasData = true;
@@ -136,15 +141,47 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     }
   }
 
-  void _applyConfig(Map<String, dynamic> cfg) {
+  void _applyConfig(Map<String, dynamic> cfg, Map<String, dynamic> facets) {
     _enabled = cfg['enabled'] == true;
     _dedupMinutes = cfg['dedupMinutes'] as int? ?? kDefaultDedupMinutes;
     _maxAlertsPerHour = cfg['maxAlertsPerHour'] as int? ?? kDefaultMaxAlertsPerHour;
+    _groupMinutes = cfg['groupMinutes'] as int? ?? kDefaultGroupMinutes;
+
+    final observed = (facets['environments'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [];
+    final fromRules = <String>{};
+    _envPrefs.clear();
     final rules = cfg['rules'] as List?;
-    final rule = rules?.isNotEmpty == true ? Map<String, dynamic>.from(rules!.first as Map) : <String, dynamic>{};
-    _categories = (rule['categories'] as List?)?.map((e) => e.toString()).toSet() ?? kDefaultNotificationCategories.toSet();
-    _channels = (rule['channels'] as List?)?.map((e) => e.toString()).toSet() ?? _channels;
-    _environments = (rule['environments'] as List?)?.map((e) => e.toString()).toSet() ?? kDefaultNotificationEnvironments.toSet();
+    if (rules != null) {
+      for (final raw in rules) {
+        if (raw is! Map) continue;
+        final rule = Map<String, dynamic>.from(raw);
+        final envs = (rule['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        final cats = (rule['categories'] as List?)?.map((e) => e.toString()).toSet() ?? kDefaultNotificationCategories.toSet();
+        final ruleChannels = (rule['channels'] as List?)?.map((e) => e.toString()).toSet();
+        if (ruleChannels != null && ruleChannels.isNotEmpty) _channels = ruleChannels;
+        final on = rule['enabled'] != false;
+        for (final env in envs) {
+          if (env == '*') continue;
+          fromRules.add(env);
+          _envPrefs[env] = _EnvNotifyPrefs(enabled: on, categories: cats);
+        }
+      }
+    }
+    _knownEnvs = {
+      ...const ['production', 'staging', 'development'],
+      ...observed,
+      ...fromRules,
+    }.toList()
+      ..sort();
+    for (final env in _knownEnvs) {
+      _envPrefs.putIfAbsent(
+        env,
+        () => _EnvNotifyPrefs(
+          enabled: env == 'production',
+          categories: kDefaultNotificationCategories.toSet(),
+        ),
+      );
+    }
 
     final platform = cfg['platform'] is Map ? Map<String, dynamic>.from(cfg['platform'] as Map) : <String, dynamic>{};
     _platform = {
@@ -174,6 +211,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     _thresholdErrors = t['errorCount'] as int? ?? 0;
     _thresholdCrashes = t['crashCount'] as int? ?? 0;
     _thresholdSensitivity = (t['sensitivity'] as num?)?.toDouble() ?? 3;
+    final thresholdEnvs = (t['environments'] as List?)?.map((e) => e.toString()).toSet() ?? {'*'};
+    _thresholdEnvs = thresholdEnvs.isEmpty ? {'*'} : thresholdEnvs;
 
     final dg = cfg['digest'] is Map ? Map<String, dynamic>.from(cfg['digest'] as Map) : <String, dynamic>{};
     _digestOn = dg['enabled'] == true;
@@ -186,14 +225,17 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       'enabled': _enabled,
       'dedupMinutes': _dedupMinutes,
       'maxAlertsPerHour': _maxAlertsPerHour,
+      'groupMinutes': _groupMinutes,
       'rules': [
-        {
-          'id': 'default',
-          'enabled': true,
-          'categories': _categories.toList(),
-          'channels': _channels.toList(),
-          'environments': _environments.toList(),
-        },
+        for (final env in _knownEnvs)
+          if (_envPrefs[env]?.enabled == true && (_envPrefs[env]?.categories.isNotEmpty ?? false))
+            {
+              'id': env,
+              'enabled': true,
+              'categories': _envPrefs[env]!.categories.toList(),
+              'channels': _channels.toList(),
+              'environments': [env],
+            },
       ],
       'channels': {
         'slack': {'enabled': _slackOn, if (_slackWebhookCtrl.text.trim().isNotEmpty) 'webhookUrl': _slackWebhookCtrl.text.trim()},
@@ -220,6 +262,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         'crashCount': _thresholdCrashes,
         'sensitivity': _thresholdSensitivity,
         'channels': _channels.toList(),
+        'environments': _thresholdEnvs.toList(),
       },
       'digest': {
         'enabled': _digestOn,
@@ -235,7 +278,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     setState(() => _saving = true);
     try {
       final cfg = await _api.updateProjectNotifications(widget.projectId, _buildPatch());
-      _applyConfig(cfg);
+      _applyConfig(cfg, await _api.fetchFilterFacets(widget.projectId));
       _slackWebhookCtrl.clear();
       _waPhoneCtrl.clear();
       _waKeyCtrl.clear();
@@ -266,7 +309,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
 
   @override
   Widget build(BuildContext context) {
-    if (!_loading && !_isOwner) {
+    if (!_loading && !_isOwner && _error == null && !_hasData) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const Icon(Icons.lock_outline, size: 48, color: AppTheme.muted),
@@ -294,7 +337,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       children: [
         PageHeader(
           title: 'Alert notifications',
-          subtitle: 'Slack, WhatsApp (CallMeBot), and Gmail SMTP — critical events only',
+          subtitle: 'Slack, WhatsApp, and Gmail — control alerts per environment / flavor',
           actions: [
             FilledButton.icon(
               onPressed: _saving ? null : _save,
@@ -326,6 +369,23 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 divisions: 119,
                 label: '${_dedupMinutes}m',
                 onChanged: (v) => setState(() => _dedupMinutes = v.round()),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _groupMinutes == 0 ? 'Group window: off (send immediately)' : 'Group window: $_groupMinutes min',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Slider(
+                value: _groupMinutes.toDouble(),
+                min: 0,
+                max: 30,
+                divisions: 30,
+                label: _groupMinutes == 0 ? 'off' : '${_groupMinutes}m',
+                onChanged: (v) => setState(() => _groupMinutes = v.round()),
+              ),
+              const Text(
+                'Roll similar alerts on the same issue into one message per channel.',
+                style: TextStyle(fontSize: 12, color: AppTheme.muted),
               ),
               const SizedBox(height: 8),
               Text(
@@ -419,6 +479,33 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               ]),
               const SizedBox(height: 8),
               const Text('Uses the channels selected in Routing.', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
+              const SizedBox(height: 12),
+              const Text('Environments', style: TextStyle(fontWeight: FontWeight.w600)),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilterChip(
+                    label: const Text('All'),
+                    selected: _thresholdEnvs.contains('*'),
+                    onSelected: (on) => setState(() => _thresholdEnvs = on ? {'*'} : {'production'}),
+                  ),
+                  for (final env in _knownEnvs)
+                    FilterChip(
+                      label: Text(env),
+                      selected: !_thresholdEnvs.contains('*') && _thresholdEnvs.contains(env),
+                      onSelected: (on) => setState(() {
+                        _thresholdEnvs.remove('*');
+                        if (on) {
+                          _thresholdEnvs.add(env);
+                        } else if (_thresholdEnvs.length > 1) {
+                          _thresholdEnvs.remove(env);
+                        }
+                        if (_thresholdEnvs.isEmpty) _thresholdEnvs = {'*'};
+                      }),
+                    ),
+                ],
+              ),
             ],
           ]),
         ),
@@ -475,48 +562,14 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Routing', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Text('Per-environment routing', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 6),
-            const Text('Default: crash, error, and critical network failures in production.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
-            const SizedBox(height: 12),
-            const Text('Categories', style: TextStyle(fontWeight: FontWeight.w600)),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final c in kNotificationCategories)
-                  FilterChip(
-                    label: Text(_catLabel(c)),
-                    selected: _categories.contains(c),
-                    onSelected: (on) => setState(() {
-                      if (on) {
-                        _categories.add(c);
-                      } else if (_categories.length > 1) {
-                        _categories.remove(c);
-                      }
-                    }),
-                  ),
-              ],
+            const Text(
+              'Choose which issue types trigger alerts for each SDK environment / flavor.',
+              style: TextStyle(color: AppTheme.muted, fontSize: 13),
             ),
             const SizedBox(height: 16),
-            const Text('Environments', style: TextStyle(fontWeight: FontWeight.w600)),
-            Wrap(
-              spacing: 8,
-              children: [
-                for (final e in const ['production', 'staging', 'development', '*'])
-                  FilterChip(
-                    label: Text(e == '*' ? 'All' : e),
-                    selected: _environments.contains(e),
-                    onSelected: (on) => setState(() {
-                      if (on) {
-                        _environments.add(e);
-                      } else if (_environments.length > 1) {
-                        _environments.remove(e);
-                      }
-                    }),
-                  ),
-              ],
-            ),
+            for (final env in _knownEnvs) _envSection(env),
             const SizedBox(height: 16),
             const Text('Channels', style: TextStyle(fontWeight: FontWeight.w600)),
             Wrap(
@@ -549,6 +602,54 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           ]),
         ),
       );
+
+  Widget _envSection(String env) {
+    final prefs = _envPrefs[env]!;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(env, style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(prefs.enabled ? 'Alerts on for this environment' : 'Muted — no alerts from $env'),
+              value: prefs.enabled,
+              onChanged: (v) => setState(() => prefs.enabled = v),
+            ),
+            if (prefs.enabled) ...[
+              const SizedBox(height: 4),
+              const Text('Issue types', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final c in kNotificationCategories)
+                    FilterChip(
+                      label: Text(_catLabel(c)),
+                      selected: prefs.categories.contains(c),
+                      onSelected: (on) => setState(() {
+                        if (on) {
+                          prefs.categories.add(c);
+                        } else if (prefs.categories.length > 1) {
+                          prefs.categories.remove(c);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+            ],
+          ]),
+        ),
+      ),
+    );
+  }
 
   Widget _setupCard() => Card(
         child: Padding(
@@ -741,15 +842,22 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               _statChip('Sent', _stat('sent'), AppTheme.success),
               _statChip('Failed', _stat('failed'), AppTheme.error),
               _statChip('Deduped', _stat('skipped_dedup'), AppTheme.muted),
+              _statChip('Grouped', _stat('batched'), AppTheme.primary),
               _statChip('Rate-limited', _stat('rate_limited'), AppTheme.warning),
             ]),
             const SizedBox(height: 12),
-            for (final d in _deliveries.take(20))
+            for (final d in groupNotificationDeliveries(_deliveries).take(15))
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 dense: true,
-                title: Text('${d['channel']} · ${d['category']} · ${d['status']}', style: const TextStyle(fontSize: 13)),
-                subtitle: Text('${d['createdAt'] ?? ''}${d['errorMessage'] != null ? ' — ${d['errorMessage']}' : ''}', style: const TextStyle(fontSize: 12)),
+                title: Text(
+                  '${d['channel']} · ${d['category']} · ${deliveryStatusLabel('${d['status']}', count: d['count'] as int? ?? 1)}',
+                  style: const TextStyle(fontSize: 13),
+                ),
+                subtitle: Text(
+                  '${d['latestAt'] ?? d['createdAt'] ?? ''}${d['errorMessage'] != null ? ' — ${d['errorMessage']}' : ''}',
+                  style: const TextStyle(fontSize: 12),
+                ),
               ),
           ]),
         ),
@@ -762,6 +870,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         'network_transport' => 'Transport',
         'network_user' => 'Network user',
         'network_auth' => 'Network auth',
+        'share' => 'Manual share',
+        'grouped' => 'Grouped',
         _ => c,
       };
 }

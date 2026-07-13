@@ -46,9 +46,12 @@ if [[ "${SKIP_DASHBOARD_BUILD:-0}" != "1" ]]; then
     echo "Flutter not found. Install Flutter or set SKIP_DASHBOARD_BUILD=1"
     exit 1
   fi
+  if [[ "${SKIP_BUILD_BUMP:-0}" != "1" ]]; then
+    bash "${ROOT}/scripts/bump-build.sh"
+  fi
   echo "==> Building dashboard (flutter web)..."
   "${ROOT}/scripts/sync-dashboard-bootstrap.sh"
-  (cd "${ROOT}/apps/dashboard" && flutter build web)
+  bash "${ROOT}/scripts/build-dashboard.sh"
   DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH:-scout/dashboard}"
   DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH#/}"
   DASHBOARD_WEB_PATH="${DASHBOARD_WEB_PATH%/}"

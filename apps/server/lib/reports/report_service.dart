@@ -80,7 +80,7 @@ class ReportService {
       tables: [
         ReportTable(
           title: 'Most active issues',
-          columns: const ['Issue', 'Type', 'Events'],
+          columns: const ['Issue', 'Type', 'Version', 'Events'],
           rows: balancedTopIssues(digest.issues),
         ),
       ],
@@ -140,7 +140,18 @@ class ReportService {
       ],
     );
 
-    return [summary];
+    final topIssues = ReportSection(
+      title: 'Top issues',
+      tables: [
+        ReportTable(
+          title: 'Most active issues',
+          columns: const ['Issue', 'Type', 'Version', 'Events'],
+          rows: balancedTopIssues(digest.issues),
+        ),
+      ],
+    );
+
+    return [summary, topIssues];
   }
 
   /// Concise text rendering of a report — used for digest/email bodies.
@@ -169,13 +180,24 @@ class ReportService {
   /// ignored) and every present category (crash/error/network) is guaranteed at
   /// least one slot, so a high-volume type can't bury crashes.
   static List<List<String>> balancedTopIssues(List<Map<String, dynamic>> issues, {int limit = 8}) {
-    final agg = <String, ({String title, String type, int count})>{};
+    final agg = <String, ({String title, String type, int count, String version, int bestSingle})>{};
     for (final i in issues) {
       final type = '${i['type']}';
       final title = displayIssueTitle(type, '${i['title']}');
       final key = '$type|$title';
       final count = (i['count'] as num?)?.toInt() ?? 0;
-      agg[key] = (title: title, type: type, count: (agg[key]?.count ?? 0) + count);
+      final rawVer = (i['version'] as String?)?.trim();
+      final verLabel = (rawVer == null || rawVer.isEmpty) ? '—' : rawVer;
+      final prev = agg[key];
+      final bestSingle = prev == null ? count : (count > prev.bestSingle ? count : prev.bestSingle);
+      final version = prev == null || count >= prev.bestSingle ? verLabel : prev.version;
+      agg[key] = (
+        title: title,
+        type: type,
+        count: (prev?.count ?? 0) + count,
+        version: version,
+        bestSingle: bestSingle,
+      );
     }
     final ranked = agg.entries.toList()..sort((a, b) => b.value.count.compareTo(a.value.count));
 
@@ -193,7 +215,7 @@ class ReportService {
     return ranked
         .where((e) => pickedKeys.contains(e.key))
         .take(limit)
-        .map((e) => [e.value.title, e.value.type, '${e.value.count}'])
+        .map((e) => [e.value.title, e.value.type, e.value.version, '${e.value.count}'])
         .toList();
   }
 

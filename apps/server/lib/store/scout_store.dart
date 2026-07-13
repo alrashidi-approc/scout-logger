@@ -36,6 +36,12 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
 
 Map<String, dynamic> _asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
 
+List<String>? _normalizedEnvFilter(List<String>? environments) {
+  if (environments == null || environments.isEmpty || environments.contains('*')) return null;
+  final envs = environments.map((e) => e.trim().toLowerCase()).where((e) => e.isNotEmpty).toSet().toList();
+  return envs.isEmpty ? null : envs;
+}
+
 /// Result of grouping an event into an issue.
 class IssueUpsert {
   const IssueUpsert({required this.id, required this.muted, required this.regression});
@@ -377,34 +383,58 @@ class ScoutStore {
     }
   }
 
-  Future<Map<String, List<String>>> eventFilterFacets(String projectId, {TimeWindow? window}) async {
+  Future<Map<String, List<String>>> eventFilterFacets(
+    String projectId, {
+    TimeWindow? window,
+    String? environment,
+    String? appVersion,
+    String? deviceName,
+  }) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(30);
+    final time = timeParams(w);
+    final timeScope = '''
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)''';
     final envRows = await conn.execute(
       Sql.named('''
-        SELECT DISTINCT COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') AS environment
+        SELECT DISTINCT ${sqlEnvironmentExpr()} AS environment
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          $timeScope
+          ${sqlEventFacetFilters(applyEnvironment: false)}
         ORDER BY 1
       '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
+      parameters: eventFacetParameters(
+        projectId: projectId,
+        time: time,
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
+        applyEnvironment: false,
+      ),
     );
     final verRows = await conn.execute(
       Sql.named('''
-        SELECT DISTINCT COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) AS app_version
+        SELECT DISTINCT ${sqlAppVersionExpr()} AS app_version
         FROM events
         WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
-          AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) IS NOT NULL
-          AND COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) <> ''
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          AND ${sqlAppVersionExpr()} IS NOT NULL
+          AND ${sqlAppVersionExpr()} <> ''
+          $timeScope
+          ${sqlEventFacetFilters(applyAppVersion: false)}
         ORDER BY 1 DESC
         LIMIT 50
       '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
+      parameters: eventFacetParameters(
+        projectId: projectId,
+        time: time,
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
+        applyAppVersion: false,
+      ),
     );
     final deviceRows = await conn.execute(
       Sql.named('''
@@ -414,12 +444,19 @@ class ScoutStore {
           AND $sqlHideSessionHeartbeat
           AND ${sqlDeviceNameExpr()} IS NOT NULL
           AND ${sqlDeviceNameExpr()} <> ''
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          $timeScope
+          ${sqlEventFacetFilters(applyDevice: false)}
         ORDER BY 1
         LIMIT 50
       '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
+      parameters: eventFacetParameters(
+        projectId: projectId,
+        time: time,
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
+        applyDevice: false,
+      ),
     );
     return {
       'environments': envRows.map((r) => r[0] as String).toList(),
@@ -737,39 +774,43 @@ class ScoutStore {
   }) async {
     final conn = await db.connect();
     final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
+    final facetScope = sqlIssueEventScope();
+    final facetActive = hasEventFacetFilters(environment: environment, appVersion: appVersion, deviceName: deviceName);
+    final issueTimeClause = facetActive
+        ? ''
+        : '''
+          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)''';
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, fingerprint, type, title, status, event_count, affected_users,
                first_seen_at, last_seen_at, top_country,
                (SELECT COALESCE(NULLIF(e.payload->>'level', ''), 'error')
-                FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND ${sqlIsErrorEvent(alias: 'e')}
-                  AND ${sqlOccurredInWindow(alias: 'e')}
+                FROM events e WHERE ${sqlIssueEventScope()}
                 ORDER BY e.occurred_at DESC LIMIT 1) AS level,
                (SELECT e.payload->'network'->>'statusCode'
-                FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND ${sqlIsErrorEvent(alias: 'e')}
-                  AND ${sqlOccurredInWindow(alias: 'e')}
+                FROM events e WHERE ${sqlIssueEventScope()}
                 ORDER BY e.occurred_at DESC LIMIT 1) AS status_code,
                (SELECT COUNT(*)::int
                 FROM events e
-                WHERE e.project_id = @pid AND e.issue_id = issues.id
-                  AND ${sqlIsErrorEvent(alias: 'e')}
-                  AND ${sqlOccurredInWindow(alias: 'e')}
+                WHERE ${sqlIssueEventScope()}
                ) AS period_events,
                (SELECT device FROM (
                   SELECT ${sqlDeviceNameExpr(alias: 'e2')} AS device, COUNT(*)::int AS c
                   FROM events e2
-                  WHERE e2.project_id = @pid AND e2.issue_id = issues.id AND ${sqlIsErrorEvent(alias: 'e2')}
-                    AND ${sqlOccurredInWindow(alias: 'e2')}
+                  WHERE ${sqlIssueEventScope(alias: 'e2')}
                     AND ${sqlDeviceNameExpr(alias: 'e2')} IS NOT NULL AND ${sqlDeviceNameExpr(alias: 'e2')} <> ''
                   GROUP BY device ORDER BY c DESC LIMIT 1
-                ) d) AS top_device
+                ) d) AS top_device,
+               (SELECT COUNT(DISTINCT e.user_id)::int
+                FROM events e
+                WHERE ${sqlIssueEventScope()}
+                  AND e.user_id IS NOT NULL AND e.user_id <> ''
+               ) AS period_users
         FROM issues WHERE project_id = @pid
           AND EXISTS (
             SELECT 1 FROM events e
-            WHERE e.project_id = @pid AND e.issue_id = issues.id AND ${sqlIsErrorEvent(alias: 'e')}
-              AND ${sqlOccurredInWindow(alias: 'e')}
+            WHERE ${sqlIssueEventScope()}
           )
           AND (@type::text IS NULL OR type = @type::text)
           AND (@status::text IS NULL OR status = @status::text)
@@ -783,19 +824,7 @@ class ScoutStore {
                   OR e.payload->'network'->>'url' ILIKE '%' || @q::text || '%')
             )
           )
-          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
-          AND (
-            @env::text IS NULL AND @ver::text IS NULL AND @device::text IS NULL
-            OR EXISTS (
-              SELECT 1 FROM events e
-              WHERE e.project_id = @pid AND e.issue_id = issues.id
-                AND ${sqlOccurredInWindow(alias: 'e')}
-                AND (@env::text IS NULL OR COALESCE(NULLIF(e.environment, ''), NULLIF(e.payload->>'environment', ''), NULLIF(e.payload->'release'->>'environment', ''), 'unknown') = @env::text)
-                AND (@ver::text IS NULL OR COALESCE(NULLIF(e.app_version, ''), NULLIF(e.payload->'device'->>'appVersion', ''), NULLIF(e.payload->'device'->>'version', '')) = @ver::text)
-                AND (@device::text IS NULL OR ${sqlDeviceNameExpr(alias: 'e')} = @device::text)
-            )
-          )
+          $issueTimeClause
         ORDER BY last_seen_at DESC LIMIT @lim
       '''),
       parameters: {
@@ -814,11 +843,12 @@ class ScoutStore {
         .map((r) {
           final totalEvents = r[5] as int;
           final periodEvents = r[12] as int;
+          final periodUsers = (r[14] as int?) ?? 0;
           final inPeriod = w.since != null;
           final lastSeen = r[8] as DateTime;
           final sev = computeIssueSeverity(
-            eventCount: inPeriod ? periodEvents : totalEvents,
-            affectedUsers: (r[6] as int?) ?? 0,
+            eventCount: facetActive || inPeriod ? periodEvents : totalEvents,
+            affectedUsers: facetActive ? periodUsers : (r[6] as int?) ?? 0,
             hoursSinceLastSeen: DateTime.now().toUtc().difference(lastSeen.toUtc()).inHours,
             isCrash: r[2] == 'crash',
           );
@@ -828,9 +858,9 @@ class ScoutStore {
               'type': r[2],
               'title': r[3],
               'status': r[4],
-              'eventCount': inPeriod ? periodEvents : totalEvents,
-              if (inPeriod) 'totalEventCount': totalEvents,
-              'affectedUsers': r[6],
+              'eventCount': facetActive || inPeriod ? periodEvents : totalEvents,
+              if (inPeriod && !facetActive) 'totalEventCount': totalEvents,
+              'affectedUsers': facetActive ? periodUsers : (r[6] as int?) ?? 0,
               'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
               'lastSeenAt': lastSeen.toUtc().toIso8601String(),
               'topCountry': r[9],
@@ -987,7 +1017,12 @@ class ScoutStore {
   }
 
   /// Error + crash event counts in the last [minutes] (for spike detection).
-  Future<({int errors, int crashes})> incidentCounts(String projectId, {required int minutes}) async {
+  Future<({int errors, int crashes})> incidentCounts(
+    String projectId, {
+    required int minutes,
+    List<String>? environments,
+  }) async {
+    final envs = _normalizedEnvFilter(environments);
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
@@ -995,9 +1030,15 @@ class ScoutStore {
           COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
           COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes
         FROM events e
-        WHERE project_id = @pid AND occurred_at >= now() - (@mins::text || ' minutes')::interval
+        WHERE project_id = @pid
+          AND occurred_at >= now() - (@mins::text || ' minutes')::interval
+          ${envs == null ? '' : 'AND lower(environment) = ANY(@envs)'}
       '''),
-      parameters: {'pid': projectId, 'mins': minutes},
+      parameters: {
+        'pid': projectId,
+        'mins': minutes,
+        if (envs != null) 'envs': envs,
+      },
     );
     final r = rows.first;
     return (errors: (r[0] as int?) ?? 0, crashes: (r[1] as int?) ?? 0);
@@ -1010,7 +1051,9 @@ class ScoutStore {
     String projectId, {
     required int windowMinutes,
     int lookback = 24,
+    List<String>? environments,
   }) async {
+    final envs = _normalizedEnvFilter(environments);
     final conn = await db.connect();
     final total = windowMinutes * (lookback + 1);
     final rows = await conn.execute(
@@ -1020,10 +1063,17 @@ class ScoutStore {
           COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
           COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes
         FROM events e
-        WHERE project_id = @pid AND occurred_at >= now() - (@total::text || ' minutes')::interval
+        WHERE project_id = @pid
+          AND occurred_at >= now() - (@total::text || ' minutes')::interval
+          ${envs == null ? '' : 'AND lower(environment) = ANY(@envs)'}
         GROUP BY bucket
       '''),
-      parameters: {'pid': projectId, 'win': windowMinutes, 'total': total},
+      parameters: {
+        'pid': projectId,
+        'win': windowMinutes,
+        'total': total,
+        if (envs != null) 'envs': envs,
+      },
     );
     final errors = List<int>.filled(lookback + 1, 0);
     final crashes = List<int>.filled(lookback + 1, 0);
@@ -1045,7 +1095,18 @@ class ScoutStore {
     final conn = await db.connect();
     final top = await conn.execute(
       Sql.named('''
-        SELECT i.title, i.type, COUNT(e.id)::int AS c
+        SELECT i.title, i.type, COUNT(e.id)::int AS c,
+          (SELECT v.app_ver FROM (
+              SELECT ${sqlAppVersionExpr(alias: 'e2')} AS app_ver,
+                     COUNT(*)::int AS vc
+              FROM events e2
+              WHERE e2.project_id = @pid AND e2.issue_id = i.id AND ${sqlIsErrorEvent(alias: 'e2')}
+                AND e2.occurred_at >= now() - (@hrs::text || ' hours')::interval
+              GROUP BY 1
+            ) v
+            WHERE v.app_ver IS NOT NULL AND v.app_ver <> ''
+            ORDER BY v.vc DESC LIMIT 1
+          ) AS top_version
         FROM issues i
         JOIN events e ON e.issue_id = i.id AND e.project_id = @pid AND ${sqlIsErrorEvent(alias: 'e')}
           AND e.occurred_at >= now() - (@hrs::text || ' hours')::interval
@@ -1065,7 +1126,14 @@ class ScoutStore {
       parameters: {'pid': projectId, 'hrs': hours},
     );
     return (
-      issues: top.map((r) => {'title': r[0], 'type': r[1], 'count': r[2]}).toList(),
+      issues: top
+          .map((r) => {
+                'title': r[0],
+                'type': r[1],
+                'count': r[2],
+                'version': r[3] as String?,
+              })
+          .toList(),
       regressions: (counts.first[0] as int?) ?? 0,
       newIssues: (counts.first[1] as int?) ?? 0,
     );
@@ -1472,9 +1540,7 @@ class ScoutStore {
             OR ${sqlDeviceNameExpr()} ILIKE '%' || @q::text || '%'
           )
           AND (@country::text IS NULL OR country = @country::text)
-          AND (@env::text IS NULL OR COALESCE(NULLIF(environment, ''), NULLIF(payload->>'environment', ''), NULLIF(payload->'release'->>'environment', ''), 'unknown') = @env::text)
-          AND (@ver::text IS NULL OR COALESCE(NULLIF(app_version, ''), NULLIF(payload->'device'->>'appVersion', ''), NULLIF(payload->'device'->>'version', '')) = @ver::text)
-          AND (@device::text IS NULL OR ${sqlDeviceNameExpr()} = @device::text)
+          AND ${sqlEventFacetFilters()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
     ''';
@@ -1977,6 +2043,16 @@ class ScoutStore {
         .toList();
   }
 
+  Future<String?> projectDisplayName(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT name FROM projects WHERE id = @pid'),
+      parameters: {'pid': projectId},
+    );
+    if (rows.isEmpty) return null;
+    return rows.first[0] as String;
+  }
+
   Future<Map<String, dynamic>?> createShareToken({
     required String projectId,
     required String resourceType,
@@ -2018,12 +2094,39 @@ class ScoutStore {
     };
   }
 
+  /// Read-only notification link — filters live in [payload], not the URL.
+  Future<Map<String, dynamic>?> createAlertShareToken({
+    required String projectId,
+    required String dedupKey,
+    required Map<String, dynamic> payload,
+    int expiresInHours = 168,
+  }) async {
+    final token = newToken();
+    final expiresAt = DateTime.now().toUtc().add(Duration(hours: expiresInHours.clamp(1, 8760)));
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, payload)
+        VALUES (@id, @pid, 'alert', @rid, @hash, @exp, @payload::jsonb)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'rid': dedupKey,
+        'hash': hashToken(token),
+        'exp': expiresAt,
+        'payload': jsonEncode(payload),
+      },
+    );
+    return {'token': token, 'expiresAt': expiresAt.toIso8601String()};
+  }
+
   Future<Map<String, dynamic>?> resolveShareToken(String rawToken) async {
     if (rawToken.isEmpty || rawToken.length > 128) return null;
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        SELECT project_id, resource_type, resource_id, expires_at
+        SELECT project_id, resource_type, resource_id, expires_at, payload
         FROM share_tokens
         WHERE token_hash = @hash AND revoked_at IS NULL AND expires_at > now()
         LIMIT 1
@@ -2037,6 +2140,7 @@ class ScoutStore {
       'resourceType': r[1],
       'resourceId': r[2],
       'expiresAt': (r[3] as DateTime).toUtc().toIso8601String(),
+      if (r[4] != null) 'payload': r[4],
     };
   }
 }

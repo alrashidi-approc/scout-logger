@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 
 import 'config/app_config.dart';
+import 'config/brand.dart';
 import 'router/app_router.dart';
 import 'services/auth_service.dart';
 import 'services/dashboard_log_service.dart';
@@ -13,6 +15,7 @@ import 'widgets/web_copy_scope.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  usePathUrlStrategy();
   await AppConfig.load();
   await AuthService.instance.load();
 
@@ -42,11 +45,11 @@ Future<void> main() async {
   };
 
   runApp(MaterialApp.router(
-    title: 'Scout Logger',
+    title: Brand.name,
     theme: AppTheme.light().withScoutDefaults(),
     scrollBehavior: const ScoutScrollBehavior(),
     routerConfig: createRouter(),
-    restorationScopeId: 'scout-dashboard',
+    restorationScopeId: kIsWeb ? null : 'scout-dashboard',
     builder: (context, child) => ColoredBox(
       color: AppTheme.bg,
       child: ScoutSelectionShell(child: child ?? const ScoutBootstrapView()),

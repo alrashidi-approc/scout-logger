@@ -105,4 +105,40 @@ void main() {
       expect(isSuccessEvent('network', payload), isTrue);
     });
   });
+
+  group('facet filters', () {
+    test('hasEventFacetFilters detects active facets', () {
+      expect(hasEventFacetFilters(), isFalse);
+      expect(hasEventFacetFilters(appVersion: '1.0.0'), isTrue);
+      expect(hasEventFacetFilters(environment: 'production'), isTrue);
+      expect(hasEventFacetFilters(deviceName: 'iPhone'), isTrue);
+    });
+
+    test('sqlEventFacetFilters can omit one dimension for cross-faceting', () {
+      expect(sqlEventFacetFilters(applyAppVersion: false), isNot(contains('@ver::text')));
+      expect(sqlEventFacetFilters(applyEnvironment: false), isNot(contains('@env::text')));
+      expect(sqlEventFacetFilters(), contains('@ver::text'));
+    });
+
+    test('sqlIssueEventScope requires error events', () {
+      expect(sqlIssueEventScope(), contains("type IN ('error', 'crash')"));
+      expect(sqlIssueEventScope(), contains('@ver::text'));
+    });
+
+    test('eventFacetParameters omits unused facet binds', () {
+      final time = {'since': null, 'until': null};
+      expect(
+        eventFacetParameters(projectId: 'p', time: time, applyEnvironment: false).keys,
+        isNot(contains('env')),
+      );
+      expect(
+        eventFacetParameters(projectId: 'p', time: time, applyAppVersion: false).keys,
+        isNot(contains('ver')),
+      );
+      expect(
+        eventFacetParameters(projectId: 'p', time: time, applyDevice: false).keys,
+        isNot(contains('device')),
+      );
+    });
+  });
 }

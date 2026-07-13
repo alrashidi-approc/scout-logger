@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../config/brand.dart';
 import '../theme/app_theme.dart';
 
 /// Scout brand mark — icon + wordmark for sidebar, auth, and footer.
@@ -10,27 +11,32 @@ class ScoutLogo extends StatelessWidget {
     this.showTagline = false,
     this.iconSize = 40,
     this.onTap,
+    this.onSidebar = false,
   });
 
   final bool compact;
   final bool showTagline;
   final double iconSize;
   final VoidCallback? onTap;
+  final bool onSidebar;
 
   @override
   Widget build(BuildContext context) {
     final mark = _LogoMark(size: iconSize);
+    final titleColor = onSidebar ? AppTheme.onSidebar : AppTheme.text;
+    final mutedColor = onSidebar ? AppTheme.onSidebarMuted : AppTheme.muted;
     final wordmark = compact
         ? null
         : Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Scout', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: AppTheme.text, height: 1.1, letterSpacing: -0.3)),
-              if (showTagline)
-                const Text('Logger', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.muted, letterSpacing: 0.6))
-              else
-                const Text('Logger', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: AppTheme.muted, height: 1.2)),
+              Text(Brand.shortName, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: titleColor, height: 1.1, letterSpacing: -0.3)),
+              Text(Brand.productLine, style: TextStyle(fontSize: 11, fontWeight: showTagline ? FontWeight.w600 : FontWeight.w500, color: mutedColor, height: 1.2, letterSpacing: showTagline ? 0.6 : 0)),
+              if (showTagline) ...[
+                const SizedBox(height: 4),
+                Text(Brand.slogan, style: TextStyle(fontSize: 10, color: mutedColor.withValues(alpha: 0.9), height: 1.3)),
+              ],
             ],
           );
 

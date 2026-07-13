@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
 import '../theme/app_theme.dart';
+import '../utils/notification_deliveries.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
@@ -88,6 +89,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
                 _statChip('Sent', _stat('sent'), AppTheme.success),
                 _statChip('Failed', _stat('failed'), AppTheme.error),
                 _statChip('Deduped', _stat('skipped_dedup'), AppTheme.muted),
+                _statChip('Grouped', _stat('batched'), AppTheme.primary),
                 _statChip('Rate-limited', _stat('rate_limited'), AppTheme.warning),
               ]),
             ),
@@ -108,7 +110,12 @@ class _AlertsScreenState extends State<AlertsScreen> {
             Card(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Column(children: [for (final d in _deliveries) _AlertTile(delivery: d)]),
+                child: Column(
+                  children: [
+                    for (final d in groupNotificationDeliveries(_deliveries))
+                      _AlertTile(delivery: d),
+                  ],
+                ),
               ),
             ),
         ],
@@ -147,6 +154,7 @@ class _AlertTile extends StatelessWidget {
     final status = '${delivery['status']}';
     final channel = '${delivery['channel']}';
     final projectId = delivery['projectId']?.toString();
+    final count = delivery['count'] as int? ?? 1;
     final color = _statusColor(status);
     final error = delivery['errorMessage'];
     return ListTile(
@@ -155,11 +163,11 @@ class _AlertTile extends StatelessWidget {
         child: Icon(_channelIcon(channel), size: 18, color: color),
       ),
       title: Text(
-        '${delivery['projectName'] ?? projectId ?? 'Project'} · ${delivery['category']}',
+        '${delivery['projectName'] ?? projectId ?? 'Project'} · ${delivery['category']}${count > 1 ? ' ×$count' : ''}',
         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
       ),
       subtitle: Text(
-        '$channel · $status${error != null ? ' — $error' : ''}\n${delivery['createdAt'] ?? ''}',
+        '$channel · ${deliveryStatusLabel(status, count: count)}${error != null ? ' — $error' : ''}\n${delivery['latestAt'] ?? delivery['createdAt'] ?? ''}',
         style: const TextStyle(fontSize: 12),
       ),
       isThreeLine: true,

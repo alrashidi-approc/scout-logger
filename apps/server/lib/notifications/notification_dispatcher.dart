@@ -204,7 +204,7 @@ class NotificationDispatcher {
     final message = mailer.Message()
       ..from = mailer.Address(from, 'Scout Logger')
       ..recipients.addAll(config.email.recipients)
-      ..subject = '[Scout] $projectName — ${job.title}'
+      ..subject = _emailSubject(projectName: projectName, job: job)
       ..text = '${job.body}\n\nOpen: ${job.eventUrl}';
 
     try {
@@ -231,6 +231,12 @@ class NotificationDispatcher {
       throw _PermanentSendError('Email send failed: $detail');
     }
   }
+}
+
+String _emailSubject({required String projectName, required NotificationJob job}) {
+  final env = job.environment?.trim();
+  final envPart = env != null && env.isNotEmpty ? ' [$env]' : '';
+  return '[Scout]$envPart $projectName — ${job.title}';
 }
 
 /// Resolve [host] to an A-record IP via DNS-over-HTTPS, bypassing the OS

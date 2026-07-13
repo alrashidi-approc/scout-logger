@@ -14,6 +14,7 @@ const kDefaultNotificationCategories = ['crash', 'error', 'network_critical', 'n
 const kDefaultNotificationEnvironments = ['production'];
 const kDefaultDedupMinutes = 15;
 const kDefaultMaxAlertsPerHour = 0; // 0 = unlimited
+const kDefaultGroupMinutes = 5; // 0 = send immediately (no batching)
 
 const kDefaultNotificationChannels = ['slack', 'whatsapp', 'email'];
 
@@ -201,6 +202,7 @@ class ThresholdConfig {
     this.crashCount = 0,
     this.sensitivity = 3.0,
     this.channels = kDefaultNotificationChannels,
+    this.environments = const ['*'],
   });
 
   final bool enabled;
@@ -220,6 +222,9 @@ class ThresholdConfig {
   final double sensitivity;
   final List<String> channels;
 
+  /// Environments to include in spike detection. Use '*' for all.
+  final List<String> environments;
+
   bool get isAnomaly => mode == 'anomaly';
 
   factory ThresholdConfig.fromJson(Map<String, dynamic>? json) => ThresholdConfig(
@@ -230,6 +235,7 @@ class ThresholdConfig {
         crashCount: (int.tryParse('${json?['crashCount'] ?? ''}') ?? 0).clamp(0, 100000),
         sensitivity: (double.tryParse('${json?['sensitivity'] ?? ''}') ?? 3.0).clamp(1.0, 6.0),
         channels: _normList(json?['channels'] as List?, kNotificationChannels, kDefaultNotificationChannels),
+        environments: _normEnvs(json?['environments'] ?? const ['*']),
       );
 
   Map<String, dynamic> toJson() => {
@@ -240,6 +246,7 @@ class ThresholdConfig {
         'crashCount': crashCount,
         'sensitivity': sensitivity,
         'channels': channels,
+        'environments': environments,
       };
 }
 
@@ -274,6 +281,7 @@ class ProjectNotificationConfig {
     this.enabled = false,
     this.dedupMinutes = kDefaultDedupMinutes,
     this.maxAlertsPerHour = kDefaultMaxAlertsPerHour,
+    this.groupMinutes = kDefaultGroupMinutes,
     this.rules = const [NotificationRule(id: 'default')],
     this.slack = const SlackChannelConfig(),
     this.whatsapp = const WhatsappChannelConfig(),
@@ -287,6 +295,9 @@ class ProjectNotificationConfig {
 
   /// Max alerts sent per project per rolling hour. 0 disables the cap.
   final int maxAlertsPerHour;
+
+  /// Roll similar alerts into one message per issue/channel. 0 = off.
+  final int groupMinutes;
   final List<NotificationRule> rules;
   final SlackChannelConfig slack;
   final WhatsappChannelConfig whatsapp;
@@ -305,6 +316,7 @@ class ProjectNotificationConfig {
       enabled: json['enabled'] == true,
       dedupMinutes: _clampDedup(json['dedupMinutes']),
       maxAlertsPerHour: _clampRate(json['maxAlertsPerHour']),
+      groupMinutes: _clampGroup(json['groupMinutes']),
       rules: rules,
       slack: SlackChannelConfig.fromJson(channels['slack'] is Map ? Map<String, dynamic>.from(channels['slack'] as Map) : null),
       whatsapp: WhatsappChannelConfig.fromJson(channels['whatsapp'] is Map ? Map<String, dynamic>.from(channels['whatsapp'] as Map) : null),
@@ -318,6 +330,7 @@ class ProjectNotificationConfig {
         'enabled': enabled,
         'dedupMinutes': dedupMinutes,
         'maxAlertsPerHour': maxAlertsPerHour,
+        'groupMinutes': groupMinutes,
         'rules': rules.map((r) => r.toJson()).toList(),
         'channels': {
           'slack': slack.toJson(),
@@ -339,6 +352,7 @@ class ProjectNotificationConfig {
         'enabled': enabled,
         'dedupMinutes': dedupMinutes,
         'maxAlertsPerHour': maxAlertsPerHour,
+        'groupMinutes': groupMinutes,
         'rules': rules.map((r) => r.toJson()).toList(),
         'platform': platform.toJson(),
         'channels': {
@@ -383,4 +397,10 @@ int _clampRate(dynamic raw) {
   final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
   if (n == null) return kDefaultMaxAlertsPerHour;
   return n.clamp(0, 1000);
+}
+
+int _clampGroup(dynamic raw) {
+  final n = raw is int ? raw : int.tryParse('${raw ?? ''}');
+  if (n == null) return kDefaultGroupMinutes;
+  return n.clamp(0, 60);
 }

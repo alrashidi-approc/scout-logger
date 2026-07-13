@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import 'api_client.dart';
+import 'project_access_service.dart';
 
 class AuthService extends ChangeNotifier {
   AuthService._();
@@ -41,6 +42,7 @@ class AuthService extends ChangeNotifier {
     }
     _ready = true;
     notifyListeners();
+    if (isLoggedIn) await ProjectAccessService.instance.load();
   }
 
   Future<bool> _restoreSession() async {
@@ -150,6 +152,7 @@ class AuthService extends ChangeNotifier {
   Future<void> logout({bool silent = false}) async {
     _token = null;
     _user = null;
+    ProjectAccessService.instance.clear();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     if (!silent) notifyListeners();
@@ -163,6 +166,7 @@ class AuthService extends ChangeNotifier {
     await prefs.setString(_tokenKey, token);
     await prefs.setBool(_rememberKey, rememberMe);
     notifyListeners();
+    await ProjectAccessService.instance.load();
   }
 
   Uri _uri(String path) {

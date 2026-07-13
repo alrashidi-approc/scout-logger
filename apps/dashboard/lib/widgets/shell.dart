@@ -158,7 +158,7 @@ class _DashboardShellState extends State<DashboardShell> {
             style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w700,
-              color: AppTheme.muted.withValues(alpha: 0.85),
+              color: AppTheme.onSidebarMuted.withValues(alpha: 0.85),
               letterSpacing: 1.1,
             ),
           ),
@@ -183,6 +183,7 @@ class _DashboardShellState extends State<DashboardShell> {
       child: ScoutLogo(
         compact: !extended,
         showTagline: extended,
+        onSidebar: true,
         iconSize: extended ? 38 : 36,
         onTap: onLogoTap ?? () => context.go(widget.projectId == null ? '/projects' : '/p/${widget.projectId}'),
       ),
@@ -195,13 +196,17 @@ class _DashboardShellState extends State<DashboardShell> {
       padding: const EdgeInsets.all(12),
       child: extended
           ? OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.onSidebar,
+                side: const BorderSide(color: AppTheme.sidebarBorder),
+              ),
               onPressed: () => context.go('/projects'),
               icon: const Icon(Icons.swap_horiz, size: 16),
               label: const Text('Switch project'),
             )
           : IconButton(
               onPressed: () => context.go('/projects'),
-              icon: const Icon(Icons.swap_horiz, color: AppTheme.muted),
+              icon: const Icon(Icons.swap_horiz, color: AppTheme.onSidebarMuted),
               tooltip: 'Switch project',
             ),
     );
@@ -225,7 +230,7 @@ class _DashboardShellState extends State<DashboardShell> {
 
     final drawerMode = useDrawerNav(context);
     final wide = !drawerMode && MediaQuery.sizeOf(context).width >= Breakpoints.shellDrawer;
-    final extended = wide && widget.projectId != null;
+    final extended = wide;
     final selected = _selectedIndex(context);
     final compact = isMobile(context);
 
@@ -268,7 +273,7 @@ class _DashboardShellState extends State<DashboardShell> {
                             _projectName!,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppTheme.text),
+                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppTheme.onSidebar),
                           ),
                         ),
                       Expanded(child: SingleChildScrollView(child: _sidebarNav(context, extended: true, selected: selected))),
@@ -289,8 +294,8 @@ class _DashboardShellState extends State<DashboardShell> {
             width: extended ? 232 : 76,
             decoration: BoxDecoration(
               color: AppTheme.sidebar,
-              border: const Border(right: BorderSide(color: AppTheme.border)),
-              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12, offset: const Offset(2, 0))],
+              border: const Border(right: BorderSide(color: AppTheme.sidebarBorder)),
+              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 16, offset: const Offset(2, 0))],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -302,20 +307,20 @@ class _DashboardShellState extends State<DashboardShell> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                       decoration: BoxDecoration(
-                        color: AppTheme.panelElevated,
+                        color: AppTheme.sidebarElevated,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: AppTheme.border),
+                        border: Border.all(color: AppTheme.sidebarBorder),
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.folder_outlined, size: 14, color: AppTheme.primary),
+                          const Icon(Icons.folder_outlined, size: 14, color: AppTheme.sidebarActive),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               _projectName!,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.text),
+                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.onSidebar),
                             ),
                           ),
                         ],
@@ -468,22 +473,21 @@ class _NavTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final accent = selected ? AppTheme.primary : AppTheme.muted;
-    // Renders a real <a href> on web so the tile supports open-in-new-tab,
-    // Ctrl/Cmd+click and middle-click, while a normal click stays in-app.
+    final accent = selected ? AppTheme.sidebarActive : AppTheme.onSidebarMuted;
     return Link(
       uri: Uri.parse(location),
       builder: (context, _) => Material(
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
+          hoverColor: AppTheme.sidebarHover.withValues(alpha: 0.6),
           child: Container(
             margin: EdgeInsets.symmetric(horizontal: extended ? 10 : 8, vertical: 2),
             padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 11),
             decoration: BoxDecoration(
-              color: selected ? AppTheme.primary.withValues(alpha: 0.1) : Colors.transparent,
+              color: selected ? AppTheme.sidebarActive.withValues(alpha: 0.14) : Colors.transparent,
               borderRadius: BorderRadius.circular(10),
-              border: selected ? Border.all(color: AppTheme.primary.withValues(alpha: 0.2)) : null,
+              border: selected ? Border.all(color: AppTheme.sidebarActive.withValues(alpha: 0.35)) : null,
             ),
             child: Row(
               mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center,

@@ -14,6 +14,7 @@ import '../store/notification_store.dart';
 import '../store/platform_store.dart';
 import '../store/scout_store.dart';
 import '../notifications/notification_service.dart';
+import '../notifications/notification_router.dart';
 import '../reports/report_service.dart';
 import '../util/dates.dart';
 import 'admin_routes.dart';
@@ -64,6 +65,24 @@ Handler apiRoutes(
     final auth = authFrom(request)!;
     final projects = await store.listProjects(userId: auth.userId, admin: auth.isAdmin);
     return Response.ok(jsonEncode({'ok': true, 'projects': projects}), headers: {'Content-Type': 'application/json'});
+  });
+
+  router.get('/projects/<id>/access', (Request request, String id) async {
+    final auth = authFrom(request)!;
+    if (auth.isAdmin) {
+      return Response.ok(
+        jsonEncode({'ok': true, 'projectId': id, 'role': 'admin', 'access': true}),
+        headers: {'Content-Type': 'application/json'},
+      );
+    }
+    final uid = auth.userId;
+    if (uid == null) return jsonErr('Unauthorized', status: 401);
+    final role = await authStore.membershipRole(uid, id);
+    if (role == null) return jsonErr('Project not found', status: 404);
+    return Response.ok(
+      jsonEncode({'ok': true, 'projectId': id, 'role': role, 'access': true}),
+      headers: {'Content-Type': 'application/json'},
+    );
   });
 
   router.post('/projects', (Request request) async {
@@ -120,7 +139,13 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
-      final facets = await store.eventFilterFacets(id, window: _optionalWindow(request.url.queryParameters) ?? _window(request.url.queryParameters));
+      final facets = await store.eventFilterFacets(
+        id,
+        window: _optionalWindow(request.url.queryParameters) ?? _window(request.url.queryParameters),
+        environment: request.url.queryParameters['environment'],
+        appVersion: request.url.queryParameters['appVersion'] ?? request.url.queryParameters['app_version'],
+        deviceName: request.url.queryParameters['device'] ?? request.url.queryParameters['deviceName'],
+      );
       return Response.ok(jsonEncode({'ok': true, 'facets': facets}), headers: {'Content-Type': 'application/json'});
     });
   });
@@ -575,11 +600,55 @@ Handler apiRoutes(
         try {
           await notifications.sendTest(projectId: id, channel: channel, notifications: config, platform: platform);
         } catch (e) {
-          // Delivery failures are config problems, not server errors — surface the reason.
           final msg = '$e'.replaceFirst(RegExp(r'^(Exception: )?Failed after \d+ attempts: '), '');
           return jsonErr(msg, status: 400);
         }
         return Response.ok(jsonEncode({'ok': true}), headers: {'Content-Type': 'application/json'});
+      });
+    });
+
+    router.get('/projects/<id>/notifications/channels', (Request request, String id) async {
+      return _api(() async {
+        final guard = await _projectGuard(request, id, authStore);
+        if (guard != null) return guard;
+        final config = await notificationStore.getConfig(id);
+        final platform = await notifications.platformStore.getNotificationPolicy();
+        final channels = readyNotificationChannels(config: config, platform: platform);
+        return Response.ok(jsonEncode({'ok': true, 'channels': channels}), headers: {'Content-Type': 'application/json'});
+      });
+    });
+
+    router.post('/projects/<id>/notifications/share', (Request request, String id) async {
+      return _api(() async {
+        final guard = await _projectGuard(request, id, authStore);
+        if (guard != null) return guard;
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final resourceType = body['resourceType']?.toString();
+        final resourceId = body['resourceId']?.toString();
+        final rawChannels = body['channels'];
+        if (resourceType == null || !{'issue', 'event'}.contains(resourceType)) {
+          return jsonErr('resourceType must be issue or event');
+        }
+        if (resourceId == null || resourceId.isEmpty) return jsonErr('resourceId is required');
+        if (rawChannels is! List || rawChannels.isEmpty) return jsonErr('channels is required');
+        final channels = rawChannels.map((e) => e.toString()).toList();
+        final config = await notificationStore.getConfig(id);
+        final platform = await notifications.platformStore.getNotificationPolicy();
+        try {
+          final result = await notifications.sendShare(
+            projectId: id,
+            resourceType: resourceType,
+            resourceId: resourceId,
+            channels: channels,
+            notifications: config,
+            platform: platform,
+            sentByUserId: authFrom(request)?.userId,
+          );
+          return Response.ok(jsonEncode({'ok': true, ...result}), headers: {'Content-Type': 'application/json'});
+        } on ArgumentError catch (e) {
+          final msg = '$e'.replaceFirst('Invalid argument (parameters): ', '').replaceFirst('Invalid argument: ', '');
+          return jsonErr(msg, status: 400);
+        }
       });
     });
 

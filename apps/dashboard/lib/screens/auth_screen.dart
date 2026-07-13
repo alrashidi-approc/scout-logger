@@ -7,6 +7,15 @@ import '../theme/app_theme.dart';
 import '../widgets/dashboard_footer.dart';
 import '../widgets/scout_logo.dart';
 
+void _goAfterAuth(BuildContext context) {
+  final from = GoRouterState.of(context).uri.queryParameters['from'];
+  if (from != null && from.startsWith('/') && !from.startsWith('/login') && !from.startsWith('/signup')) {
+    context.go(from);
+  } else {
+    context.go('/projects');
+  }
+}
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -45,7 +54,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _password.text,
         rememberMe: _rememberMe,
       );
-      if (mounted) context.go('/projects');
+      if (mounted) _goAfterAuth(context);
     } catch (e) {
       if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
@@ -226,7 +235,7 @@ class _VerifyEmailScreenState extends State<VerifyEmailScreen> {
     });
     try {
       await AuthService.instance.verifyEmail(value);
-      if (mounted) context.go('/projects');
+      if (mounted) _goAfterAuth(context);
     } catch (e) {
       if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
     } finally {
