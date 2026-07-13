@@ -47,6 +47,15 @@ if [[ -f "$BOOT" ]]; then
   fi
 fi
 
+MAIN_JS="${WEB}/main.dart.js"
+if [[ -f "$MAIN_JS" ]]; then
+  if [[ "$(uname -s)" == Darwin ]]; then
+    sed -i '' -E "s|main\\.dart\\.js_([0-9]+)\\.part\\.js(\\?v=[0-9]+)?|main.dart.js_\\1.part.js?v=${build}|g" "$MAIN_JS"
+  else
+    sed -i -E "s|main\\.dart\\.js_([0-9]+)\\.part\\.js(\\?v=[0-9]+)?|main.dart.js_\\1.part.js?v=${build}|g" "$MAIN_JS"
+  fi
+fi
+
 printf '{"app_name":"scout_dashboard","version":"%s","build_number":"%s","package_name":"scout_dashboard"}\n' "$ver" "$build" >"${WEB}/version.json"
 
 rm -f "${WEB}/flutter_service_worker.js"

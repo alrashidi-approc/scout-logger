@@ -1540,7 +1540,7 @@ class ScoutStore {
             OR ${sqlDeviceNameExpr()} ILIKE '%' || @q::text || '%'
           )
           AND (@country::text IS NULL OR country = @country::text)
-          AND ${sqlEventFacetFilters()}
+          ${sqlEventFacetFilters()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
     ''';

@@ -1,9 +1,7 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-/// Inline expression so queries work before migration 014 columns exist; keep in sync
-/// with the `is_heartbeat` generated column when present.
-const sqlHideSessionHeartbeat = '''
-  NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')
-''';
+/// Inline expression so queries work before migration 014 columns exist.
+const sqlHideSessionHeartbeat =
+    "NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')";
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
@@ -63,6 +61,7 @@ String sqlEnvironmentExpr({String alias = ''}) {
 }
 
 /// Optional env / version / device filters — bind @env, @ver, @device (null = ignore).
+/// Each part starts with AND; do not prefix with another AND.
 String sqlEventFacetFilters({
   String alias = '',
   bool applyEnvironment = true,

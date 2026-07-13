@@ -12,7 +12,10 @@ import '../screens/event_detail_screen.dart';
 import '../screens/events_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
+import '../screens/analytics_screen.dart';
+import '../screens/geo_screen.dart';
 import '../screens/overview_screen.dart';
+import '../screens/reports_screen.dart';
 import '../screens/dashboard_logs_screen.dart';
 import '../screens/project_notifications_screen.dart';
 import '../screens/project_settings_screen.dart';
@@ -25,7 +28,6 @@ import '../services/auth_service.dart';
 import '../services/project_access_service.dart';
 import '../utils/date_range.dart';
 import '../widgets/shell.dart';
-import 'deferred_screens.dart';
 import 'scout_page.dart';
 
 GoRouter createRouter() {
@@ -194,7 +196,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/analytics',
             pageBuilder: (c, s) => scoutPage(
               s,
-              DeferredAnalyticsScreen(
+              AnalyticsScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialTab: s.uri.queryParameters['tab'],
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
@@ -282,7 +284,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/geo',
             pageBuilder: (c, s) => scoutPage(
               s,
-              DeferredGeoScreen(
+              GeoScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
               ),
@@ -296,7 +298,7 @@ GoRouter createRouter() {
             path: '/p/:projectId/reports',
             pageBuilder: (c, s) => scoutPage(
               s,
-              DeferredReportsScreen(
+              ReportsScreen(
                 projectId: s.pathParameters['projectId']!,
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
               ),

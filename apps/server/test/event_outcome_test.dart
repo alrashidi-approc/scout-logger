@@ -140,5 +140,30 @@ void main() {
         isNot(contains('device')),
       );
     });
+
+    test('composed listEvents SQL has no double AND', () {
+      final sql = '''
+        FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          AND (@country::text IS NULL OR country = @country::text)
+          ${sqlEventFacetFilters()}
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+      ''';
+      expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
+    });
+
+    test('composed issue scope SQL has no double AND', () {
+      final sql = 'SELECT 1 FROM events e WHERE ${sqlIssueEventScope()}';
+      expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
+    });
+
+    test('composed facet env query SQL has no double AND', () {
+      final sql = '''
+        FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          ${sqlEventFacetFilters(applyEnvironment: false)}
+      ''';
+      expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
+    });
   });
 }
