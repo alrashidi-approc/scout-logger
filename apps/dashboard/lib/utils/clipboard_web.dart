@@ -1,20 +1,16 @@
 import 'dart:js_interop';
 
-import 'package:flutter/services.dart';
 import 'package:web/web.dart' as web;
 
 Future<bool> platformCopy(String text) async {
+  if (_execCommandCopy(text)) return true;
+
   try {
     await web.window.navigator.clipboard.writeText(text).toDart;
     return true;
   } catch (_) {}
 
-  try {
-    await Clipboard.setData(ClipboardData(text: text));
-    return true;
-  } catch (_) {}
-
-  return _execCommandCopy(text);
+  return false;
 }
 
 bool _execCommandCopy(String text) {

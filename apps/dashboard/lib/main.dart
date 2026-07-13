@@ -9,6 +9,7 @@ import 'services/dashboard_scope.dart';
 import 'theme/app_theme.dart';
 import 'theme/scroll_behavior.dart';
 import 'widgets/page_placeholder.dart';
+import 'widgets/web_copy_scope.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,7 +49,7 @@ Future<void> main() async {
     restorationScopeId: 'scout-dashboard',
     builder: (context, child) => ColoredBox(
       color: AppTheme.bg,
-      child: SelectionArea(child: child ?? const ScoutBootstrapView()),
+      child: ScoutSelectionShell(child: child ?? const ScoutBootstrapView()),
     ),
   ));
 }

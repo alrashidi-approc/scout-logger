@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../theme/app_theme.dart';
+import '../utils/clipboard.dart';
 import '../utils/event_view.dart';
 import 'level_badge.dart';
 
@@ -394,7 +394,7 @@ class FieldGrid extends StatelessWidget {
         ],
       );
 
-  Widget _valueText(DetailField f) => SelectableText(
+  Widget _valueText(DetailField f) => Text(
         f.value,
         style: TextStyle(
           fontSize: 13,
@@ -452,10 +452,7 @@ class StackTracePanel extends StatelessWidget {
             Text('${lines.length} frame${lines.length == 1 ? '' : 's'}', style: TextStyle(color: AppTheme.muted, fontSize: 12, fontWeight: FontWeight.w600)),
             const Spacer(),
             TextButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: stack));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Stack trace copied')));
-              },
+              onPressed: () => copyWithFeedback(context, stack, message: 'Stack trace copied'),
               icon: Icon(Icons.copy, size: 14, color: AppTheme.muted),
               label: Text('Copy', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
             ),
@@ -464,7 +461,7 @@ class StackTracePanel extends StatelessWidget {
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.all(14),
-          child: SelectableText(
+          child: Text(
             lines.asMap().entries.map((e) => '#${e.key}  ${e.value}').join('\n'),
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.55),
           ),
@@ -491,7 +488,7 @@ class JsonPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppTheme.border),
       ),
-      child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
+      child: Text(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
     );
   }
 }
@@ -933,10 +930,7 @@ class NetworkReadablePanel extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: curl));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('cURL copied')));
-              },
+              onPressed: () => copyWithFeedback(context, curl, message: 'cURL copied'),
               icon: const Icon(Icons.terminal, size: 16),
               label: const Text('Copy cURL'),
             ),

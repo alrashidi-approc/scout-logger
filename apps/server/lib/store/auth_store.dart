@@ -106,7 +106,7 @@ class AuthStore {
     final conn = await db.connect();
     final token = newToken();
     final id = newId();
-    await conn.execute('DELETE FROM email_verification_tokens WHERE user_id = @uid', parameters: {'uid': userId});
+    await conn.execute(Sql.named('DELETE FROM email_verification_tokens WHERE user_id = @uid'), parameters: {'uid': userId});
     await conn.execute(
       Sql.named('''
         INSERT INTO email_verification_tokens (id, user_id, token_hash, expires_at)
@@ -134,7 +134,7 @@ class AuthStore {
       Sql.named('UPDATE dashboard_users SET email_verified_at = now() WHERE id = @id'),
       parameters: {'id': userId},
     );
-    await conn.execute('DELETE FROM email_verification_tokens WHERE user_id = @uid', parameters: {'uid': userId});
+    await conn.execute(Sql.named('DELETE FROM email_verification_tokens WHERE user_id = @uid'), parameters: {'uid': userId});
     return findUserById(userId);
   }
 
@@ -306,7 +306,7 @@ class AuthStore {
   /// re-verify before their next login.
   Future<Map<String, dynamic>?> setUnverified(String userId) async {
     final conn = await db.connect();
-    await conn.execute('DELETE FROM email_verification_tokens WHERE user_id = @uid', parameters: {'uid': userId});
+    await conn.execute(Sql.named('DELETE FROM email_verification_tokens WHERE user_id = @uid'), parameters: {'uid': userId});
     await conn.execute(
       Sql.named('UPDATE dashboard_users SET email_verified_at = NULL WHERE id = @id'),
       parameters: {'id': userId},

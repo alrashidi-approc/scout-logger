@@ -15,8 +15,9 @@ class EmailService {
 
   Future<String?> sendVerification(
       {required String to, required String token}) async {
+    // Hash route — the dashboard uses the default hash URL strategy.
     final link =
-        '${config.publicUrl}${config.dashboardUrlPath}/verify-email?token=$token';
+        '${config.publicUrl}${config.dashboardUrlPath}/#/verify-email?token=$token';
     final subject = 'Verify your Scout Logger account';
     final body = '''
 Hello,

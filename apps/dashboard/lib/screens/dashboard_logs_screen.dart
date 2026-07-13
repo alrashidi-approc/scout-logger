@@ -147,7 +147,7 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
                         if (ctx.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            child: SelectableText(
+                            child: Text(
                               ctx.entries.map((e) => '${e.key}: ${e.value}').join('\n'),
                               style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                             ),

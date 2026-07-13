@@ -176,7 +176,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                 const SizedBox(height: 4),
                 Text('${d['platform'] ?? '—'} · ${d['eventCount']} events', style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
                 const SizedBox(height: 4),
-                SelectableText(
+                Text(
                   '${d['installId']}',
                   style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace'),
                   maxLines: 1,

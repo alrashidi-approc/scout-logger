@@ -44,7 +44,7 @@ class DetailRow extends StatelessWidget {
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         SizedBox(width: 120, child: Text(label, style: const TextStyle(color: AppTheme.muted, fontSize: 13))),
         Expanded(
-          child: SelectableText(
+          child: Text(
             value,
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, fontFamily: mono ? 'monospace' : null),
           ),
@@ -156,7 +156,7 @@ class CodePanel extends StatelessWidget {
         decoration: BoxDecoration(color: AppTheme.codeBg, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(14),
-          child: SelectableText(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
+          child: Text(code, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
         ),
       ),
     );

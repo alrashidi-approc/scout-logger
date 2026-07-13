@@ -286,7 +286,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
           Text(label, style: const TextStyle(fontSize: 12, color: AppTheme.muted, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Row(children: [
-            Expanded(child: SelectableText(value, style: const TextStyle(fontFamily: 'monospace', fontSize: 13))),
+            Expanded(child: Text(value, style: const TextStyle(fontFamily: 'monospace', fontSize: 13))),
             IconButton(onPressed: onCopy, icon: const Icon(Icons.copy, size: 18)),
           ]),
         ],
