@@ -1,21 +1,48 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-/// Uses migration 014 `is_heartbeat` so partial indexes can skip heartbeats.
-const sqlHideSessionHeartbeat = 'NOT COALESCE(is_heartbeat, false)';
+/// Inline expression so all screens work before/without migration 014 columns.
+const sqlHideSessionHeartbeat =
+    "NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')";
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
-/// True failures only — uses migration 014 `is_error` (indexed).
+/// True failures only — inline expression (works without `is_error` column).
 /// Keep in sync with [isErrorEvent] and 014_event_outcome_columns.sql.
 String sqlIsErrorEvent({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
-  return 'COALESCE(${p}is_error, false)';
+  return '''
+(
+  ${p}type IN ('error', 'crash')
+  OR (
+    ${p}type = 'network'
+    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
+    AND (
+      NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
+      OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
+      OR NOT ((${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$' AND (${p}payload->'network'->>'statusCode')::int < 400)
+    )
+  )
+)''';
 }
 
-/// Successful outcomes — uses migration 014 `is_success` (indexed).
+/// Successful outcomes — inline expression (works without `is_success` column).
 String sqlIsSuccessEvent({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
-  return 'COALESCE(${p}is_success, false)';
+  return '''
+(
+  LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) = 'success'
+  OR (
+    ${p}type = 'network'
+    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) IN ('info', 'success')
+  )
+  OR (
+    ${p}type = 'network'
+    AND NULLIF(${p}payload->'network'->>'error', '') IS NULL
+    AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
+    AND (${p}payload->'network'->>'statusCode')::int < 400
+  )
+)''';
 }
 
 String sqlDeviceNameExpr({String alias = ''}) {

@@ -121,7 +121,7 @@ void main() {
     });
 
     test('sqlIssueEventScope requires error events', () {
-      expect(sqlIssueEventScope(), contains('is_error'));
+      expect(sqlIssueEventScope(), contains("type IN ('error', 'crash')"));
       expect(sqlIssueEventScope(), contains('@ver::text'));
     });
 

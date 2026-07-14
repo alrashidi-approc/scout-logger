@@ -1,17 +1,31 @@
--- Dashboard query performance: partial indexes aligned with migration 014 outcome columns.
+-- Dashboard query performance indexes.
+-- Only create when migration 014 outcome columns exist (safe if 014 not applied).
 
-CREATE INDEX IF NOT EXISTS events_project_time_nohb
-  ON events (project_id, occurred_at DESC)
-  WHERE NOT is_heartbeat;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'events' AND column_name = 'is_heartbeat'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS events_project_time_nohb
+      ON events (project_id, occurred_at DESC)
+      WHERE NOT is_heartbeat;
 
-CREATE INDEX IF NOT EXISTS events_project_install_time
-  ON events (project_id, install_id, occurred_at DESC)
-  WHERE install_id IS NOT NULL AND NOT is_heartbeat;
+    CREATE INDEX IF NOT EXISTS events_project_install_time
+      ON events (project_id, install_id, occurred_at DESC)
+      WHERE install_id IS NOT NULL AND NOT is_heartbeat;
 
-CREATE INDEX IF NOT EXISTS events_project_user_time_nohb
-  ON events (project_id, user_id, occurred_at DESC)
-  WHERE user_id IS NOT NULL AND NOT is_heartbeat;
+    CREATE INDEX IF NOT EXISTS events_project_user_time_nohb
+      ON events (project_id, user_id, occurred_at DESC)
+      WHERE user_id IS NOT NULL AND NOT is_heartbeat;
+  END IF;
 
-CREATE INDEX IF NOT EXISTS events_project_success
-  ON events (project_id, occurred_at DESC)
-  WHERE is_success;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'events' AND column_name = 'is_success'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS events_project_success
+      ON events (project_id, occurred_at DESC)
+      WHERE is_success;
+  END IF;
+END $$;

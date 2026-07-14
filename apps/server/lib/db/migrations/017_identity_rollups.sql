@@ -85,7 +85,8 @@ CREATE INDEX IF NOT EXISTS user_device_links_device
 CREATE INDEX IF NOT EXISTS user_device_links_user
   ON user_device_links (project_id, user_id, last_seen_at DESC);
 
--- Backfill from events (non-heartbeat). Errors use stored is_error when present.
+-- Backfill from events (non-heartbeat). Uses inline predicates so migration
+-- succeeds even if 014 outcome columns are not present yet.
 INSERT INTO user_stats (
   project_id, user_id, first_seen_at, last_seen_at,
   email, display_name, phone, username,
@@ -117,7 +118,7 @@ SELECT
     FILTER (WHERE e.install_id IS NOT NULL AND e.user_id <> e.install_id))[1]
 FROM events e
 WHERE e.user_id IS NOT NULL AND e.user_id <> ''
-  AND NOT COALESCE(e.is_heartbeat, false)
+  AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')
   AND (
     (e.install_id IS NOT NULL AND e.user_id <> e.install_id)
     OR (e.install_id IS NULL AND e.user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
@@ -131,11 +132,23 @@ SELECT
   e.user_id,
   (e.occurred_at AT TIME ZONE 'UTC')::date,
   COUNT(*)::int,
-  COUNT(*) FILTER (WHERE COALESCE(e.is_error, false))::int,
+  COUNT(*) FILTER (WHERE
+    e.type IN ('error', 'crash')
+    OR (
+      e.type = 'network'
+      AND LOWER(COALESCE(NULLIF(e.payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+      AND COALESCE(NULLIF(e.payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
+      AND (
+        NULLIF(e.payload->'network'->>'error', '') IS NOT NULL
+        OR NULLIF(e.payload->'network'->>'statusCode', '') IS NULL
+        OR NOT ((e.payload->'network'->>'statusCode') ~ '^[0-9]{1,9}$' AND (e.payload->'network'->>'statusCode')::int < 400)
+      )
+    )
+  )::int,
   COUNT(*) FILTER (WHERE e.type = 'crash')::int
 FROM events e
 WHERE e.user_id IS NOT NULL AND e.user_id <> ''
-  AND NOT COALESCE(e.is_heartbeat, false)
+  AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')
   AND (
     (e.install_id IS NOT NULL AND e.user_id <> e.install_id)
     OR (e.install_id IS NULL AND e.user_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
@@ -162,7 +175,8 @@ SELECT
   MAX(COALESCE(NULLIF(e.payload->'device'->'geo'->>'locale', ''),
                NULLIF(e.payload->'device'->>'locale', '')))
 FROM events e
-WHERE e.install_id IS NOT NULL AND NOT COALESCE(e.is_heartbeat, false)
+WHERE e.install_id IS NOT NULL
+  AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')
 GROUP BY e.project_id, e.install_id
 ON CONFLICT (project_id, install_id) DO NOTHING;
 
@@ -172,11 +186,24 @@ SELECT
   e.install_id,
   (e.occurred_at AT TIME ZONE 'UTC')::date,
   COUNT(*)::int,
-  COUNT(*) FILTER (WHERE COALESCE(e.is_error, false))::int,
+  COUNT(*) FILTER (WHERE
+    e.type IN ('error', 'crash')
+    OR (
+      e.type = 'network'
+      AND LOWER(COALESCE(NULLIF(e.payload->>'level', ''), 'error')) NOT IN ('info', 'success')
+      AND COALESCE(NULLIF(e.payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
+      AND (
+        NULLIF(e.payload->'network'->>'error', '') IS NOT NULL
+        OR NULLIF(e.payload->'network'->>'statusCode', '') IS NULL
+        OR NOT ((e.payload->'network'->>'statusCode') ~ '^[0-9]{1,9}$' AND (e.payload->'network'->>'statusCode')::int < 400)
+      )
+    )
+  )::int,
   COUNT(*) FILTER (WHERE e.type = 'crash')::int,
   COUNT(*) FILTER (WHERE e.user_id IS NOT NULL AND e.user_id = e.install_id)::int
 FROM events e
-WHERE e.install_id IS NOT NULL AND NOT COALESCE(e.is_heartbeat, false)
+WHERE e.install_id IS NOT NULL
+  AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')
 GROUP BY e.project_id, e.install_id, (e.occurred_at AT TIME ZONE 'UTC')::date
 ON CONFLICT (project_id, install_id, date) DO NOTHING;
 
@@ -192,6 +219,6 @@ FROM events e
 WHERE e.install_id IS NOT NULL
   AND e.user_id IS NOT NULL AND e.user_id <> ''
   AND e.user_id <> e.install_id
-  AND NOT COALESCE(e.is_heartbeat, false)
+  AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')
 GROUP BY e.project_id, e.user_id, e.install_id
 ON CONFLICT (project_id, user_id, install_id) DO NOTHING;
