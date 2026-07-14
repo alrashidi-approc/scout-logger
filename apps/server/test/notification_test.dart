@@ -90,4 +90,37 @@ void main() {
     expect(jobs.first.title, startsWith('[production]'));
     expect(jobs.first.environment, 'production');
   });
+
+  test('staging and debug environments never route automatic alerts', () {
+    const config = ProjectNotificationConfig(
+      enabled: true,
+      rules: [
+        NotificationRule(id: 'staging', environments: ['staging', 'development', '*']),
+      ],
+      slack: SlackChannelConfig(enabled: true, webhookUrlEnc: 'enc'),
+    );
+    for (final env in ['staging', 'development', 'debug', 'profile']) {
+      final jobs = routeNotifications(
+        config: config,
+        platform: const PlatformNotificationPolicy(),
+        projectId: 'p1',
+        projectName: 'Demo',
+        eventId: 'e1',
+        type: 'crash',
+        environment: env,
+        message: 'Null check',
+        payload: {},
+        fingerprint: 'fp1',
+        dashboardBaseUrl: 'http://localhost/scout/dashboard',
+      );
+      expect(jobs, isEmpty, reason: 'env=$env');
+    }
+  });
+
+  test('release and prod labels are treated as release mode', () {
+    expect(isReleaseNotificationEnvironment('production'), isTrue);
+    expect(isReleaseNotificationEnvironment('PROD'), isTrue);
+    expect(isReleaseNotificationEnvironment('release'), isTrue);
+    expect(isReleaseNotificationEnvironment('staging'), isFalse);
+  });
 }

@@ -22,6 +22,8 @@ import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/sessions_screen.dart';
+import '../screens/device_detail_screen.dart';
+import '../screens/devices_screen.dart';
 import '../screens/user_detail_screen.dart';
 import '../screens/users_screen.dart';
 import '../services/auth_service.dart';
@@ -154,7 +156,8 @@ GoRouter createRouter() {
               s,
               UsersScreen(
                 projectId: s.pathParameters['projectId']!,
-                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 7),
+                initialQuery: s.uri.queryParameters['q'],
               ),
             ),
             routes: [
@@ -165,6 +168,29 @@ GoRouter createRouter() {
                   UserDetailScreen(
                     projectId: s.pathParameters['projectId']!,
                     userId: Uri.decodeComponent(s.pathParameters['userId']!),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          GoRoute(
+            path: '/p/:projectId/devices',
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              DevicesScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 7),
+                initialQuery: s.uri.queryParameters['q'],
+              ),
+            ),
+            routes: [
+              GoRoute(
+                path: ':installId',
+                pageBuilder: (c, s) => scoutPage(
+                  s,
+                  DeviceDetailScreen(
+                    projectId: s.pathParameters['projectId']!,
+                    installId: Uri.decodeComponent(s.pathParameters['installId']!),
                   ),
                 ),
               ),

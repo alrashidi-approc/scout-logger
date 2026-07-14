@@ -25,7 +25,7 @@ class EventCard extends StatelessWidget {
     final time = occurred != null ? DateFormat('MMM d, yyyy · HH:mm:ss').format(occurred.toLocal()) : '—';
     final title = event['message']?.toString() ?? type;
     final release = event['release']?.toString() ?? '—';
-    final appVer = EventView(event).appVersion;
+    final appVer = EventView(event).appVersionLabel;
     final device = event['deviceName']?.toString() ?? event['platform']?.toString() ?? '—';
     final route = event['route']?.toString() ?? '—';
     final url = event['networkUrl']?.toString() ?? '';

@@ -12,20 +12,20 @@ import '../utils/screen_load.dart';
 import '../widgets/page_header.dart';
 import '../widgets/period_picker.dart';
 
-class UsersScreen extends StatefulWidget {
-  const UsersScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7), this.initialQuery});
+class DevicesScreen extends StatefulWidget {
+  const DevicesScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(7), this.initialQuery});
 
   final String projectId;
   final PeriodFilter initialPeriod;
   final String? initialQuery;
 
   @override
-  State<UsersScreen> createState() => _UsersScreenState();
+  State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
-class _UsersScreenState extends State<UsersScreen> {
+class _DevicesScreenState extends State<DevicesScreen> {
   final _api = ScoutApi();
-  List<Map<String, dynamic>> _users = [];
+  List<Map<String, dynamic>> _devices = [];
   bool _loading = true;
   bool _refreshing = false;
   bool _hasData = false;
@@ -42,7 +42,7 @@ class _UsersScreenState extends State<UsersScreen> {
   void _syncUrl() {
     final q = <String, String>{..._period.toQuery()};
     if (_search.isNotEmpty) q['q'] = _search;
-    context.go(Uri(path: '/p/${widget.projectId}/users', queryParameters: q).toString());
+    context.go(Uri(path: '/p/${widget.projectId}/devices', queryParameters: q).toString());
   }
 
   Future<void> _load() async {
@@ -58,9 +58,9 @@ class _UsersScreenState extends State<UsersScreen> {
       );
     });
     try {
-      final users = await _api.fetchUsers(widget.projectId, period: _period, q: _search.isEmpty ? null : _search);
+      final devices = await _api.fetchDevices(widget.projectId, period: _period, q: _search.isEmpty ? null : _search);
       if (mounted) setState(() {
-        _users = users;
+        _devices = devices;
         _hasData = true;
         _loading = false;
         _refreshing = false;
@@ -89,16 +89,21 @@ class _UsersScreenState extends State<UsersScreen> {
 
   void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
 
+  void _openDevice(Map<String, dynamic> d) {
+    final id = d['installId'] as String;
+    context.push('/p/${widget.projectId}/devices/${Uri.encodeComponent(id)}');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(
         padding: pageInsets(context, top: pagePad(context)),
         child: PageHeader(
-          title: 'Logged-in users',
+          title: 'Devices',
           subtitle: _search.isNotEmpty
-              ? '${_users.length} matches for “$_search”'
-              : '${_users.length} identified accounts · guest devices stay in Events & Sessions',
+              ? '${_devices.length} matches for “$_search”'
+              : '${_devices.length} installs · linked to logged-in users when accounts sign in',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
@@ -109,7 +114,7 @@ class _UsersScreenState extends State<UsersScreen> {
         child: FilterBar(
           period: _period,
           onPeriodChanged: _setPeriod,
-          searchHint: 'Name, email, username, phone, user id, device…',
+          searchHint: 'Device name, install id, platform, country…',
           searchValue: _search,
           onSearch: _setSearch,
         ),
@@ -121,22 +126,22 @@ class _UsersScreenState extends State<UsersScreen> {
           error: _error,
           onRetry: _load,
           placeholderLayout: PlaceholderLayout.list,
-          empty: !_loading && _users.isEmpty
+          empty: !_loading && _devices.isEmpty
               ? EmptyState(
-                  icon: _search.isNotEmpty ? Icons.search_off : Icons.people_outline,
-                  title: _search.isNotEmpty ? 'No users match your search' : 'No logged-in users yet',
+                  icon: _search.isNotEmpty ? Icons.search_off : Icons.devices_outlined,
+                  title: _search.isNotEmpty ? 'No devices match your search' : 'No devices yet',
                   subtitle: _search.isNotEmpty
-                      ? 'Try a different name, email, or user id'
-                      : 'When the SDK sends a real user id (not the install UUID), they appear here with profile and device context from the client.',
+                      ? 'Try a different name or install id'
+                      : 'When the SDK sends installId on events, devices appear here with user counts.',
                 )
               : null,
           builder: (context) => RefreshIndicator(
             onRefresh: _load,
             child: ListView.builder(
-              key: PageStorageKey('users-${widget.projectId}'),
+              key: PageStorageKey('devices-${widget.projectId}'),
               padding: pageInsets(context, top: 12, bottom: pagePad(context)),
-              itemCount: _users.length,
-              itemBuilder: (_, i) => _UserCard(user: _users[i], onTap: () => context.push('/p/${widget.projectId}/users/${Uri.encodeComponent(_users[i]['userId'] as String)}')),
+              itemCount: _devices.length,
+              itemBuilder: (_, i) => _DeviceCard(device: _devices[i], onTap: () => _openDevice(_devices[i])),
             ),
           ),
         ),
@@ -145,38 +150,34 @@ class _UsersScreenState extends State<UsersScreen> {
   }
 }
 
-class _UserCard extends StatelessWidget {
-  const _UserCard({required this.user, required this.onTap});
+class _DeviceCard extends StatelessWidget {
+  const _DeviceCard({required this.device, required this.onTap});
 
-  final Map<String, dynamic> user;
+  final Map<String, dynamic> device;
   final VoidCallback onTap;
 
   static String _shortId(String id) => id.length > 16 ? '${id.substring(0, 10)}…${id.substring(id.length - 4)}' : id;
 
   @override
   Widget build(BuildContext context) {
-    final email = user['email'] as String?;
-    final name = user['displayName'] as String?;
-    final username = user['username'] as String?;
-    final userId = user['userId'] as String;
-    final title = name ?? email ?? username ?? 'User ${_shortId(userId)}';
-    final subtitle = name != null
-        ? (email ?? username)
-        : (email != null && username != null ? username : null);
-    final last = DateTime.tryParse(user['lastSeenAt'] as String? ?? '');
-    final errors = user['errorCount'] as int? ?? 0;
-    final events = user['eventCount'] as int? ?? 0;
+    final name = device['deviceName'] as String?;
+    final installId = device['installId'] as String;
+    final title = name ?? 'Device ${_shortId(installId)}';
+    final last = DateTime.tryParse(device['lastSeenAt'] as String? ?? '');
+    final errors = device['errorCount'] as int? ?? 0;
+    final events = device['eventCount'] as int? ?? 0;
+    final userCount = device['userCount'] as int? ?? 0;
+    final guestOnly = device['guestOnly'] == true;
     final contextLine = [
-      if (user['platform'] != null) '${user['platform']}',
-      if (user['appVersion'] != null) 'v${user['appVersion']}',
-      if (user['country'] != null) '${user['country']}',
-      if (user['deviceName'] != null) '${user['deviceName']}',
+      if (device['platform'] != null) '${device['platform']}',
+      if (device['appVersion'] != null) 'v${device['appVersion']}',
+      if (device['country'] != null) '${device['country']}',
     ].join(' · ');
-    final activity = [
-      if (last != null) TextSpan(text: 'Last ${DateFormat.MMMd().add_jm().format(last.toLocal())} · ', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
-      TextSpan(text: '$events events', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
-      if (errors > 0) TextSpan(text: ' · $errors errors', style: const TextStyle(fontSize: 11, color: AppTheme.error, fontWeight: FontWeight.w600)),
-    ];
+    final usersLabel = guestOnly
+        ? 'Guest only'
+        : userCount == 1
+            ? '1 user'
+            : '$userCount users';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -196,21 +197,24 @@ class _UserCard extends StatelessWidget {
               CircleAvatar(
                 radius: 18,
                 backgroundColor: AppTheme.primary.withValues(alpha: 0.12),
-                child: Text((title.isNotEmpty ? title[0] : '?').toUpperCase(), style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w800, fontSize: 14)),
+                child: const Icon(Icons.smartphone, size: 18, color: AppTheme.primary),
               ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
-                  if (subtitle != null) Text(subtitle, style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
-                  if (name != null || email != null || username != null)
-                    Text(_shortId(userId), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace')),
+                  Text(_shortId(installId), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace')),
                   if (contextLine.isNotEmpty) ...[
                     const SizedBox(height: 4),
                     Text(contextLine, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
                   ],
                   const SizedBox(height: 2),
-                  Text.rich(TextSpan(children: activity)),
+                  Text.rich(TextSpan(children: [
+                    if (last != null) TextSpan(text: 'Last ${DateFormat.MMMd().add_jm().format(last.toLocal())} · ', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+                    TextSpan(text: '$events events', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+                    if (errors > 0) TextSpan(text: ' · $errors errors', style: const TextStyle(fontSize: 11, color: AppTheme.error, fontWeight: FontWeight.w600)),
+                    TextSpan(text: ' · $usersLabel', style: TextStyle(fontSize: 11, color: guestOnly ? AppTheme.muted : AppTheme.primary, fontWeight: FontWeight.w600)),
+                  ])),
                 ]),
               ),
               const Padding(padding: EdgeInsets.only(top: 2), child: Icon(Icons.chevron_right, size: 18, color: AppTheme.muted)),

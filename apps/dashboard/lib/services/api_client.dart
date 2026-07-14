@@ -149,18 +149,36 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['dashboard']);
   }
 
-  Future<List<Map<String, dynamic>>> fetchUsers(String projectId, {PeriodFilter? period, int limit = 100}) async {
-    final uri = _uri('/api/projects/$projectId/users').replace(queryParameters: {...(period ?? const PeriodFilter.days(30)).toQuery(), 'limit': '$limit'});
+  Future<List<Map<String, dynamic>>> fetchUsers(String projectId, {PeriodFilter? period, int limit = 100, String? q}) async {
+    final params = <String, String>{...(period ?? const PeriodFilter.days(7)).toQuery(), 'limit': '$limit'};
+    if (q != null && q.isNotEmpty) params['q'] = q;
+    final uri = _uri('/api/projects/$projectId/users').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonListMaps((jsonDecode(res.body) as Map)['users']);
   }
 
   Future<Map<String, dynamic>> fetchUser(String projectId, String userId, {PeriodFilter? period}) async {
-    final uri = _uri('/api/projects/$projectId/users/$userId').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+    final uri = _uri('/api/projects/$projectId/users/$userId').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
     final res = await _client.get(uri, headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['user']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchDevices(String projectId, {PeriodFilter? period, int limit = 100, String? q}) async {
+    final params = <String, String>{...(period ?? const PeriodFilter.days(7)).toQuery(), 'limit': '$limit'};
+    if (q != null && q.isNotEmpty) params['q'] = q;
+    final uri = _uri('/api/projects/$projectId/devices').replace(queryParameters: params);
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonListMaps((jsonDecode(res.body) as Map)['devices']);
+  }
+
+  Future<Map<String, dynamic>> fetchDevice(String projectId, String installId, {PeriodFilter? period}) async {
+    final uri = _uri('/api/projects/$projectId/devices/${Uri.encodeComponent(installId)}').replace(queryParameters: (period ?? const PeriodFilter.days(7)).toQuery());
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['device']);
   }
 
   Future<Map<String, dynamic>> fetchStats(String projectId, {PeriodFilter? period}) async {

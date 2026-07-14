@@ -202,7 +202,7 @@ class ThresholdConfig {
     this.crashCount = 0,
     this.sensitivity = 3.0,
     this.channels = kDefaultNotificationChannels,
-    this.environments = const ['*'],
+    this.environments = const ['production'],
   });
 
   final bool enabled;
@@ -223,6 +223,7 @@ class ThresholdConfig {
   final List<String> channels;
 
   /// Environments to include in spike detection. Use '*' for all.
+  /// Default is production-only (release builds).
   final List<String> environments;
 
   bool get isAnomaly => mode == 'anomaly';
@@ -235,7 +236,7 @@ class ThresholdConfig {
         crashCount: (int.tryParse('${json?['crashCount'] ?? ''}') ?? 0).clamp(0, 100000),
         sensitivity: (double.tryParse('${json?['sensitivity'] ?? ''}') ?? 3.0).clamp(1.0, 6.0),
         channels: _normList(json?['channels'] as List?, kNotificationChannels, kDefaultNotificationChannels),
-        environments: _normEnvs(json?['environments'] ?? const ['*']),
+        environments: _normEnvs(json?['environments'] ?? kDefaultNotificationEnvironments),
       );
 
   Map<String, dynamic> toJson() => {

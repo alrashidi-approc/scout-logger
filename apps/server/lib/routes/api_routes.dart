@@ -210,8 +210,9 @@ Handler apiRoutes(
       if (guard != null) return guard;
       final users = await analytics.listUsers(
         id,
-        window: _window(request.url.queryParameters, defaultDays: 30),
+        window: _window(request.url.queryParameters, defaultDays: 7),
         limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100,
+        q: request.url.queryParameters['q'],
       );
       return Response.ok(jsonEncode({'ok': true, 'users': users}), headers: {'Content-Type': 'application/json'});
     });
@@ -221,9 +222,33 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
-      final user = await analytics.getUser(id, userId, window: _window(request.url.queryParameters, defaultDays: 30));
+      final user = await analytics.getUser(id, userId, window: _window(request.url.queryParameters, defaultDays: 7));
       if (user == null) return jsonErr('User not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'user': user}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/devices', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final devices = await analytics.listDevices(
+        id,
+        window: _window(request.url.queryParameters, defaultDays: 7),
+        limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100,
+        q: request.url.queryParameters['q'],
+      );
+      return Response.ok(jsonEncode({'ok': true, 'devices': devices}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/devices/<installId>', (Request request, String id, String installId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final device = await analytics.getDevice(id, installId, window: _window(request.url.queryParameters, defaultDays: 7));
+      if (device == null) return jsonErr('Device not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'device': device}), headers: {'Content-Type': 'application/json'});
     });
   });
 

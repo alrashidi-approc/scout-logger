@@ -67,7 +67,8 @@ class MonitorScheduler {
     if (!t.enabled || (t.errorCount <= 0 && t.crashCount <= 0)) return;
 
     final envLabel = _envScopeLabel(t.environments);
-    final envFilter = t.environments.contains('*') ? null : t.environments;
+    // Spikes: never use all environments — release/production only when '*' or empty.
+    final envFilter = _releaseEnvFilter(t.environments);
 
     final fired = <(String, String)>[]; // (metric, message)
     if (t.isAnomaly) {
@@ -249,6 +250,20 @@ class MonitorScheduler {
 }
 
 String _envScopeLabel(List<String> environments) {
-  if (environments.isEmpty || environments.contains('*')) return 'all environments';
-  return environments.join(', ');
+  final filtered = _releaseEnvFilter(environments);
+  return filtered.join(', ');
+}
+
+/// Spike monitors only count release environments (production / prod / release).
+List<String> _releaseEnvFilter(List<String> environments) {
+  const release = {'production', 'prod', 'release'};
+  if (environments.isEmpty || environments.contains('*')) {
+    return const ['production'];
+  }
+  final picked = environments
+      .map((e) => e.trim().toLowerCase())
+      .where(release.contains)
+      .toSet()
+      .toList();
+  return picked.isEmpty ? const ['production'] : picked;
 }

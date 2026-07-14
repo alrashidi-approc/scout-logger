@@ -8,6 +8,7 @@ import '../util/dashboard_links.dart';
 import '../util/ids.dart';
 import '../store/notification_store.dart';
 import '../store/platform_store.dart';
+import '../notifications/notification_categories.dart';
 import '../notifications/notification_dispatcher.dart';
 import '../notifications/notification_group.dart';
 import '../notifications/notification_router.dart';
@@ -70,6 +71,8 @@ class NotificationService {
     required PlatformNotificationPolicy platform,
   }) async {
     if (!notifications.enabled) return;
+    // Auto-alerts only for release/production builds — never debug/staging/dev.
+    if (!isReleaseNotificationEnvironment(environment)) return;
 
     final projectName = await store.projectName(projectId) ?? projectId;
     final jobs = routeNotifications(

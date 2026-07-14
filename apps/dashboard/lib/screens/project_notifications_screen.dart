@@ -53,8 +53,13 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   int _digestHour = 8;
   Set<String> _channels = {'slack', 'email', 'whatsapp'};
   final Map<String, _EnvNotifyPrefs> _envPrefs = {};
-  List<String> _knownEnvs = const ['production', 'staging', 'development'];
-  Set<String> _thresholdEnvs = {'*'};
+  List<String> _knownEnvs = const ['production', 'release', 'prod'];
+  Set<String> _thresholdEnvs = {'production'};
+
+  static bool _isReleaseEnvLabel(String env) {
+    final e = env.trim().toLowerCase();
+    return e == 'production' || e == 'prod' || e == 'release';
+  }
 
   bool _slackOn = false;
   bool _waOn = false;
@@ -168,16 +173,16 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       }
     }
     _knownEnvs = {
-      ...const ['production', 'staging', 'development'],
-      ...observed,
-      ...fromRules,
+      ...const ['production', 'release', 'prod'],
+      ...observed.where(_isReleaseEnvLabel),
+      ...fromRules.where(_isReleaseEnvLabel),
     }.toList()
       ..sort();
     for (final env in _knownEnvs) {
       _envPrefs.putIfAbsent(
         env,
         () => _EnvNotifyPrefs(
-          enabled: env == 'production',
+          enabled: _isReleaseEnvLabel(env),
           categories: kDefaultNotificationCategories.toSet(),
         ),
       );
@@ -211,8 +216,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     _thresholdErrors = t['errorCount'] as int? ?? 0;
     _thresholdCrashes = t['crashCount'] as int? ?? 0;
     _thresholdSensitivity = (t['sensitivity'] as num?)?.toDouble() ?? 3;
-    final thresholdEnvs = (t['environments'] as List?)?.map((e) => e.toString()).toSet() ?? {'*'};
-    _thresholdEnvs = thresholdEnvs.isEmpty ? {'*'} : thresholdEnvs;
+    final thresholdEnvs = (t['environments'] as List?)?.map((e) => e.toString()).where(_isReleaseEnvLabel).toSet() ?? <String>{};
+    _thresholdEnvs = thresholdEnvs.isEmpty ? {'production'} : thresholdEnvs;
 
     final dg = cfg['digest'] is Map ? Map<String, dynamic>.from(cfg['digest'] as Map) : <String, dynamic>{};
     _digestOn = dg['enabled'] == true;
@@ -480,28 +485,28 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               const SizedBox(height: 8),
               const Text('Uses the channels selected in Routing.', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
               const SizedBox(height: 12),
-              const Text('Environments', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text('Environments (release builds only)', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Spike checks only count production / release. Staging and debug builds never trigger spikes.',
+                style: TextStyle(fontSize: 12, color: AppTheme.muted),
+              ),
+              const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  FilterChip(
-                    label: const Text('All'),
-                    selected: _thresholdEnvs.contains('*'),
-                    onSelected: (on) => setState(() => _thresholdEnvs = on ? {'*'} : {'production'}),
-                  ),
-                  for (final env in _knownEnvs)
+                  for (final env in const ['production', 'release', 'prod'])
                     FilterChip(
                       label: Text(env),
-                      selected: !_thresholdEnvs.contains('*') && _thresholdEnvs.contains(env),
+                      selected: _thresholdEnvs.contains(env),
                       onSelected: (on) => setState(() {
-                        _thresholdEnvs.remove('*');
                         if (on) {
                           _thresholdEnvs.add(env);
                         } else if (_thresholdEnvs.length > 1) {
                           _thresholdEnvs.remove(env);
                         }
-                        if (_thresholdEnvs.isEmpty) _thresholdEnvs = {'*'};
+                        if (_thresholdEnvs.isEmpty) _thresholdEnvs = {'production'};
                       }),
                     ),
                 ],
@@ -565,11 +570,12 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
             const Text('Per-environment routing', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 6),
             const Text(
-              'Choose which issue types trigger alerts for each SDK environment / flavor.',
+              'Automatic alerts only send for release builds (production / prod / release). '
+              'Staging and development events are never notified — use “Notify team” manually if needed.',
               style: TextStyle(color: AppTheme.muted, fontSize: 13),
             ),
             const SizedBox(height: 16),
-            for (final env in _knownEnvs) _envSection(env),
+            for (final env in const ['production', 'release', 'prod']) _envSection(env),
             const SizedBox(height: 16),
             const Text('Channels', style: TextStyle(fontWeight: FontWeight.w600)),
             Wrap(

@@ -42,10 +42,10 @@ class EventErrorHeader extends StatelessWidget {
                   if (view.release != '—') _chip(view.release, AppTheme.muted),
                 ]),
                 const SizedBox(height: 14),
-                Text(view.message, style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 600 ? 16 : 18, fontWeight: FontWeight.w800, height: 1.35)),
+                SelectableText(view.message, style: TextStyle(fontSize: MediaQuery.sizeOf(context).width < 600 ? 16 : 18, fontWeight: FontWeight.w800, height: 1.35)),
                 if (timeLabel != null) ...[
                   const SizedBox(height: 10),
-                  Text(timeLabel!, style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
+                  SelectableText(timeLabel!, style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
                 ],
               ]),
             ),
@@ -174,7 +174,7 @@ class EventFlowDiagram extends StatelessWidget {
   static String _deviceLabel(EventView view) {
     final name = str(view.device['deviceName']);
     if (name != null && name != 'unknown') return '$name · ${view.platform}';
-    return '${view.platform} · ${view.appVersion}';
+    return '${view.platform} · ${view.appVersionLabel}';
   }
 
   Widget _nodeBox(_Node n) => Container(
@@ -394,7 +394,7 @@ class FieldGrid extends StatelessWidget {
         ],
       );
 
-  Widget _valueText(DetailField f) => Text(
+  Widget _valueText(DetailField f) => SelectableText(
         f.value,
         style: TextStyle(
           fontSize: 13,
@@ -419,7 +419,7 @@ class SummaryList extends StatelessWidget {
                 child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   const Icon(Icons.check_circle_outline, size: 16, color: AppTheme.success),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(line, style: const TextStyle(fontSize: 13, height: 1.45))),
+                  Expanded(child: SelectableText(line, style: const TextStyle(fontSize: 13, height: 1.45))),
                 ]),
               ))
           .toList(),
@@ -461,7 +461,7 @@ class StackTracePanel extends StatelessWidget {
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.all(14),
-          child: Text(
+          child: SelectableText(
             lines.asMap().entries.map((e) => '#${e.key}  ${e.value}').join('\n'),
             style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.55),
           ),
@@ -488,7 +488,7 @@ class JsonPanel extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppTheme.border),
       ),
-      child: Text(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
+      child: SelectableText(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: AppTheme.text, height: 1.5)),
     );
   }
 }
@@ -882,11 +882,11 @@ class NetworkReadablePanel extends StatelessWidget {
                   ),
                 ]),
                 const SizedBox(height: 8),
-                Text(str(readable['title']) ?? view.message, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, height: 1.35)),
+                SelectableText(str(readable['title']) ?? view.message, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, height: 1.35)),
                 if (str(readable['actionHint'])?.isNotEmpty == true)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
-                    child: Text(str(readable['actionHint'])!, style: TextStyle(fontSize: 12, color: accent, height: 1.4)),
+                    child: SelectableText(str(readable['actionHint'])!, style: TextStyle(fontSize: 12, color: accent, height: 1.4)),
                   ),
                 if (str(readable['duration']) != null)
                   Padding(
@@ -920,7 +920,7 @@ class NetworkReadablePanel extends StatelessWidget {
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     const Text('• ', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700)),
-                    Expanded(child: Text(line, style: const TextStyle(fontSize: 13, height: 1.45))),
+                    Expanded(child: SelectableText(line, style: const TextStyle(fontSize: 13, height: 1.45))),
                   ]),
                 ),
               ),

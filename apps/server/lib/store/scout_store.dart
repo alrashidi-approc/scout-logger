@@ -11,6 +11,7 @@ import '../util/dates.dart';
 import '../util/event_filters.dart';
 import '../util/event_trend.dart';
 import '../util/ids.dart';
+import '../util/identity_rollups.dart';
 import '../util/insights.dart';
 import '../util/user_identity.dart';
 
@@ -285,6 +286,26 @@ class ScoutStore {
         parameters: {'pid': projectId, 'fromDate': fromDate, 'untilDate': untilDate},
       );
 
+      await conn.execute(
+        Sql.named('''
+          DELETE FROM user_daily_stats
+          WHERE project_id = @pid
+            AND date >= @fromDate::date
+            AND (@untilDate::date IS NULL OR date < @untilDate::date)
+        '''),
+        parameters: {'pid': projectId, 'fromDate': fromDate, 'untilDate': untilDate},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          DELETE FROM device_daily_stats
+          WHERE project_id = @pid
+            AND date >= @fromDate::date
+            AND (@untilDate::date IS NULL OR date < @untilDate::date)
+        '''),
+        parameters: {'pid': projectId, 'fromDate': fromDate, 'untilDate': untilDate},
+      );
+
       final issues = await conn.execute(
         Sql.named('''
           DELETE FROM issues i
@@ -326,6 +347,42 @@ class ScoutStore {
               WHERE e.project_id = @pid AND e.user_id = ufs.user_id
             )
           RETURNING ufs.user_id
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          DELETE FROM user_stats us
+          WHERE us.project_id = @pid
+            AND NOT EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.user_id = us.user_id
+            )
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          DELETE FROM device_stats ds
+          WHERE ds.project_id = @pid
+            AND NOT EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.install_id = ds.install_id
+            )
+        '''),
+        parameters: {'pid': projectId},
+      );
+
+      await conn.execute(
+        Sql.named('''
+          DELETE FROM user_device_links l
+          WHERE l.project_id = @pid
+            AND NOT EXISTS (
+              SELECT 1 FROM events e
+              WHERE e.project_id = @pid AND e.user_id = l.user_id AND e.install_id = l.install_id
+            )
         '''),
         parameters: {'pid': projectId},
       );
@@ -536,7 +593,10 @@ class ScoutStore {
         (payload['release'] is Map ? (payload['release'] as Map)['environment']?.toString() : null) ??
         'production';
     final platform = device['platform']?.toString();
-    final appVersion = device['appVersion']?.toString() ?? device['version']?.toString();
+    final releaseMap = payload['release'] is Map ? Map<String, dynamic>.from(payload['release'] as Map) : null;
+    final appVersion = composeAppVersionFromDevice(device, release: releaseMap) ??
+        device['appVersion']?.toString() ??
+        device['version']?.toString();
 
     if (isSessionHeartbeat(event.type, payload)) {
       await _trackAppSession(
@@ -681,6 +741,8 @@ class ScoutStore {
     }
 
     final day = occurredAt.toIso8601String().substring(0, 10);
+    final errFlag = isErrorEvent(event.type, payload) ? 1 : 0;
+    final crashFlag = event.type == 'crash' ? 1 : 0;
     await conn.execute(
       Sql.named('''
         INSERT INTO daily_stats (project_id, date, country, events_total, errors, crashes, unique_users)
@@ -694,10 +756,25 @@ class ScoutStore {
         'pid': projectId,
         'day': day,
         'country': country ?? '',
-        'err': event.type == 'error' || event.type == 'network' ? 1 : 0,
-        'crash': event.type == 'crash' ? 1 : 0,
+        'err': errFlag,
+        'crash': crashFlag,
         'uu': 0,
       },
+    );
+
+    await upsertIdentityRollups(
+      conn,
+      projectId: projectId,
+      occurredAt: occurredAt,
+      type: event.type,
+      payload: payload,
+      userId: userId,
+      installId: installId,
+      platform: platform,
+      appVersion: appVersion,
+      environment: environment,
+      release: release,
+      country: country,
     );
   }
 
@@ -1566,14 +1643,18 @@ class ScoutStore {
                payload->'network'->>'url' AS network_url,
                payload->'network'->>'statusCode' AS status_code,
                payload->>'category' AS category,
-               payload->>'level' AS level
+               payload->>'level' AS level,
+               payload->'device'->>'buildNumber' AS build_number
         $filters
         ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
       parameters: {...params, 'lim': lim, 'off': off},
     );
     final events = rows
-        .map((r) => {
+        .map((r) {
+          final ver = r[10] as String?;
+          final build = r[17]?.toString();
+          return {
               'id': r[0],
               'type': r[1],
               'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
@@ -1584,14 +1665,16 @@ class ScoutStore {
               'message': r[7],
               'platform': r[8],
               'environment': r[9],
-              'appVersion': r[10],
+              'appVersion': composeAppVersion(appVersion: ver, buildNumber: build) ?? ver,
+              if (build != null && build.isNotEmpty) 'buildNumber': build,
               'route': r[11],
               'deviceName': r[12],
               'networkUrl': r[13],
               'statusCode': r[14]?.toString(),
               'category': r[15],
               'level': r[16],
-            })
+            };
+        })
         .toList();
     return {
       'events': events,
@@ -1610,24 +1693,63 @@ class ScoutStore {
 
     final w = window ?? TimeWindow.lastDays(days);
     final tp = timeParams(w);
+    final dp = dateParams(w);
     final periodDays = w.approximateDays;
+    final useRollups = preferIdentityRollups(w);
 
-    final stats = await conn.execute(
-      Sql.named('''
-        SELECT
-          COUNT(*)::int,
-          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
-          COUNT(*) FILTER (WHERE type = 'crash')::int,
-          COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int
-        FROM events
-        WHERE project_id = @pid
-          AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-      '''),
-      parameters: {'pid': projectId, ...tp},
-    );
+    final stats = useRollups
+        ? await conn.execute(
+            Sql.named('''
+              SELECT
+                COALESCE(SUM(events_total), 0)::int,
+                COALESCE(SUM(errors), 0)::int,
+                COALESCE(SUM(crashes), 0)::int
+              FROM daily_stats
+              WHERE project_id = @pid
+                AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+                AND (@untilDate::date IS NULL OR date < @untilDate::date)
+            '''),
+            parameters: {'pid': projectId, ...dp},
+          )
+        : await conn.execute(
+            Sql.named('''
+              SELECT
+                COUNT(*)::int,
+                COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
+                COUNT(*) FILTER (WHERE type = 'crash')::int
+              FROM events
+              WHERE project_id = @pid
+                AND $sqlHideSessionHeartbeat
+                AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+                AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+            '''),
+            parameters: {'pid': projectId, ...tp},
+          );
+
+    final uniqueUsers = useRollups
+        ? await conn.execute(
+            Sql.named('''
+              SELECT COUNT(DISTINCT user_id)::int
+              FROM user_daily_stats
+              WHERE project_id = @pid
+                AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+                AND (@untilDate::date IS NULL OR date < @untilDate::date)
+            '''),
+            parameters: {'pid': projectId, ...dp},
+          )
+        : await conn.execute(
+            Sql.named('''
+              SELECT COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int
+              FROM events
+              WHERE project_id = @pid
+                AND $sqlHideSessionHeartbeat
+                AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+                AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+            '''),
+            parameters: {'pid': projectId, ...tp},
+          );
     final s = stats.first;
+    final uniqueUserCount = uniqueUsers.first[0];
 
     final openRows = await conn.execute(
       Sql.named("SELECT type, event_count, affected_users, last_seen_at FROM issues WHERE project_id = @pid AND status = 'open'"),
@@ -1660,31 +1782,36 @@ class ScoutStore {
           (SELECT COUNT(*)::int FROM app_sessions
             WHERE project_id = @pid AND ended_at IS NOT NULL
               AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
-              AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)),
-          COUNT(DISTINCT user_id) FILTER (
-            WHERE ${identifiedUserSql()}
-              AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-              AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-          )::int
-        FROM events WHERE project_id = @pid
-          AND $sqlHideSessionHeartbeat
+              AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz))
       '''),
       parameters: {'pid': projectId, ...tp},
     );
     final sess = sessions.first;
 
-    final countries = await conn.execute(
-      Sql.named('''
-        SELECT country, COUNT(*)::int AS c
-        FROM events
-        WHERE project_id = @pid AND country IS NOT NULL
-          AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY country ORDER BY c DESC LIMIT 10
-      '''),
-      parameters: {'pid': projectId, ...tp},
-    );
+    final countries = useRollups
+        ? await conn.execute(
+            Sql.named('''
+              SELECT country, SUM(events_total)::int AS c
+              FROM daily_stats
+              WHERE project_id = @pid AND country <> ''
+                AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+                AND (@untilDate::date IS NULL OR date < @untilDate::date)
+              GROUP BY country ORDER BY c DESC LIMIT 10
+            '''),
+            parameters: {'pid': projectId, ...dp},
+          )
+        : await conn.execute(
+            Sql.named('''
+              SELECT country, COUNT(*)::int AS c
+              FROM events
+              WHERE project_id = @pid AND country IS NOT NULL
+                AND $sqlHideSessionHeartbeat
+                AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+                AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+              GROUP BY country ORDER BY c DESC LIMIT 10
+            '''),
+            parameters: {'pid': projectId, ...tp},
+          );
 
     final releases = await conn.execute(
       Sql.named('''
@@ -1707,11 +1834,11 @@ class ScoutStore {
       'eventsToday': _i(s[0]),
       'errorsToday': _i(s[1]),
       'crashesToday': _i(s[2]),
-      'uniqueUsersToday': _i(s[3]),
+      'uniqueUsersToday': _i(uniqueUserCount),
       'activeSessions': _i(sess[0]),
       'avgSessionDurationMs': sess[1] == null ? null : _i(sess[1]),
       'sessionsCompletedToday': _i(sess[2]),
-      'uniqueUsers7d': _i(sess[3]),
+      'uniqueUsers7d': _i(uniqueUserCount),
       'openIssues': openCount,
       'highSeverityIssues': highSeverity,
       'topCountries': countries.map((r) => {'country': r[0], 'count': r[1]}).toList(),

@@ -1,48 +1,21 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-/// Inline expression so queries work before migration 014 columns exist.
-const sqlHideSessionHeartbeat =
-    "NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')";
+/// Uses migration 014 `is_heartbeat` so partial indexes can skip heartbeats.
+const sqlHideSessionHeartbeat = 'NOT COALESCE(is_heartbeat, false)';
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
-/// True failures only — inline expression (migration 014 adds `is_error` for indexes).
+/// True failures only — uses migration 014 `is_error` (indexed).
 /// Keep in sync with [isErrorEvent] and 014_event_outcome_columns.sql.
 String sqlIsErrorEvent({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  ${p}type IN ('error', 'crash')
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
-    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
-    AND (
-      NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
-      OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
-      OR NOT ((${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$' AND (${p}payload->'network'->>'statusCode')::int < 400)
-    )
-  )
-)''';
+  return 'COALESCE(${p}is_error, false)';
 }
 
-/// Successful outcomes — inline expression (migration 014 adds `is_success` for indexes).
+/// Successful outcomes — uses migration 014 `is_success` (indexed).
 String sqlIsSuccessEvent({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) = 'success'
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) IN ('info', 'success')
-  )
-  OR (
-    ${p}type = 'network'
-    AND NULLIF(${p}payload->'network'->>'error', '') IS NULL
-    AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
-    AND (${p}payload->'network'->>'statusCode')::int < 400
-  )
-)''';
+  return 'COALESCE(${p}is_success, false)';
 }
 
 String sqlDeviceNameExpr({String alias = ''}) {
@@ -58,6 +31,30 @@ String sqlAppVersionExpr({String alias = ''}) {
 String sqlEnvironmentExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
   return "COALESCE(NULLIF(${p}environment, ''), NULLIF(${p}payload->>'environment', ''), NULLIF(${p}payload->'release'->>'environment', ''), 'unknown')";
+}
+
+/// Prefer `1.0.2+46` when SDK sends version and build separately.
+String? composeAppVersion({
+  String? appVersion,
+  String? buildNumber,
+  String? releaseVersion,
+  String? releaseBuild,
+}) {
+  final ver = (appVersion ?? releaseVersion)?.trim();
+  if (ver == null || ver.isEmpty) return null;
+  if (ver.contains('+')) return ver;
+  final build = (buildNumber ?? releaseBuild)?.trim();
+  if (build == null || build.isEmpty) return ver;
+  return '$ver+$build';
+}
+
+String? composeAppVersionFromDevice(Map<String, dynamic> device, {Map<String, dynamic>? release}) {
+  return composeAppVersion(
+    appVersion: device['appVersion']?.toString(),
+    buildNumber: device['buildNumber']?.toString() ?? device['build']?.toString(),
+    releaseVersion: release?['version']?.toString(),
+    releaseBuild: release?['buildNumber']?.toString(),
+  );
 }
 
 /// Optional env / version / device filters — bind @env, @ver, @device (null = ignore).

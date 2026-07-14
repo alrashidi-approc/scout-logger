@@ -121,7 +121,7 @@ void main() {
     });
 
     test('sqlIssueEventScope requires error events', () {
-      expect(sqlIssueEventScope(), contains("type IN ('error', 'crash')"));
+      expect(sqlIssueEventScope(), contains('is_error'));
       expect(sqlIssueEventScope(), contains('@ver::text'));
     });
 
@@ -164,6 +164,12 @@ void main() {
           ${sqlEventFacetFilters(applyEnvironment: false)}
       ''';
       expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
+    });
+
+    test('composeAppVersion joins separate build number', () {
+      expect(composeAppVersion(appVersion: '1.0.2', buildNumber: '46'), '1.0.2+46');
+      expect(composeAppVersion(appVersion: '1.0.2+46', buildNumber: '99'), '1.0.2+46');
+      expect(composeAppVersion(appVersion: '1.0.2'), '1.0.2');
     });
   });
 }

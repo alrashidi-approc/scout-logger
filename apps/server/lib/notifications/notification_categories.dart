@@ -34,3 +34,10 @@ bool environmentMatchesRule(String environment, List<String> ruleEnvs) {
   if (ruleEnvs.contains('*')) return true;
   return ruleEnvs.map((e) => e.toLowerCase()).contains(environment.toLowerCase());
 }
+
+/// Automatic alerts only for release/production builds (not debug/staging/dev).
+/// Accepts common SDK labels: production, prod, release.
+bool isReleaseNotificationEnvironment(String? environment) {
+  final e = environment?.trim().toLowerCase() ?? '';
+  return e == 'production' || e == 'prod' || e == 'release';
+}

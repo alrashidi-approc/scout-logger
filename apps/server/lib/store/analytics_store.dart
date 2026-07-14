@@ -359,56 +359,73 @@ class AnalyticsStore {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
     final period = w.approximateDays;
-    final since = w.since!;
-    final until = w.until;
     final prev = w.previousPeriod();
+    final useRollups = preferIdentityRollups(w);
 
-    Future<List<dynamic>> metrics(String from, {String? before}) async {
-      final rows = before == null
-          ? await conn.execute(
-              Sql.named('''
+    Future<List<dynamic>> metrics(TimeWindow range) async {
+      if (useRollups && preferIdentityRollups(range)) {
+        final dp = dateParams(range);
+        final daily = await conn.execute(
+          Sql.named('''
             SELECT
-              COUNT(*)::int,
-              COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
-              COUNT(*) FILTER (WHERE type = 'crash')::int,
-              COUNT(*) FILTER (WHERE type = 'network')::int,
-              COUNT(*) FILTER (WHERE type = 'session')::int,
-              COUNT(*) FILTER (WHERE type = 'span')::int,
-              COUNT(*) FILTER (WHERE type = 'log')::int,
-              COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
-              COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
-            FROM events
-            WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND occurred_at >= @from::timestamptz
-          '''),
-              parameters: {'pid': projectId, 'from': from},
-            )
-          : await conn.execute(
-              Sql.named('''
-            SELECT
-              COUNT(*)::int,
-              COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
-              COUNT(*) FILTER (WHERE type = 'crash')::int,
-              COUNT(*) FILTER (WHERE type = 'network')::int,
-              COUNT(*) FILTER (WHERE type = 'session')::int,
-              COUNT(*) FILTER (WHERE type = 'span')::int,
-              COUNT(*) FILTER (WHERE type = 'log')::int,
-              COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
-              COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
-            FROM events
+              COALESCE(SUM(events_total), 0)::int,
+              COALESCE(SUM(errors), 0)::int,
+              COALESCE(SUM(crashes), 0)::int
+            FROM daily_stats
             WHERE project_id = @pid
-              AND $sqlHideSessionHeartbeat
-              AND occurred_at >= @from::timestamptz
-              AND occurred_at < @before::timestamptz
+              AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+              AND (@untilDate::date IS NULL OR date < @untilDate::date)
           '''),
-              parameters: {'pid': projectId, 'from': from, 'before': before},
-            );
+          parameters: {'pid': projectId, ...dp},
+        );
+        final users = await conn.execute(
+          Sql.named('''
+            SELECT COUNT(DISTINCT user_id)::int
+            FROM user_daily_stats
+            WHERE project_id = @pid
+              AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+              AND (@untilDate::date IS NULL OR date < @untilDate::date)
+          '''),
+          parameters: {'pid': projectId, ...dp},
+        );
+        final sessions = await conn.execute(
+          Sql.named('''
+            SELECT COUNT(*)::int FROM app_sessions
+            WHERE project_id = @pid
+              AND (@since::timestamptz IS NULL OR started_at >= @since::timestamptz)
+              AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)
+          '''),
+          parameters: {'pid': projectId, ...timeParams(range)},
+        );
+        final d = daily.first;
+        return [d[0], d[1], d[2], 0, 0, 0, 0, users.first[0], sessions.first[0]];
+      }
+
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT
+            COUNT(*)::int,
+            COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
+            COUNT(*) FILTER (WHERE type = 'crash')::int,
+            COUNT(*) FILTER (WHERE type = 'network')::int,
+            COUNT(*) FILTER (WHERE type = 'session')::int,
+            COUNT(*) FILTER (WHERE type = 'span')::int,
+            COUNT(*) FILTER (WHERE type = 'log')::int,
+            COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
+            COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int
+          FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        '''),
+        parameters: {'pid': projectId, ...timeParams(range)},
+      );
       return rows.first;
     }
 
-    final cur = until == null ? await metrics(since) : await metrics(since, before: until);
-    final prevStart = prev.since!;
-    final prevEnd = prev.until ?? since;
-    final prevM = await metrics(prevStart, before: prevEnd);
+    final cur = await metrics(w);
+    final prevM = await metrics(prev);
 
     final sessions = await conn.execute(
       Sql.named('''
@@ -655,9 +672,93 @@ class AnalyticsStore {
     };
   }
 
-  Future<List<Map<String, dynamic>>> listUsers(String projectId, {int days = 30, int limit = 100, TimeWindow? window}) async {
+  Future<List<Map<String, dynamic>>> listUsers(
+    String projectId, {
+    int days = 30,
+    int limit = 100,
+    TimeWindow? window,
+    String? q,
+  }) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final query = q?.trim();
+    final qParam = query == null || query.isEmpty ? null : query;
+
+    if (preferIdentityRollups(w)) {
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT u.user_id,
+                 u.first_seen_at,
+                 u.last_seen_at,
+                 COALESCE(SUM(d.event_count), 0)::int,
+                 COALESCE(SUM(d.error_count), 0)::int,
+                 COALESCE(SUM(d.crash_count), 0)::int,
+                 (SELECT COUNT(*)::int FROM user_device_links l
+                  WHERE l.project_id = u.project_id AND l.user_id = u.user_id
+                    AND (@since::timestamptz IS NULL OR l.last_seen_at >= @since::timestamptz)
+                    AND (@until::timestamptz IS NULL OR l.last_seen_at < @until::timestamptz)),
+                 u.email, u.display_name, u.phone, u.username,
+                 u.platform, u.app_version, u.environment, u.release, u.country,
+                 u.device_name, u.locale, u.last_route, u.install_id
+          FROM user_stats u
+          INNER JOIN user_daily_stats d
+            ON d.project_id = u.project_id AND d.user_id = u.user_id
+           AND (@fromDate::date IS NULL OR d.date >= @fromDate::date)
+           AND (@untilDate::date IS NULL OR d.date < @untilDate::date)
+          WHERE u.project_id = @pid
+            AND (
+              @q::text IS NULL
+              OR u.user_id ILIKE '%' || @q::text || '%'
+              OR u.email ILIKE '%' || @q::text || '%'
+              OR u.display_name ILIKE '%' || @q::text || '%'
+              OR u.phone ILIKE '%' || @q::text || '%'
+              OR u.username ILIKE '%' || @q::text || '%'
+              OR u.device_name ILIKE '%' || @q::text || '%'
+              OR u.country ILIKE '%' || @q::text || '%'
+            )
+          GROUP BY u.project_id, u.user_id, u.first_seen_at, u.last_seen_at,
+                   u.email, u.display_name, u.phone, u.username,
+                   u.platform, u.app_version, u.environment, u.release, u.country,
+                   u.device_name, u.locale, u.last_route, u.install_id
+          ORDER BY u.last_seen_at DESC
+          LIMIT @lim
+        '''),
+        parameters: {
+          'pid': projectId,
+          ...timeParams(w),
+          ...dateParams(w),
+          'lim': limit,
+          'q': qParam,
+        },
+      );
+      return rows
+          .map((r) => {
+                'userId': r[0],
+                'identified': true,
+                'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
+                'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+                'eventCount': r[3],
+                'errorCount': r[4],
+                'crashCount': r[5],
+                'sessionCount': 0,
+                'deviceCount': r[6],
+                'email': r[7],
+                'displayName': r[8],
+                'phone': r[9],
+                'username': r[10],
+                'platform': r[11],
+                'appVersion': r[12],
+                'environment': r[13],
+                'release': r[14],
+                'country': r[15],
+                'deviceName': r[16],
+                'locale': r[17],
+                'lastRoute': r[18],
+                'installId': r[19],
+              })
+          .toList();
+    }
+
     final rows = await conn.execute(
       Sql.named('''
         SELECT user_id,
@@ -697,11 +798,28 @@ class AnalyticsStore {
         WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND ${identifiedUserSql()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          AND (
+            @q::text IS NULL
+            OR user_id ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'email'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'name'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'phone'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'username'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceName'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceModel'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'model'), '') ILIKE '%' || @q::text || '%'
+            OR country ILIKE '%' || @q::text || '%'
+          )
         GROUP BY user_id
         ORDER BY MAX(occurred_at) DESC
         LIMIT @lim
       '''),
-      parameters: {'pid': projectId, ...timeParams(w), 'lim': limit},
+      parameters: {
+        'pid': projectId,
+        ...timeParams(w),
+        'lim': limit,
+        'q': qParam,
+      },
     );
     return rows
         .map((r) => {
@@ -922,6 +1040,279 @@ class AnalyticsStore {
                 'firstSeenAt': (r[3] as DateTime).toUtc().toIso8601String(),
                 'lastSeenAt': (r[4] as DateTime).toUtc().toIso8601String(),
                 'eventCount': r[5],
+              })
+          .toList(),
+      'recentEvents': recent
+          .map((r) {
+            final uid = r[14]?.toString();
+            final iid = r[15]?.toString();
+            return {
+              'id': r[0],
+              'type': r[1],
+              'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'message': r[3],
+              'release': r[4],
+              'platform': r[5],
+              'environment': r[6],
+              'appVersion': r[7],
+              'route': r[8],
+              'deviceName': r[9],
+              'networkUrl': r[10],
+              'statusCode': r[11]?.toString(),
+              'category': r[12],
+              'level': r[13],
+              'isGuest': isGuestAppUser(userId: uid, installId: iid),
+            };
+          })
+          .toList(),
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> listDevices(
+    String projectId, {
+    int days = 30,
+    int limit = 100,
+    TimeWindow? window,
+    String? q,
+  }) async {
+    final conn = await db.connect();
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final query = q?.trim();
+    final qParam = query == null || query.isEmpty ? null : query;
+
+    if (preferIdentityRollups(w)) {
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT d.install_id,
+                 d.first_seen_at,
+                 d.last_seen_at,
+                 COALESCE(SUM(dd.event_count), 0)::int,
+                 COALESCE(SUM(dd.error_count), 0)::int,
+                 COALESCE(SUM(dd.crash_count), 0)::int,
+                 COALESCE(SUM(dd.guest_event_count), 0)::int,
+                 (SELECT COUNT(DISTINCT l.user_id)::int FROM user_device_links l
+                  WHERE l.project_id = d.project_id AND l.install_id = d.install_id
+                    AND (@since::timestamptz IS NULL OR l.last_seen_at >= @since::timestamptz)
+                    AND (@until::timestamptz IS NULL OR l.last_seen_at < @until::timestamptz)),
+                 d.device_name, d.platform, d.app_version, d.environment, d.country
+          FROM device_stats d
+          INNER JOIN device_daily_stats dd
+            ON dd.project_id = d.project_id AND dd.install_id = d.install_id
+           AND (@fromDate::date IS NULL OR dd.date >= @fromDate::date)
+           AND (@untilDate::date IS NULL OR dd.date < @untilDate::date)
+          WHERE d.project_id = @pid
+            AND (
+              @q::text IS NULL
+              OR d.install_id ILIKE '%' || @q::text || '%'
+              OR d.device_name ILIKE '%' || @q::text || '%'
+              OR d.platform ILIKE '%' || @q::text || '%'
+              OR d.country ILIKE '%' || @q::text || '%'
+            )
+          GROUP BY d.project_id, d.install_id, d.first_seen_at, d.last_seen_at,
+                   d.device_name, d.platform, d.app_version, d.environment, d.country
+          ORDER BY d.last_seen_at DESC
+          LIMIT @lim
+        '''),
+        parameters: {
+          'pid': projectId,
+          ...timeParams(w),
+          ...dateParams(w),
+          'lim': limit,
+          'q': qParam,
+        },
+      );
+      return rows
+          .map((r) {
+            final userCount = r[7] as int;
+            final guestEvents = r[6] as int;
+            return {
+              'installId': r[0],
+              'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
+              'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'eventCount': r[3],
+              'errorCount': r[4],
+              'crashCount': r[5],
+              'sessionCount': 0,
+              'guestEventCount': guestEvents,
+              'userCount': userCount,
+              'deviceName': r[8],
+              'platform': r[9],
+              'appVersion': r[10],
+              'environment': r[11],
+              'country': r[12],
+              'guestOnly': userCount == 0 && guestEvents > 0,
+            };
+          })
+          .toList();
+    }
+
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT install_id,
+               MIN(occurred_at) AS first_seen,
+               MAX(occurred_at) AS last_seen,
+               COUNT(*)::int,
+               COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
+               COUNT(*) FILTER (WHERE type = 'crash')::int,
+               COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int,
+               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
+               COUNT(*) FILTER (WHERE ${guestUserSql()})::int,
+               MAX(COALESCE(NULLIF(payload->'device'->>'deviceName', ''),
+                            NULLIF(payload->'device'->>'deviceModel', ''),
+                            NULLIF(payload->'device'->>'model', ''))) AS device_name,
+               MAX(platform) AS platform,
+               MAX(app_version) AS app_version,
+               MAX(environment) AS environment,
+               MAX(country) AS country
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND install_id IS NOT NULL
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          AND (
+            @q::text IS NULL
+            OR install_id ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceName'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceModel'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'model'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceId'), '') ILIKE '%' || @q::text || '%'
+            OR platform ILIKE '%' || @q::text || '%'
+            OR country ILIKE '%' || @q::text || '%'
+          )
+        GROUP BY install_id
+        ORDER BY MAX(occurred_at) DESC
+        LIMIT @lim
+      '''),
+      parameters: {
+        'pid': projectId,
+        ...timeParams(w),
+        'lim': limit,
+        'q': qParam,
+      },
+    );
+    return rows
+        .map((r) => {
+              'installId': r[0],
+              'firstSeenAt': (r[1] as DateTime).toUtc().toIso8601String(),
+              'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'eventCount': r[3],
+              'errorCount': r[4],
+              'crashCount': r[5],
+              'sessionCount': r[6],
+              'userCount': r[7],
+              'guestEventCount': r[8],
+              'deviceName': r[9],
+              'platform': r[10],
+              'appVersion': r[11],
+              'environment': r[12],
+              'country': r[13],
+              'guestOnly': (r[7] as int) == 0 && (r[8] as int) > 0,
+            })
+        .toList();
+  }
+
+  Future<Map<String, dynamic>?> getDevice(String projectId, String installId, {int days = 30, TimeWindow? window}) async {
+    final conn = await db.connect();
+    final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    final tp = timeParams(w);
+
+    final stats = await conn.execute(
+      Sql.named('''
+        SELECT
+          COUNT(*)::int,
+          COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int,
+          COUNT(*) FILTER (WHERE type = 'crash')::int,
+          MIN(occurred_at),
+          MAX(occurred_at),
+          COUNT(DISTINCT session_id) FILTER (WHERE session_id IS NOT NULL)::int,
+          COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()})::int,
+          COUNT(*) FILTER (WHERE ${guestUserSql()})::int,
+          MAX(COALESCE(NULLIF(payload->'device'->>'deviceName', ''),
+                       NULLIF(payload->'device'->>'deviceModel', ''),
+                       NULLIF(payload->'device'->>'model', ''))),
+          MAX(platform),
+          MAX(app_version),
+          MAX(environment),
+          MAX(release),
+          MAX(country),
+          MAX(COALESCE(NULLIF(payload->'device'->'geo'->>'locale', ''),
+                       NULLIF(payload->'device'->>'locale', '')))
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND install_id = @iid
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+      '''),
+      parameters: {'pid': projectId, 'iid': installId, ...tp},
+    );
+    if (stats.isEmpty || stats.first[0] == 0) return null;
+
+    final users = await conn.execute(
+      Sql.named('''
+        SELECT user_id,
+               MAX(NULLIF(TRIM(payload->'user'->>'email'), '')) AS email,
+               MAX(NULLIF(TRIM(payload->'user'->>'name'), '')) AS display_name,
+               MAX(NULLIF(TRIM(payload->'user'->>'username'), '')) AS username,
+               MIN(occurred_at) AS first_seen,
+               MAX(occurred_at) AS last_seen,
+               COUNT(*)::int
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND install_id = @iid AND ${identifiedUserSql()}
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY user_id
+        ORDER BY MAX(occurred_at) DESC
+      '''),
+      parameters: {'pid': projectId, 'iid': installId, ...tp},
+    );
+
+    final recent = await conn.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, message, release, platform, environment, app_version,
+               payload->'screen'->>'currentRoute' AS route,
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model') AS device_name,
+               payload->'network'->>'url' AS network_url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->>'category' AS category,
+               payload->>'level' AS level,
+               user_id,
+               install_id
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND install_id = @iid
+        ORDER BY occurred_at DESC LIMIT 20
+      '''),
+      parameters: {'pid': projectId, 'iid': installId},
+    );
+
+    final s = stats.first;
+    final userCount = s[6] as int;
+    final guestEvents = s[7] as int;
+    return {
+      'installId': installId,
+      'deviceName': s[8],
+      'platform': s[9],
+      'appVersion': s[10],
+      'environment': s[11],
+      'release': s[12],
+      'topCountry': s[13],
+      'locale': s[14],
+      'days': w.approximateDays,
+      'eventCount': s[0],
+      'errorCount': s[1],
+      'crashCount': s[2],
+      'firstSeenAt': (s[3] as DateTime).toUtc().toIso8601String(),
+      'lastSeenAt': (s[4] as DateTime).toUtc().toIso8601String(),
+      'sessionCount': s[5],
+      'userCount': userCount,
+      'guestEventCount': guestEvents,
+      'guestOnly': userCount == 0 && guestEvents > 0,
+      'users': users
+          .map((r) => {
+                'userId': r[0],
+                'email': r[1],
+                'displayName': r[2],
+                'username': r[3],
+                'firstSeenAt': (r[4] as DateTime).toUtc().toIso8601String(),
+                'lastSeenAt': (r[5] as DateTime).toUtc().toIso8601String(),
+                'eventCount': r[6],
               })
           .toList(),
       'recentEvents': recent

@@ -85,5 +85,14 @@ class TimeWindow {
 
 Map<String, dynamic> timeParams(TimeWindow w) => {'since': w.since, 'until': w.until};
 
+/// Inclusive `fromDate` / exclusive `untilDate` for `DATE` columns (daily rollups).
+Map<String, dynamic> dateParams(TimeWindow w) => {
+      'fromDate': w.since?.substring(0, 10),
+      'untilDate': trendUntilDate(w),
+    };
+
 /// Exclusive upper bound for `daily_stats.date` (until is next-day midnight).
 String? trendUntilDate(TimeWindow w) => w.until?.substring(0, 10);
+
+/// Prefer identity/daily rollups unless the window is hourly (sub-day).
+bool preferIdentityRollups(TimeWindow w) => !w.usesHourlyTrend;

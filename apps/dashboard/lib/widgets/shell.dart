@@ -12,7 +12,8 @@ import 'dashboard_footer.dart';
 import 'scout_logo.dart';
 
 class DashboardShell extends StatefulWidget {
-  const DashboardShell({super.key, required this.projectId, required this.child});
+  const DashboardShell(
+      {super.key, required this.projectId, required this.child});
 
   final String? projectId;
   final Widget child;
@@ -30,6 +31,7 @@ class _DashboardShellState extends State<DashboardShell> {
   static const _navItems = [
     (Icons.dashboard_outlined, Icons.dashboard, 'Overview'),
     (Icons.people_outline, Icons.people, 'Logged-in users'),
+    (Icons.devices_outlined, Icons.devices, 'Devices'),
     (Icons.play_circle_outline, Icons.play_circle, 'Sessions'),
     (Icons.insights_outlined, Icons.insights, 'Analytics'),
     (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),
@@ -79,33 +81,36 @@ class _DashboardShellState extends State<DashboardShell> {
     if (widget.projectId == null) return 0;
     if (path.contains('/stats')) return 0;
     if (path.contains('/users')) return 1;
-    if (path.contains('/sessions')) return 2;
-    if (path.contains('/analytics')) return 3;
-    if (path.contains('/issues')) return 4;
-    if (path.contains('/events')) return 5;
-    if (path.contains('/geo')) return 6;
-    if (path.contains('/logs')) return 7;
-    if (path.contains('/reports')) return 8;
-    if (path.contains('/notifications')) return 9;
-    if (path.contains('/settings')) return 10;
+    if (path.contains('/devices')) return 2;
+    if (path.contains('/sessions')) return 3;
+    if (path.contains('/analytics')) return 4;
+    if (path.contains('/issues')) return 5;
+    if (path.contains('/events')) return 6;
+    if (path.contains('/geo')) return 7;
+    if (path.contains('/logs')) return 8;
+    if (path.contains('/reports')) return 9;
+    if (path.contains('/notifications')) return 10;
+    if (path.contains('/settings')) return 11;
     return 0;
   }
 
   String _locationFor(int i, BuildContext context) {
     final id = widget.projectId;
-    final periodQ = PeriodFilter.queryFromUri(GoRouterState.of(context).uri.queryParameters);
+    final periodQ = PeriodFilter.queryFromUri(
+        GoRouterState.of(context).uri.queryParameters);
     final path = switch (i) {
       0 => id == null ? '/projects' : '/p/$id',
       1 => '/p/$id/users',
-      2 => '/p/$id/sessions',
-      3 => '/p/$id/analytics',
-      4 => '/p/$id/issues',
-      5 => '/p/$id/events',
-      6 => '/p/$id/geo',
-      7 => '/p/$id/logs',
-      8 => '/p/$id/reports',
-      9 => '/p/$id/notifications',
-      10 => '/p/$id/settings',
+      2 => '/p/$id/devices',
+      3 => '/p/$id/sessions',
+      4 => '/p/$id/analytics',
+      5 => '/p/$id/issues',
+      6 => '/p/$id/events',
+      7 => '/p/$id/geo',
+      8 => '/p/$id/logs',
+      9 => '/p/$id/reports',
+      10 => '/p/$id/notifications',
+      11 => '/p/$id/settings',
       _ => '/projects',
     };
     return Uri(path: path, queryParameters: periodQ).toString();
@@ -119,7 +124,8 @@ class _DashboardShellState extends State<DashboardShell> {
     }
   }
 
-  Widget _sidebarNav(BuildContext context, {required bool extended, required int selected}) {
+  Widget _sidebarNav(BuildContext context,
+      {required bool extended, required int selected}) {
     if (widget.projectId == null) {
       final path = GoRouterState.of(context).uri.path;
       final onAlerts = path.startsWith('/alerts');
@@ -152,7 +158,8 @@ class _DashboardShellState extends State<DashboardShell> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: EdgeInsets.fromLTRB(extended ? 16 : 12, 0, extended ? 16 : 12, 8),
+          padding:
+              EdgeInsets.fromLTRB(extended ? 16 : 12, 0, extended ? 16 : 12, 8),
           child: Text(
             'MONITORING',
             style: TextStyle(
@@ -179,13 +186,17 @@ class _DashboardShellState extends State<DashboardShell> {
 
   Widget _sidebarHeader({required bool extended, VoidCallback? onLogoTap}) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(extended ? 16 : 12, 20, extended ? 16 : 12, 16),
+      padding:
+          EdgeInsets.fromLTRB(extended ? 16 : 12, 20, extended ? 16 : 12, 16),
       child: ScoutLogo(
         compact: !extended,
-        showTagline: extended,
+        showTagline: false,
         onSidebar: true,
         iconSize: extended ? 38 : 36,
-        onTap: onLogoTap ?? () => context.go(widget.projectId == null ? '/projects' : '/p/${widget.projectId}'),
+        onTap: onLogoTap ??
+            () => context.go(widget.projectId == null
+                ? '/projects'
+                : '/p/${widget.projectId}'),
       ),
     );
   }
@@ -206,13 +217,17 @@ class _DashboardShellState extends State<DashboardShell> {
             )
           : IconButton(
               onPressed: () => context.go('/projects'),
-              icon: const Icon(Icons.swap_horiz, color: AppTheme.onSidebarMuted),
+              icon:
+                  const Icon(Icons.swap_horiz, color: AppTheme.onSidebarMuted),
               tooltip: 'Switch project',
             ),
     );
   }
 
-  Widget _mainColumn(BuildContext context, {required Widget topBar, required Widget content, required bool compact}) {
+  Widget _mainColumn(BuildContext context,
+      {required Widget topBar,
+      required Widget content,
+      required bool compact}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -229,7 +244,8 @@ class _DashboardShellState extends State<DashboardShell> {
     DashboardScope.route = GoRouterState.of(context).uri.path;
 
     final drawerMode = useDrawerNav(context);
-    final wide = !drawerMode && MediaQuery.sizeOf(context).width >= Breakpoints.shellDrawer;
+    final wide = !drawerMode &&
+        MediaQuery.sizeOf(context).width >= Breakpoints.shellDrawer;
     final extended = wide;
     final selected = _selectedIndex(context);
     final compact = isMobile(context);
@@ -273,16 +289,23 @@ class _DashboardShellState extends State<DashboardShell> {
                             _projectName!,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppTheme.onSidebar),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                                color: AppTheme.onSidebar),
                           ),
                         ),
-                      Expanded(child: SingleChildScrollView(child: _sidebarNav(context, extended: true, selected: selected))),
+                      Expanded(
+                          child: SingleChildScrollView(
+                              child: _sidebarNav(context,
+                                  extended: true, selected: selected))),
                       _sidebarFooter(context, extended: true),
                     ],
                   ),
                 ),
               ),
-        body: _mainColumn(context, topBar: topBar, content: content, compact: compact),
+        body: _mainColumn(context,
+            topBar: topBar, content: content, compact: compact),
       );
     }
 
@@ -294,8 +317,14 @@ class _DashboardShellState extends State<DashboardShell> {
             width: extended ? 232 : 76,
             decoration: BoxDecoration(
               color: AppTheme.sidebar,
-              border: const Border(right: BorderSide(color: AppTheme.sidebarBorder)),
-              boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.18), blurRadius: 16, offset: const Offset(2, 0))],
+              border: const Border(
+                  right: BorderSide(color: AppTheme.sidebarBorder)),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    blurRadius: 16,
+                    offset: const Offset(2, 0))
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -305,7 +334,8 @@ class _DashboardShellState extends State<DashboardShell> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
                       decoration: BoxDecoration(
                         color: AppTheme.sidebarElevated,
                         borderRadius: BorderRadius.circular(8),
@@ -313,26 +343,35 @@ class _DashboardShellState extends State<DashboardShell> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(Icons.folder_outlined, size: 14, color: AppTheme.sidebarActive),
+                          const Icon(Icons.folder_outlined,
+                              size: 14, color: AppTheme.sidebarActive),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               _projectName!,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.onSidebar),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 12,
+                                  color: AppTheme.onSidebar),
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                Expanded(child: SingleChildScrollView(child: _sidebarNav(context, extended: extended, selected: selected))),
+                Expanded(
+                    child: SingleChildScrollView(
+                        child: _sidebarNav(context,
+                            extended: extended, selected: selected))),
                 _sidebarFooter(context, extended: extended),
               ],
             ),
           ),
-          Expanded(child: _mainColumn(context, topBar: topBar, content: content, compact: compact)),
+          Expanded(
+              child: _mainColumn(context,
+                  topBar: topBar, content: content, compact: compact)),
         ],
       ),
     );
@@ -340,7 +379,12 @@ class _DashboardShellState extends State<DashboardShell> {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.compact, required this.drawerMode, required this.projectName, required this.onMenu, required this.onProjects});
+  const _TopBar(
+      {required this.compact,
+      required this.drawerMode,
+      required this.projectName,
+      required this.onMenu,
+      required this.onProjects});
 
   final bool compact;
   final bool drawerMode;
@@ -354,18 +398,29 @@ class _TopBar extends StatelessWidget {
       color: AppTheme.panel,
       elevation: 0,
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20, vertical: compact ? 10 : 12),
+        padding: EdgeInsets.symmetric(
+            horizontal: compact ? 12 : 20, vertical: compact ? 10 : 12),
         decoration: BoxDecoration(
           color: AppTheme.panel,
           border: const Border(bottom: BorderSide(color: AppTheme.border)),
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.03), blurRadius: 8, offset: const Offset(0, 2))],
+          boxShadow: [
+            BoxShadow(
+                color: Colors.black.withValues(alpha: 0.03),
+                blurRadius: 8,
+                offset: const Offset(0, 2))
+          ],
         ),
         child: Row(
           children: [
             if (drawerMode && projectName != null)
-              IconButton(onPressed: onMenu, icon: const Icon(Icons.menu, size: 22), tooltip: 'Menu')
+              IconButton(
+                  onPressed: onMenu,
+                  icon: const Icon(Icons.menu, size: 22),
+                  tooltip: 'Menu')
             else if (drawerMode)
-              const Padding(padding: EdgeInsets.only(right: 4), child: ScoutLogo(compact: true, iconSize: 32)),
+              const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: ScoutLogo(compact: true, iconSize: 32)),
             if (projectName != null) ...[
               if (!drawerMode)
                 TextButton.icon(
@@ -373,24 +428,34 @@ class _TopBar extends StatelessWidget {
                   icon: const Icon(Icons.arrow_back, size: 16),
                   label: Text(compact ? 'Back' : 'Projects'),
                 ),
-              if (!compact) const Text(' / ', style: TextStyle(color: AppTheme.muted)),
+              if (!compact)
+                const Text(' / ', style: TextStyle(color: AppTheme.muted)),
               Expanded(
                 child: Text(
                   projectName!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 13 : 15, color: AppTheme.text),
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: compact ? 13 : 15,
+                      color: AppTheme.text),
                 ),
               ),
             ] else ...[
               if (!drawerMode) ...[
-                ScoutLogo(compact: compact, iconSize: 32, onTap: () => context.go('/projects')),
+                ScoutLogo(
+                    compact: compact,
+                    iconSize: 32,
+                    onTap: () => context.go('/projects')),
                 const SizedBox(width: 8),
               ],
               Expanded(
                 child: Text(
                   compact ? 'Projects' : 'Your projects',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: compact ? 14 : 16, color: AppTheme.text),
+                  style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: compact ? 14 : 16,
+                      color: AppTheme.text),
                 ),
               ),
             ],
@@ -415,11 +480,19 @@ class _TopBar extends StatelessWidget {
                 }
               },
               itemBuilder: (_) => [
-                PopupMenuItem(enabled: false, child: Text(AuthService.instance.email, style: const TextStyle(fontSize: 12, color: AppTheme.muted))),
+                PopupMenuItem(
+                    enabled: false,
+                    child: Text(AuthService.instance.email,
+                        style: const TextStyle(
+                            fontSize: 12, color: AppTheme.muted))),
                 const PopupMenuItem(value: 'alerts', child: Text('Alerts')),
-                if (AuthService.instance.isAdmin) const PopupMenuItem(value: 'admin', child: Text('Team & permissions')),
+                if (AuthService.instance.isAdmin)
+                  const PopupMenuItem(
+                      value: 'admin', child: Text('Team & permissions')),
                 if (AuthService.instance.isPlatformOwner)
-                  const PopupMenuItem(value: 'notifications', child: Text('Notification channels')),
+                  const PopupMenuItem(
+                      value: 'notifications',
+                      child: Text('Notification channels')),
                 const PopupMenuItem(value: 'logout', child: Text('Sign out')),
               ],
               child: Padding(
@@ -428,27 +501,42 @@ class _TopBar extends StatelessWidget {
                   radius: compact ? 14 : 16,
                   backgroundColor: AppTheme.primarySoft,
                   child: Text(
-                    AuthService.instance.email.isNotEmpty ? AuthService.instance.email[0].toUpperCase() : '?',
-                    style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 13),
+                    AuthService.instance.email.isNotEmpty
+                        ? AuthService.instance.email[0].toUpperCase()
+                        : '?',
+                    style: const TextStyle(
+                        color: AppTheme.primary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13),
                   ),
                 ),
               ),
             ),
             const SizedBox(width: 8),
             Container(
-              padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: compact ? 4 : 6),
+              padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 8 : 12, vertical: compact ? 4 : 6),
               decoration: BoxDecoration(
                 color: AppTheme.success.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppTheme.success.withValues(alpha: 0.25)),
+                border:
+                    Border.all(color: AppTheme.success.withValues(alpha: 0.25)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Container(width: 6, height: 6, decoration: const BoxDecoration(color: AppTheme.success, shape: BoxShape.circle)),
+                  Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                          color: AppTheme.success, shape: BoxShape.circle)),
                   if (!compact) ...[
                     const SizedBox(width: 8),
-                    const Text('Live', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppTheme.success)),
+                    const Text('Live',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppTheme.success)),
                   ],
                 ],
               ),
@@ -461,7 +549,14 @@ class _TopBar extends StatelessWidget {
 }
 
 class _NavTile extends StatelessWidget {
-  const _NavTile({required this.icon, required this.activeIcon, required this.label, required this.selected, required this.extended, required this.location, required this.onTap});
+  const _NavTile(
+      {required this.icon,
+      required this.activeIcon,
+      required this.label,
+      required this.selected,
+      required this.extended,
+      required this.location,
+      required this.onTap});
 
   final IconData icon;
   final IconData activeIcon;
@@ -482,20 +577,35 @@ class _NavTile extends StatelessWidget {
           onTap: onTap,
           hoverColor: AppTheme.sidebarHover.withValues(alpha: 0.6),
           child: Container(
-            margin: EdgeInsets.symmetric(horizontal: extended ? 10 : 8, vertical: 2),
-            padding: EdgeInsets.symmetric(horizontal: extended ? 12 : 0, vertical: 11),
+            margin: EdgeInsets.symmetric(
+                horizontal: extended ? 10 : 8, vertical: 2),
+            padding: EdgeInsets.symmetric(
+                horizontal: extended ? 12 : 0, vertical: 11),
             decoration: BoxDecoration(
-              color: selected ? AppTheme.sidebarActive.withValues(alpha: 0.14) : Colors.transparent,
+              color: selected
+                  ? AppTheme.sidebarActive.withValues(alpha: 0.14)
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(10),
-              border: selected ? Border.all(color: AppTheme.sidebarActive.withValues(alpha: 0.35)) : null,
+              border: selected
+                  ? Border.all(
+                      color: AppTheme.sidebarActive.withValues(alpha: 0.35))
+                  : null,
             ),
             child: Row(
-              mainAxisAlignment: extended ? MainAxisAlignment.start : MainAxisAlignment.center,
+              mainAxisAlignment:
+                  extended ? MainAxisAlignment.start : MainAxisAlignment.center,
               children: [
                 Icon(selected ? activeIcon : icon, color: accent, size: 20),
                 if (extended) ...[
                   const SizedBox(width: 12),
-                  Expanded(child: Text(label, style: TextStyle(color: accent, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w500))),
+                  Expanded(
+                      child: Text(label,
+                          style: TextStyle(
+                              color: accent,
+                              fontSize: 13,
+                              fontWeight: selected
+                                  ? FontWeight.w600
+                                  : FontWeight.w500))),
                 ],
               ],
             ),

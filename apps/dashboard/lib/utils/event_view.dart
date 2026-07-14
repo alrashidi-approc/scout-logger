@@ -49,22 +49,57 @@ class EventView {
   }
   String get environment => str(event['environment']) ?? str(payload['environment']) ?? '—';
   String get platform => str(device['platform']) ?? str(event['platform']) ?? '—';
+
+  /// Semver only (no build), from event / device / release.
   String get appVersion {
     final stored = str(event['appVersion']);
-    if (stored != null && stored.isNotEmpty) return stored;
-    // Prefer appVersion — SDK sends semver+build here (e.g. 2.1.0+42).
-    final withBuild = str(device['appVersion']);
-    if (withBuild != null && withBuild.isNotEmpty) return withBuild;
-    final semver = str(device['version']);
-    if (semver != null && semver.isNotEmpty) return semver;
+    if (stored != null && stored.isNotEmpty) return _semverOnly(stored);
+    final deviceAv = str(device['appVersion']);
+    if (deviceAv != null && deviceAv.isNotEmpty) return _semverOnly(deviceAv);
+    final releaseVer = str(asMap(payload['release'])['version']);
+    if (releaseVer != null && releaseVer.isNotEmpty) return _semverOnly(releaseVer);
     return '—';
   }
 
+  String? get buildNumber {
+    final fromEvent = str(event['buildNumber']);
+    if (fromEvent != null && fromEvent.isNotEmpty) return fromEvent;
+    final fromDevice = str(device['buildNumber']) ?? str(device['build']);
+    if (fromDevice != null && fromDevice.isNotEmpty) return fromDevice;
+    final fromRelease = str(asMap(payload['release'])['buildNumber']);
+    if (fromRelease != null && fromRelease.isNotEmpty) return fromRelease;
+    for (final raw in [str(event['appVersion']), str(device['appVersion']), str(asMap(payload['release'])['name'])]) {
+      final b = _buildFromPlus(raw);
+      if (b != null) return b;
+    }
+    return null;
+  }
+
+  /// Display label: `1.0.2+46` when build is known.
+  String get appVersionLabel {
+    final ver = appVersion;
+    if (ver == '—') return '—';
+    if (ver.contains('+')) return ver;
+    final build = buildNumber;
+    if (build == null || build.isEmpty) return ver;
+    return '$ver+$build';
+  }
+
   /// True when ingest included a build number (`2.1.0+42` or device.buildNumber).
-  bool get hasAppBuildNumber =>
-      appVersion.contains('+') ||
-      str(device['buildNumber']) != null ||
-      str(device['build']) != null;
+  bool get hasAppBuildNumber => buildNumber != null;
+
+  static String _semverOnly(String v) {
+    final i = v.indexOf('+');
+    return i > 0 ? v.substring(0, i) : v;
+  }
+
+  static String? _buildFromPlus(String? v) {
+    if (v == null) return null;
+    final i = v.indexOf('+');
+    if (i < 0 || i >= v.length - 1) return null;
+    final b = v.substring(i + 1).trim();
+    return b.isEmpty ? null : b;
+  }
   String get userId => str(user['id']) ?? str(user['userId']) ?? str(event['userId']) ?? '—';
   String get userEmail => str(user['email']) ?? userEmailFromPayload(payload) ?? '—';
   String get installId => str(event['installId']) ?? installIdFromPayload(payload) ?? '—';
@@ -145,8 +180,9 @@ class EventView {
         DetailField('Release', release, mono: true, highlight: true),
         DetailField('Environment', environment, highlight: true),
         DetailField('Platform', platform),
-        DetailField('App version', appVersion),
-        DetailField('Package / bundle', str(payload['packageName']) ?? str(payload['bundleId']) ?? '—', mono: true),
+        DetailField('App version', appVersionLabel, highlight: true),
+        if (buildNumber != null) DetailField('Build number', buildNumber!, highlight: true),
+        DetailField('Package / bundle', str(payload['packageName']) ?? str(payload['bundleId']) ?? str(asMap(payload['release'])['bundleId']) ?? '—', mono: true),
         DetailField('Event ID', str(event['id']) ?? '—', mono: true),
         DetailField('Occurred', str(event['occurredAt']) ?? '—'),
         DetailField('Received', str(enrichment['receivedAt']) ?? str(event['createdAt']) ?? '—'),
@@ -174,7 +210,8 @@ class EventView {
         if (device['launchCount'] != null) DetailField('Launch #', '${device['launchCount']}'),
         if (device['daysSinceInstall'] != null) DetailField('Days since install', '${device['daysSinceInstall']}'),
         DetailField('Device ID', str(device['id']) ?? str(device['deviceId']) ?? '—', mono: true),
-        DetailField('App version', appVersion),
+        DetailField('App version', appVersionLabel, highlight: true),
+        if (buildNumber != null) DetailField('Build number', buildNumber!),
         DetailField('Battery', str(device['batteryLevel']) != null ? '${((double.tryParse(device['batteryLevel'].toString()) ?? 0) * 100).round()}%' : '—'),
         DetailField('Online', str(device['isOnline']) ?? str(asMap(device['connectivity'])['isOnline']) ?? '—'),
       ];
@@ -290,14 +327,16 @@ class EventView {
     const known = {
       'message', 'stack', 'stackTrace', 'stacktrace', 'release', 'environment', 'level', 'category',
       'user', 'device', 'screen', 'network', 'method', 'url', 'statusCode', 'route', 'breadcrumbs',
-      'userFlow', 'screenTrail', 'custom', 'context', 'overview', 'session',
+      'userFlow', 'screenTrail', 'custom', 'context', 'overview', 'session', 'sessionId',
     };
     final out = <DetailField>[];
     for (final e in payload.entries) {
       if (known.contains(e.key)) continue;
       out.add(DetailField(e.key, _fmt(e.value), mono: e.value is Map || e.value is List));
     }
+    // SDK puts product tags in `custom` and diagnostic flags in `context`.
     out.addAll(_extraMap(custom));
+    out.addAll(_extraMap(context));
     return out;
   }
 
@@ -308,7 +347,7 @@ class EventView {
         if (breadcrumbs.isNotEmpty) 'Screen trail: ${breadcrumbs.length} steps',
         if (breadcrumbsMissingNavType)
           'Note: navigation type (push/pop/…) not recorded — update scout_logger_plus screenTrail',
-        if (platform != '—') 'Platform: $platform · $appVersion',
+        if (platform != '—') 'Platform: $platform · $appVersionLabel',
         if (userId != '—') 'User ID: $userId',
         if (country != '—')
           'Location: $locationLabel (${eventGeoSourceLabel(geoSource)})',
@@ -374,7 +413,7 @@ String bugReport(EventView v, String projectId) {
     ..writeln()
     ..writeln('## Environment')
     ..writeln('Release: ${v.release}')
-    ..writeln('Platform: ${v.platform} ${v.appVersion}')
+    ..writeln('Platform: ${v.platform} ${v.appVersionLabel}')
     ..writeln('User: ${v.userId}')
     ..writeln();
   if (v.stack.isNotEmpty) {

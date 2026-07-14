@@ -61,6 +61,8 @@ List<NotificationJob> routeNotifications({
   required String dashboardBaseUrl,
 }) {
   if (!config.enabled) return const [];
+  // Hard gate: never route automatic alerts for non-release environments.
+  if (!isReleaseNotificationEnvironment(environment)) return const [];
 
   final categories = notificationCategoriesFor(type: type, payload: payload);
   if (categories.isEmpty) return const [];
