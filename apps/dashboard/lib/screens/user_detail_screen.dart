@@ -128,15 +128,53 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
         ),
         const SizedBox(height: 12),
         DetailSection(
-          title: 'Client context',
+          title: 'Last app version',
           child: Column(children: [
+            DetailRow(
+              label: 'Version',
+              value: '${u['lastAppVersionLabel'] ?? u['lastAppVersion'] ?? u['appVersion'] ?? '—'}',
+              mono: true,
+              onCopy: () {
+                final v = '${u['lastAppVersionLabel'] ?? u['lastAppVersion'] ?? u['appVersion'] ?? ''}';
+                if (v.isNotEmpty && v != '—') copy(v);
+              },
+            ),
+            DetailRow(label: 'Build', value: '${u['lastBuildNumber'] ?? ''}'),
             DetailRow(
               label: 'Platform',
               value: [
                 if (u['platform'] != null) '${u['platform']}',
-                if (u['appVersion'] != null) 'v${u['appVersion']}',
+                if (u['environment'] != null) '${u['environment']}',
               ].join(' · '),
             ),
+            if (u['lastAppVersionSeenAt'] != null)
+              DetailRow(
+                label: 'Last seen on this version',
+                value: DateFormat.yMMMd().add_jm().format(
+                      DateTime.parse(u['lastAppVersionSeenAt'] as String).toLocal(),
+                    ),
+              ),
+          ]),
+        ),
+        if (jsonListMaps(u['appVersions']).length > 1) ...[
+          const SizedBox(height: 12),
+          DetailSection(
+            title: 'Version history',
+            child: Column(
+              children: [
+                for (final v in jsonListMaps(u['appVersions']))
+                  DetailRow(
+                    label: '${v['label'] ?? v['appVersion'] ?? '—'}',
+                    value: _versionHistoryLine(v),
+                  ),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        DetailSection(
+          title: 'Client context',
+          child: Column(children: [
             DetailRow(label: 'Device', value: '${u['deviceName'] ?? ''}'),
             DetailRow(label: 'Country', value: '${u['topCountry'] ?? ''}'),
             DetailRow(label: 'Release', value: '${u['release'] ?? ''}'),
@@ -228,4 +266,13 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
           ]),
         ]),
       );
+
+  static String _versionHistoryLine(Map<String, dynamic> v) {
+    final lastV = DateTime.tryParse(v['lastSeenAt'] as String? ?? '');
+    return [
+      if (lastV != null) 'last ${DateFormat.MMMd().add_jm().format(lastV.toLocal())}',
+      if (v['eventCount'] != null) '${v['eventCount']} events',
+      if (v['platform'] != null) '${v['platform']}',
+    ].join(' · ');
+  }
 }

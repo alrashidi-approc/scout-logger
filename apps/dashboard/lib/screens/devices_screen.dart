@@ -114,7 +114,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         child: FilterBar(
           period: _period,
           onPeriodChanged: _setPeriod,
-          searchHint: 'Device name, install id, platform, country…',
+          searchHint: 'Device, install id, user email, name, user id…',
           searchValue: _search,
           onSearch: _setSearch,
         ),

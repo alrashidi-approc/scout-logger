@@ -715,6 +715,18 @@ class AnalyticsStore {
               OR u.username ILIKE '%' || @q::text || '%'
               OR u.device_name ILIKE '%' || @q::text || '%'
               OR u.country ILIKE '%' || @q::text || '%'
+              OR u.install_id ILIKE '%' || @q::text || '%'
+              OR EXISTS (
+                SELECT 1 FROM user_device_links l
+                LEFT JOIN device_stats ds
+                  ON ds.project_id = l.project_id AND ds.install_id = l.install_id
+                WHERE l.project_id = u.project_id AND l.user_id = u.user_id
+                  AND (
+                    l.install_id ILIKE '%' || @q::text || '%'
+                    OR ds.device_name ILIKE '%' || @q::text || '%'
+                    OR ds.platform ILIKE '%' || @q::text || '%'
+                  )
+              )
             )
           GROUP BY u.project_id, u.user_id, u.first_seen_at, u.last_seen_at,
                    u.email, u.display_name, u.phone, u.username,
@@ -801,6 +813,7 @@ class AnalyticsStore {
           AND (
             @q::text IS NULL
             OR user_id ILIKE '%' || @q::text || '%'
+            OR install_id ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'user'->>'email'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'user'->>'name'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'user'->>'phone'), '') ILIKE '%' || @q::text || '%'
@@ -808,6 +821,7 @@ class AnalyticsStore {
             OR NULLIF(TRIM(payload->'device'->>'deviceName'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'deviceModel'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'model'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'device'->>'deviceId'), '') ILIKE '%' || @q::text || '%'
             OR country ILIKE '%' || @q::text || '%'
           )
         GROUP BY user_id
@@ -975,7 +989,6 @@ class AnalyticsStore {
                MAX(NULLIF(TRIM(payload->'user'->>'phone'), '')),
                MAX(NULLIF(TRIM(payload->'user'->>'username'), '')),
                MAX(platform),
-               MAX(app_version),
                MAX(environment),
                MAX(release),
                MAX(country),
@@ -1003,9 +1016,71 @@ class AnalyticsStore {
       parameters: {'pid': projectId, 'uid': userId, ...tp},
     );
 
+    // Last version by time (not MAX text) — for support "does this user need an update?"
+    final lastVersion = await conn.execute(
+      Sql.named('''
+        SELECT app_version,
+               COALESCE(
+                 NULLIF(payload->'device'->>'buildNumber', ''),
+                 NULLIF(payload->'device'->>'build', ''),
+                 NULLIF(payload->'release'->>'buildNumber', '')
+               ) AS build_number,
+               platform,
+               environment,
+               release,
+               occurred_at
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND user_id = @uid
+          AND app_version IS NOT NULL AND TRIM(app_version) <> ''
+        ORDER BY occurred_at DESC
+        LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'uid': userId},
+    );
+
+    final versionHistory = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(TRIM(app_version), ''), 'unknown') AS ver,
+               (ARRAY_AGG(
+                 COALESCE(
+                   NULLIF(payload->'device'->>'buildNumber', ''),
+                   NULLIF(payload->'device'->>'build', '')
+                 ) ORDER BY occurred_at DESC
+               ) FILTER (WHERE
+                 NULLIF(payload->'device'->>'buildNumber', '') IS NOT NULL
+                 OR NULLIF(payload->'device'->>'build', '') IS NOT NULL
+               ))[1] AS build_number,
+               MIN(occurred_at) AS first_seen,
+               MAX(occurred_at) AS last_seen,
+               COUNT(*)::int,
+               (ARRAY_AGG(platform ORDER BY occurred_at DESC) FILTER (WHERE platform IS NOT NULL))[1] AS platform
+        FROM events
+        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND user_id = @uid
+          AND app_version IS NOT NULL AND TRIM(app_version) <> ''
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        GROUP BY 1
+        ORDER BY MAX(occurred_at) DESC
+        LIMIT 8
+      '''),
+      parameters: {'pid': projectId, 'uid': userId, ...tp},
+    );
+
     final s = stats.first;
     final p = profile.first;
     final guestEvents = guestOnly.first[0] as int;
+    final lv = lastVersion.isEmpty ? null : lastVersion.first;
+    final lastAppVersion = lv?[0]?.toString();
+    final lastBuild = lv?[1]?.toString();
+    String? lastAppVersionLabel;
+    if (lastAppVersion != null && lastAppVersion.isNotEmpty) {
+      if (lastAppVersion.contains('+') || lastBuild == null || lastBuild.isEmpty) {
+        lastAppVersionLabel = lastAppVersion;
+      } else {
+        lastAppVersionLabel = '$lastAppVersion+$lastBuild';
+      }
+    }
+
     return {
       'userId': userId,
       'identified': true,
@@ -1013,15 +1088,19 @@ class AnalyticsStore {
       'displayName': p[1],
       'phone': p[2],
       'username': p[3],
-      'platform': p[4],
-      'appVersion': p[5],
-      'environment': p[6],
-      'release': p[7],
-      'topCountry': p[8],
-      'deviceName': p[9],
-      'locale': p[10],
-      'lastRoute': p[11],
-      'installId': p[12],
+      'platform': lv?[2] ?? p[4],
+      'appVersion': lastAppVersion,
+      'lastAppVersion': lastAppVersion,
+      'lastBuildNumber': lastBuild,
+      'lastAppVersionLabel': lastAppVersionLabel,
+      'lastAppVersionSeenAt': lv?[5] == null ? null : (lv![5] as DateTime).toUtc().toIso8601String(),
+      'environment': lv?[3] ?? p[5],
+      'release': lv?[4] ?? p[6],
+      'topCountry': p[7],
+      'deviceName': p[8],
+      'locale': p[9],
+      'lastRoute': p[10],
+      'installId': p[11],
       'includesGuestActivity': guestEvents > 0,
       'guestEventCount': guestEvents,
       'days': w.approximateDays,
@@ -1032,6 +1111,22 @@ class AnalyticsStore {
       'lastSeenAt': (s[4] as DateTime).toUtc().toIso8601String(),
       'sessionCount': sessions.first[0],
       'deviceCount': devices.length,
+      'appVersions': versionHistory
+          .map((r) {
+            final ver = r[0]?.toString() ?? 'unknown';
+            final build = r[1]?.toString();
+            final label = ver.contains('+') || build == null || build.isEmpty ? ver : '$ver+$build';
+            return {
+              'appVersion': ver,
+              'buildNumber': build,
+              'label': label,
+              'firstSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'lastSeenAt': (r[3] as DateTime).toUtc().toIso8601String(),
+              'eventCount': r[4],
+              'platform': r[5],
+            };
+          })
+          .toList(),
       'devices': devices
           .map((r) => {
                 'installId': r[0],
@@ -1107,6 +1202,19 @@ class AnalyticsStore {
               OR d.device_name ILIKE '%' || @q::text || '%'
               OR d.platform ILIKE '%' || @q::text || '%'
               OR d.country ILIKE '%' || @q::text || '%'
+              OR EXISTS (
+                SELECT 1 FROM user_device_links l
+                LEFT JOIN user_stats us
+                  ON us.project_id = l.project_id AND us.user_id = l.user_id
+                WHERE l.project_id = d.project_id AND l.install_id = d.install_id
+                  AND (
+                    l.user_id ILIKE '%' || @q::text || '%'
+                    OR us.email ILIKE '%' || @q::text || '%'
+                    OR us.display_name ILIKE '%' || @q::text || '%'
+                    OR us.phone ILIKE '%' || @q::text || '%'
+                    OR us.username ILIKE '%' || @q::text || '%'
+                  )
+              )
             )
           GROUP BY d.project_id, d.install_id, d.first_seen_at, d.last_seen_at,
                    d.device_name, d.platform, d.app_version, d.environment, d.country
@@ -1171,10 +1279,15 @@ class AnalyticsStore {
           AND (
             @q::text IS NULL
             OR install_id ILIKE '%' || @q::text || '%'
+            OR user_id ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'deviceName'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'deviceModel'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'model'), '') ILIKE '%' || @q::text || '%'
             OR NULLIF(TRIM(payload->'device'->>'deviceId'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'email'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'name'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'phone'), '') ILIKE '%' || @q::text || '%'
+            OR NULLIF(TRIM(payload->'user'->>'username'), '') ILIKE '%' || @q::text || '%'
             OR platform ILIKE '%' || @q::text || '%'
             OR country ILIKE '%' || @q::text || '%'
           )

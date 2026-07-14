@@ -109,7 +109,7 @@ class _UsersScreenState extends State<UsersScreen> {
         child: FilterBar(
           period: _period,
           onPeriodChanged: _setPeriod,
-          searchHint: 'Name, email, username, phone, user id, device…',
+          searchHint: 'User, email, phone, install id, device name…',
           searchValue: _search,
           onSearch: _setSearch,
         ),
