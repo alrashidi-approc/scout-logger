@@ -20,7 +20,7 @@ void main() {
           ],
           tables: [
             ReportTable(title: 'Top issues', columns: ['Issue', 'Type', 'Version', 'Events'], rows: [
-              ['Crash A', 'crash', '2.4.1', '9']
+              ReportTableRow(cells: ['Crash A', 'crash', '2.4.1', '9'])
             ]),
           ],
         ),
@@ -41,9 +41,9 @@ void main() {
       {'title': 'GET /users/456 (500)', 'type': 'network', 'count': 7, 'version': '1.1.0'},
     ]);
     expect(rows.length, 1);
-    expect(rows.single[0], 'GET /users/:id');
-    expect(rows.single[2], '1.1.0');
-    expect(rows.single[3], '12'); // counts summed
+    expect(rows.single.cells[0], 'GET /users/:id');
+    expect(rows.single.cells[2], '1.1.0');
+    expect(rows.single.cells[3], '12');
   });
 
   test('balancedTopIssues guarantees one row per category', () {
@@ -52,7 +52,7 @@ void main() {
       {'title': 'rare crash', 'type': 'crash', 'count': 1},
     ];
     final rows = ReportService.balancedTopIssues(issues, limit: 8);
-    expect(rows.any((r) => r[1] == 'crash'), isTrue);
+    expect(rows.any((r) => r.cells[1] == 'crash'), isTrue);
     expect(rows.length, 8);
   });
 }

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/clipboard.dart';
 import '../utils/nav.dart';
@@ -28,19 +29,37 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   Map<String, dynamic>? _device;
   bool _loading = true;
   bool _refreshing = false;
+  bool _hasData = false;
   Object? _error;
+
+  String get _cacheKey => screenCacheKey(
+        'device-detail',
+        projectId: widget.projectId,
+        extra: {'installId': widget.installId},
+      );
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, dynamic>>(_cacheKey);
+    if (cached == null) return false;
+    _device = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
     setState(() {
       _error = null;
       beginScreenLoad(
-        hasData: _device != null,
+        hasData: _hasData,
         apply: ({required loading, required refreshing, error}) {
           _loading = loading;
           _refreshing = refreshing;
@@ -50,8 +69,10 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     });
     try {
       final device = await _api.fetchDevice(widget.projectId, widget.installId);
+      ScreenCache.instance.write(_cacheKey, device);
       if (mounted) setState(() {
         _device = device;
+        _hasData = true;
         _loading = false;
         _refreshing = false;
       });

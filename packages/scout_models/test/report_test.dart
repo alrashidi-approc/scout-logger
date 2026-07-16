@@ -24,7 +24,7 @@ void main() {
           ],
           tables: [
             ReportTable(title: 'Top issues', columns: ['Issue', 'Count'], rows: [
-              ['Crash A', '5']
+              ReportTableRow(cells: ['Crash A', '5'])
             ]),
           ],
         ),
@@ -35,7 +35,7 @@ void main() {
     expect(back.projectName, 'Acme');
     expect(back.sections.single.kpis.single.deltaPct, -20.0);
     expect(back.sections.single.charts.single.series.single.values, [1, 2]);
-    expect(back.sections.single.tables.single.rows.single, ['Crash A', '5']);
+    expect(back.sections.single.tables.single.rows.single.cells, ['Crash A', '5']);
     expect(ReportType.fromId('release'), ReportType.release);
   });
 }

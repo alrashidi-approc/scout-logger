@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/clipboard.dart';
 import '../utils/nav.dart';
@@ -28,19 +29,37 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Map<String, dynamic>? _user;
   bool _loading = true;
   bool _refreshing = false;
+  bool _hasData = false;
   Object? _error;
+
+  String get _cacheKey => screenCacheKey(
+        'user-detail',
+        projectId: widget.projectId,
+        extra: {'userId': widget.userId},
+      );
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, dynamic>>(_cacheKey);
+    if (cached == null) return false;
+    _user = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
     setState(() {
       _error = null;
       beginScreenLoad(
-        hasData: _user != null,
+        hasData: _hasData,
         apply: ({required loading, required refreshing, error}) {
           _loading = loading;
           _refreshing = refreshing;
@@ -50,8 +69,10 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     });
     try {
       final user = await _api.fetchUser(widget.projectId, widget.userId);
+      ScreenCache.instance.write(_cacheKey, user);
       if (mounted) setState(() {
         _user = user;
+        _hasData = true;
         _loading = false;
         _refreshing = false;
       });

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import 'api_client.dart';
 import 'project_access_service.dart';
+import 'screen_cache.dart';
 
 class AuthService extends ChangeNotifier {
   AuthService._();
@@ -153,6 +154,7 @@ class AuthService extends ChangeNotifier {
     _token = null;
     _user = null;
     ProjectAccessService.instance.clear();
+    ScreenCache.instance.clear();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     if (!silent) notifyListeners();

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -32,10 +33,23 @@ class _SessionsScreenState extends State<SessionsScreen> {
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
+  String get _cacheKey => screenCacheKey('sessions', projectId: widget.projectId, period: _period);
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<List<Map<String, dynamic>>>(_cacheKey);
+    if (cached == null) return false;
+    _sessions = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
@@ -52,6 +66,7 @@ class _SessionsScreenState extends State<SessionsScreen> {
     });
     try {
       final sessions = await _api.fetchSessions(widget.projectId, period: _period, limit: 100);
+      ScreenCache.instance.write(_cacheKey, sessions);
       if (mounted) setState(() {
         _sessions = sessions;
         _hasData = true;
@@ -73,7 +88,11 @@ class _SessionsScreenState extends State<SessionsScreen> {
   void _setPeriod(PeriodFilter p) {
     _period = p;
     context.go(Uri(path: '/p/${widget.projectId}/sessions', queryParameters: p.toQuery()).toString());
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   String _fmtDur(dynamic ms) {

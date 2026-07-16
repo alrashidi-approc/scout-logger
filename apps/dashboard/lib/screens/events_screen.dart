@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../widgets/event_card.dart';
 import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
@@ -71,6 +72,22 @@ class _EventsScreenState extends State<EventsScreen> {
   String? _appVersion;
   String? _deviceName;
 
+  String get _cacheKey => screenCacheKey(
+        'events',
+        projectId: widget.projectId,
+        period: _period,
+        extra: {
+          'type': _kindFilter,
+          'level': _levelFilter,
+          'category': _categoryFilter,
+          'q': _search.isEmpty ? null : _search,
+          'country': _country,
+          'environment': _environment,
+          'appVersion': _appVersion,
+          'device': _deviceName,
+        },
+      );
+
   static const _levelOptions = [null, 'error', 'info', 'warning', 'success'];
   static const _kindOptions = [null, 'errors', 'error', 'crash', 'network', 'session', 'log', 'span'];
   static const _categoryOptions = [null, 'network', 'system', 'crashing', 'logic', 'ui'];
@@ -88,7 +105,38 @@ class _EventsScreenState extends State<EventsScreen> {
     _appVersion = widget.initialAppVersion;
     _deviceName = widget.initialDeviceName;
     _offset = widget.initialOffset;
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, Object>>(_cacheKey);
+    if (cached == null) return false;
+    final events = cached['events'];
+    if (events is! List) return false;
+    _events = events.cast<Map<String, dynamic>>();
+    _offset = cached['offset'] as int? ?? 0;
+    _total = cached['total'] as int? ?? _events.length;
+    _hasMore = cached['hasMore'] == true;
+    _environments = (cached['environments'] as List?)?.cast<String>() ?? [];
+    _appVersions = (cached['appVersions'] as List?)?.cast<String>() ?? [];
+    _deviceNames = (cached['deviceNames'] as List?)?.cast<String>() ?? [];
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    ScreenCache.instance.write(_cacheKey, {
+      'events': _events,
+      'offset': _offset,
+      'total': _total,
+      'hasMore': _hasMore,
+      'environments': _environments,
+      'appVersions': _appVersions,
+      'deviceNames': _deviceNames,
+    });
   }
 
   @override
@@ -151,6 +199,7 @@ class _EventsScreenState extends State<EventsScreen> {
         _loading = false;
         _refreshing = false;
       });
+      _writeCache();
       _loadFacets();
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
@@ -179,6 +228,7 @@ class _EventsScreenState extends State<EventsScreen> {
         _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
         _deviceNames = (facets['deviceNames'] as List?)?.map((e) => e.toString()).toList() ?? [];
       });
+      _writeCache();
     } catch (_) {}
   }
 
@@ -220,7 +270,11 @@ class _EventsScreenState extends State<EventsScreen> {
       _offset = 0;
     });
     _syncUrl();
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _page(int offset) {
@@ -256,7 +310,7 @@ class _EventsScreenState extends State<EventsScreen> {
     return Stack(
       children: [
         RefreshIndicator(
-          onRefresh: () => _load(),
+          onRefresh: () => _load(resetOffset: true),
           child: CustomScrollView(
             key: PageStorageKey('events-${widget.projectId}'),
             controller: _scroll,
@@ -270,7 +324,7 @@ class _EventsScreenState extends State<EventsScreen> {
                     subtitle: _filterSummary(),
                     period: _period,
                     onPeriodTap: _openPeriodPicker,
-                    actions: [IconButton(onPressed: () => _load(), icon: const Icon(Icons.refresh))],
+                    actions: [IconButton(onPressed: () => _load(resetOffset: true), icon: const Icon(Icons.refresh))],
                   ),
                 ),
               ),

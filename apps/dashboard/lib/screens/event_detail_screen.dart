@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/event_view.dart';
 import '../utils/nav.dart';
@@ -45,8 +46,17 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
   Map<String, dynamic>? _event;
   bool _loading = true;
   bool _refreshing = false;
+  bool _hasData = false;
   bool _sharing = false;
   Object? _error;
+
+  String? get _cacheKey => widget.shared
+      ? null
+      : screenCacheKey(
+          'event-detail',
+          projectId: widget.projectId,
+          extra: {'eventId': widget.eventId},
+        );
 
   @override
   void initState() {
@@ -54,16 +64,30 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     if (widget.initialEvent != null) {
       _event = widget.initialEvent;
       _loading = false;
-    } else {
+      _hasData = true;
+    } else if (!_restore()) {
       _load();
     }
+  }
+
+  bool _restore() {
+    final key = _cacheKey;
+    if (key == null) return false;
+    final cached = ScreenCache.instance.read<Map<String, dynamic>>(key);
+    if (cached == null) return false;
+    _event = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
     setState(() {
       _error = null;
       beginScreenLoad(
-        hasData: _event != null,
+        hasData: _hasData,
         apply: ({required loading, required refreshing, error}) {
           _loading = loading;
           _refreshing = refreshing;
@@ -73,11 +97,13 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
     });
     try {
       final event = await _api.fetchEvent(widget.projectId, widget.eventId);
+      final key = _cacheKey;
+      if (key != null) ScreenCache.instance.write(key, event);
       if (mounted) {
         setState(() {
           _event = event;
+          _hasData = true;
           _loading = false;
-
           _refreshing = false;
         });
       }

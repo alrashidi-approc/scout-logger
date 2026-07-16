@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
@@ -25,10 +26,27 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
   Object? _error;
   String? _level;
 
+  String get _cacheKey => screenCacheKey(
+        'dashboard-logs',
+        projectId: widget.projectId,
+        extra: _level != null ? {'level': _level} : null,
+      );
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<List<Map<String, dynamic>>>(_cacheKey);
+    if (cached == null) return false;
+    _logs = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
@@ -45,6 +63,7 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
     });
     try {
       final logs = await _api.fetchDashboardLogs(widget.projectId, level: _level);
+      ScreenCache.instance.write(_cacheKey, logs);
       if (mounted) {
         setState(() {
           _logs = logs;
@@ -100,7 +119,8 @@ class _DashboardLogsScreenState extends State<DashboardLogsScreen> {
                   selected: _level == lvl,
                   onSelected: (_) {
                     setState(() => _level = lvl);
-                    _load();
+                    if (_restore()) setState(() {});
+                    else _load();
                   },
                 ),
             ],

@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_card.dart';
 import '../widgets/level_badge.dart';
@@ -34,17 +35,32 @@ class IssueDetailScreen extends StatefulWidget {
   State<IssueDetailScreen> createState() => _IssueDetailScreenState();
 }
 
+class _IssueDetailCache {
+  const _IssueDetailCache({required this.issue, required this.members});
+  final Map<String, dynamic> issue;
+  final List<Map<String, dynamic>> members;
+}
+
 class _IssueDetailScreenState extends State<IssueDetailScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _issue;
   bool _loading = true;
   bool _refreshing = false;
+  bool _hasData = false;
   bool _updating = false;
   bool _sharing = false;
   bool _addingNote = false;
   List<Map<String, dynamic>> _members = [];
   final _noteCtrl = TextEditingController();
   Object? _error;
+
+  String? get _cacheKey => widget.shared
+      ? null
+      : screenCacheKey(
+          'issue-detail',
+          projectId: widget.projectId,
+          extra: {'issueId': widget.issueId},
+        );
 
   @override
   void dispose() {
@@ -58,16 +74,43 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     if (widget.initialIssue != null) {
       _issue = widget.initialIssue;
       _loading = false;
-    } else {
+      _hasData = true;
+    } else if (!_restore()) {
       _load();
     }
+  }
+
+  bool _restore() {
+    final key = _cacheKey;
+    if (key == null) return false;
+    final cached = ScreenCache.instance.read<_IssueDetailCache>(key);
+    if (cached == null) return false;
+    _issue = cached.issue;
+    _members = cached.members;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    final key = _cacheKey;
+    final issue = _issue;
+    if (key == null || issue == null) return;
+    ScreenCache.instance.write(key, _IssueDetailCache(issue: issue, members: _members));
+  }
+
+  void _invalidateIssueLists() {
+    ScreenCache.instance.invalidatePrefix('issues|${widget.projectId}');
+    ScreenCache.instance.invalidatePrefix('overview|${widget.projectId}');
   }
 
   Future<void> _load() async {
     setState(() {
       _error = null;
       beginScreenLoad(
-        hasData: _issue != null,
+        hasData: _hasData,
         apply: ({required loading, required refreshing, error}) {
           _loading = loading;
           _refreshing = refreshing;
@@ -77,17 +120,20 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     });
     try {
       final issue = await _api.fetchIssue(widget.projectId, widget.issueId);
-      if (!widget.shared && _members.isEmpty) {
+      var members = _members;
+      if (!widget.shared && members.isEmpty) {
         try {
-          _members = await _api.fetchAssignableMembers(widget.projectId);
+          members = await _api.fetchAssignableMembers(widget.projectId);
         } catch (_) {}
       }
       if (mounted) setState(() {
         _issue = issue;
+        _members = members;
+        _hasData = true;
         _loading = false;
-
         _refreshing = false;
       });
+      _writeCache();
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
@@ -108,6 +154,8 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           _issue = issue;
           _updating = false;
         });
+        _writeCache();
+        _invalidateIssueLists();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(switch (status) {
             'resolved' => 'Issue marked resolved',
@@ -132,6 +180,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
         _issue = issue;
         _updating = false;
       });
+      _writeCache();
     } catch (e) {
       if (mounted) {
         setState(() => _updating = false);
@@ -152,6 +201,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           _noteCtrl.clear();
           _addingNote = false;
         });
+        _writeCache();
       }
     } catch (e) {
       if (mounted) {

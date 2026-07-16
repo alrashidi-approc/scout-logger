@@ -5,6 +5,7 @@ import 'package:scout_models/scout_models.dart';
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/project_roles.dart';
@@ -20,6 +21,36 @@ class ProjectSettingsScreen extends StatefulWidget {
 
   @override
   State<ProjectSettingsScreen> createState() => _ProjectSettingsScreenState();
+}
+
+class _ProjectSettingsCache {
+  const _ProjectSettingsCache({
+    required this.role,
+    required this.members,
+    required this.sdkHealth,
+    required this.configVersion,
+    required this.levels,
+    required this.flutterHooks,
+    required this.trackNavigation,
+    required this.networkBodies,
+    required this.slowThresholdMs,
+    required this.ignoreCodes,
+    required this.networkLogScope,
+    required this.faultEdits,
+  });
+
+  final String? role;
+  final List<Map<String, dynamic>> members;
+  final Map<String, dynamic> sdkHealth;
+  final int configVersion;
+  final Set<String> levels;
+  final bool flutterHooks;
+  final bool trackNavigation;
+  final bool networkBodies;
+  final int slowThresholdMs;
+  final Set<int> ignoreCodes;
+  final String networkLogScope;
+  final Map<int, String> faultEdits;
 }
 
 class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
@@ -50,6 +81,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   bool _addingMember = false;
   Map<String, dynamic> _sdkHealth = {};
 
+  String get _cacheKey => screenCacheKey('project-settings', projectId: widget.projectId);
+
   @override
   void dispose() {
     _ignoreCodesCtrl.dispose();
@@ -62,7 +95,50 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<_ProjectSettingsCache>(_cacheKey);
+    if (cached == null) return false;
+    _role = cached.role;
+    _members = cached.members;
+    _sdkHealth = cached.sdkHealth;
+    _configVersion = cached.configVersion;
+    _levels = cached.levels;
+    _flutterHooks = cached.flutterHooks;
+    _trackNavigation = cached.trackNavigation;
+    _networkBodies = cached.networkBodies;
+    _slowThresholdMs = cached.slowThresholdMs;
+    _ignoreCodes = cached.ignoreCodes;
+    _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
+    _networkLogScope = cached.networkLogScope;
+    _faultEdits = cached.faultEdits;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    ScreenCache.instance.write(
+      _cacheKey,
+      _ProjectSettingsCache(
+        role: _role,
+        members: _members,
+        sdkHealth: _sdkHealth,
+        configVersion: _configVersion,
+        levels: _levels,
+        flutterHooks: _flutterHooks,
+        trackNavigation: _trackNavigation,
+        networkBodies: _networkBodies,
+        slowThresholdMs: _slowThresholdMs,
+        ignoreCodes: _ignoreCodes,
+        networkLogScope: _networkLogScope,
+        faultEdits: _faultEdits,
+      ),
+    );
   }
 
   Future<void> _load() async {
@@ -125,6 +201,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
 
           _refreshing = false;
         });
+        _writeCache();
       }
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
@@ -159,6 +236,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _configVersion = settings['configVersion'] as int? ?? _configVersion + 1;
           _saving = false;
         });
+        _writeCache();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Settings saved — apps pick this up on next launch or resume')),
         );
@@ -226,6 +304,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _memberPasswordCtrl.clear();
           _addingMember = false;
         });
+        _writeCache();
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added ${member['email']}')));
       }
     } catch (e) {
@@ -244,6 +323,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         final i = _members.indexWhere((m) => m['userId'] == userId);
         if (i >= 0) _members[i] = member;
       });
+      _writeCache();
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
@@ -266,6 +346,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       await _api.removeProjectMember(widget.projectId, member['userId'] as String);
       if (mounted) {
         setState(() => _members.removeWhere((m) => m['userId'] == member['userId']));
+        _writeCache();
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));

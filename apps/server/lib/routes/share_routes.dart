@@ -73,6 +73,25 @@ Handler shareRoutes(ScoutStore store) {
         );
       }
 
+      if (type == 'report') {
+        final raw = meta['payload'];
+        final payload = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : raw is String
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+                : <String, dynamic>{};
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'type': 'report',
+            'projectName': projectName,
+            'report': payload,
+            'expiresAt': meta['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       final rid = meta['resourceId'] as String;
 
       if (type == 'event') {

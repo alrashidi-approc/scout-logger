@@ -1172,7 +1172,7 @@ class ScoutStore {
     final conn = await db.connect();
     final top = await conn.execute(
       Sql.named('''
-        SELECT i.title, i.type, COUNT(e.id)::int AS c,
+        SELECT i.id, i.title, i.type, COUNT(e.id)::int AS c,
           (SELECT v.app_ver FROM (
               SELECT ${sqlAppVersionExpr(alias: 'e2')} AS app_ver,
                      COUNT(*)::int AS vc
@@ -1205,10 +1205,11 @@ class ScoutStore {
     return (
       issues: top
           .map((r) => {
-                'title': r[0],
-                'type': r[1],
-                'count': r[2],
-                'version': r[3] as String?,
+                'id': r[0],
+                'title': r[1],
+                'type': r[2],
+                'count': r[3],
+                'version': r[4] as String?,
               })
           .toList(),
       regressions: (counts.first[0] as int?) ?? 0,
@@ -1451,6 +1452,11 @@ class ScoutStore {
   Future<Map<String, dynamic>> sdkHealth(String projectId, {TimeWindow? window}) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(7);
+    // Full SDK health scans JSON on every event — too slow for Overview. Use a cheap signal.
+    if (preferIdentityRollups(w)) {
+      // Skip expensive JSON coverage scan on Overview (was a major wait).
+      return const <String, dynamic>{};
+    }
     final tp = timeParams(w);
 
     final totals = await conn.execute(
@@ -2242,6 +2248,32 @@ class ScoutStore {
         'rid': dedupKey,
         'hash': hashToken(token),
         'exp': expiresAt,
+        'payload': jsonEncode(payload),
+      },
+    );
+    return {'token': token, 'expiresAt': expiresAt.toIso8601String()};
+  }
+
+  Future<Map<String, dynamic>> createReportShareToken({
+    required String projectId,
+    required Map<String, dynamic> payload,
+    String? createdBy,
+    int expiresInDays = 30,
+  }) async {
+    final token = newToken();
+    final expiresAt = DateTime.now().toUtc().add(Duration(days: expiresInDays.clamp(1, 365)));
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, created_by, payload)
+        VALUES (@id, @pid, 'report', @pid, @hash, @exp, @uid, @payload::jsonb)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'hash': hashToken(token),
+        'exp': expiresAt,
+        'uid': createdBy,
         'payload': jsonEncode(payload),
       },
     );

@@ -13,7 +13,86 @@ Future<List<Map<String, dynamic>>> fetchEventTrend(
   bool includeUsers = false,
 }) async {
   if (w.usesHourlyTrend) return _hourlyTrend(conn, projectId, w, includeUsers: includeUsers);
+  if (preferIdentityRollups(w)) {
+    return _dailyTrendFromRollups(conn, projectId, w, includeUsers: includeUsers);
+  }
   return _dailyTrend(conn, projectId, w, includeUsers: includeUsers);
+}
+
+Future<List<Map<String, dynamic>>> _dailyTrendFromRollups(
+  Connection conn,
+  String projectId,
+  TimeWindow w, {
+  required bool includeUsers,
+}) async {
+  final dp = dateParams(w);
+  final rows = await conn.execute(
+    Sql.named('''
+      SELECT date,
+             COALESCE(SUM(events_total), 0)::int,
+             COALESCE(SUM(errors), 0)::int,
+             COALESCE(SUM(crashes), 0)::int
+      FROM daily_stats
+      WHERE project_id = @pid
+        AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+        AND (@untilDate::date IS NULL OR date < @untilDate::date)
+      GROUP BY date
+      ORDER BY date
+    '''),
+    parameters: {'pid': projectId, ...dp},
+  );
+
+  Map<String, int>? usersByDay;
+  Map<String, int>? guestsByDay;
+  if (includeUsers) {
+    final users = await conn.execute(
+      Sql.named('''
+        SELECT date, COUNT(DISTINCT user_id)::int
+        FROM user_daily_stats
+        WHERE project_id = @pid
+          AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+          AND (@untilDate::date IS NULL OR date < @untilDate::date)
+        GROUP BY date
+      '''),
+      parameters: {'pid': projectId, ...dp},
+    );
+    usersByDay = {
+      for (final r in users) (r[0] as DateTime).toIso8601String().substring(0, 10): r[1] as int,
+    };
+    final guests = await conn.execute(
+      Sql.named('''
+        SELECT date, COUNT(DISTINCT install_id)::int
+        FROM device_daily_stats
+        WHERE project_id = @pid
+          AND guest_event_count > 0
+          AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+          AND (@untilDate::date IS NULL OR date < @untilDate::date)
+        GROUP BY date
+      '''),
+      parameters: {'pid': projectId, ...dp},
+    );
+    guestsByDay = {
+      for (final r in guests) (r[0] as DateTime).toIso8601String().substring(0, 10): r[1] as int,
+    };
+  }
+
+  return rows.map((r) {
+    final day = (r[0] as DateTime).toIso8601String().substring(0, 10);
+    final events = r[1] as int;
+    final errors = r[2] as int;
+    return {
+      'date': day,
+      'events': events,
+      'errors': errors,
+      'crashes': r[3],
+      if (includeUsers) ...{
+        'success': (events - errors).clamp(0, events),
+        'users': usersByDay?[day] ?? 0,
+        'loggedInUsers': usersByDay?[day] ?? 0,
+        'guestDevices': guestsByDay?[day] ?? 0,
+      },
+    };
+  }).toList();
 }
 
 Future<List<Map<String, dynamic>>> _hourlyTrend(

@@ -188,9 +188,28 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['stats']);
   }
 
-  Future<Report> fetchReport(String projectId, String type, {PeriodFilter? period}) async {
-    final uri = _uri('/api/projects/$projectId/reports/$type').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+  Future<Report> fetchReport(String projectId, String type, {PeriodFilter? period, ReportAudience? audience}) async {
+    final params = <String, String>{...(period ?? const PeriodFilter.days(30)).toQuery()};
+    if (audience != null) params['audience'] = audience.id;
+    final uri = _uri('/api/projects/$projectId/reports/$type').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return Report.fromJson(jsonMap((jsonDecode(res.body) as Map)['report']));
+  }
+
+  Future<Report> exportReport(
+    String projectId,
+    String type, {
+    PeriodFilter? period,
+    required ReportAudience audience,
+    int expiresInDays = 30,
+  }) async {
+    final uri = _uri('/api/projects/$projectId/reports/$type/export').replace(queryParameters: (period ?? const PeriodFilter.days(30)).toQuery());
+    final res = await _client.post(
+      uri,
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({'audience': audience.id, 'expiresInDays': expiresInDays}),
+    );
     _ok(res);
     return Report.fromJson(jsonMap((jsonDecode(res.body) as Map)['report']));
   }

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/country_centroids.dart';
 import '../utils/date_range.dart';
@@ -36,10 +37,23 @@ class _GeoScreenState extends State<GeoScreen> {
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
+  String get _cacheKey => screenCacheKey('geo', projectId: widget.projectId, period: _period);
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<List<Map<String, dynamic>>>(_cacheKey);
+    if (cached == null) return false;
+    _geo = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
@@ -56,11 +70,11 @@ class _GeoScreenState extends State<GeoScreen> {
     });
     try {
       final geo = await _api.fetchGeo(widget.projectId, period: _period);
+      ScreenCache.instance.write(_cacheKey, geo);
       if (mounted) setState(() {
         _geo = geo;
         _hasData = true;
         _loading = false;
-
         _refreshing = false;
       });
     } catch (e) {
@@ -77,7 +91,11 @@ class _GeoScreenState extends State<GeoScreen> {
   void _setPeriod(PeriodFilter p) {
     _period = p;
     context.go(Uri(path: '/p/${widget.projectId}/geo', queryParameters: p.toQuery()).toString());
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _focusCountryOnMap(String code) {

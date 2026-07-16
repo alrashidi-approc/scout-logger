@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_detail_widgets.dart';
 import '../utils/nav.dart';
@@ -27,19 +28,37 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
   Map<String, dynamic>? _session;
   bool _loading = true;
   bool _refreshing = false;
+  bool _hasData = false;
   Object? _error;
+
+  String get _cacheKey => screenCacheKey(
+        'session-detail',
+        projectId: widget.projectId,
+        extra: {'sessionId': widget.sessionId},
+      );
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, dynamic>>(_cacheKey);
+    if (cached == null) return false;
+    _session = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
     setState(() {
       _error = null;
       beginScreenLoad(
-        hasData: _session != null,
+        hasData: _hasData,
         apply: ({required loading, required refreshing, error}) {
           _loading = loading;
           _refreshing = refreshing;
@@ -49,10 +68,11 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
     });
     try {
       final session = await _api.fetchSessionTimeline(widget.projectId, widget.sessionId);
+      ScreenCache.instance.write(_cacheKey, session);
       if (mounted) setState(() {
         _session = session;
+        _hasData = true;
         _loading = false;
-
         _refreshing = false;
       });
     } catch (e) {

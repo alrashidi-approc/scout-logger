@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -39,6 +40,8 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
+  String get _cacheKey => screenCacheKey('analytics', projectId: widget.projectId, period: _period);
+
   @override
   void initState() {
     super.initState();
@@ -46,13 +49,47 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
     if (tab == 'sessions') _tabs.index = 3;
     else if (tab == 'releases') _tabs.index = 2;
     else if (tab == 'retention') _tabs.index = 1;
-    _load();
+    if (!_restore()) _load();
   }
 
   @override
   void dispose() {
     _tabs.dispose();
     super.dispose();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, Object>>(_cacheKey);
+    if (cached == null) return false;
+    final routes = cached['routes'];
+    final funnelSteps = cached['funnelSteps'];
+    final funnel = cached['funnel'];
+    final retention = cached['retention'];
+    final releases = cached['releases'];
+    final sessions = cached['sessions'];
+    if (routes is! List || funnelSteps is! List || releases is! List || sessions is! List) return false;
+    _routes = routes.cast<String>();
+    _funnelSteps = funnelSteps.cast<String>();
+    _funnel = funnel is Map ? Map<String, dynamic>.from(funnel) : null;
+    _retention = retention is Map ? Map<String, dynamic>.from(retention) : null;
+    _releases = releases.cast<Map<String, dynamic>>();
+    _sessions = sessions.cast<Map<String, dynamic>>();
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    ScreenCache.instance.write(_cacheKey, {
+      'routes': _routes,
+      'funnelSteps': _funnelSteps,
+      'funnel': _funnel,
+      'retention': _retention,
+      'releases': _releases,
+      'sessions': _sessions,
+    });
   }
 
   Future<void> _load() async {
@@ -84,6 +121,7 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
 
           _refreshing = false;
         });
+        _writeCache();
         if (_funnelSteps.isNotEmpty) await _runFunnel();
       }
     } catch (e) {
@@ -101,7 +139,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
     if (_funnelSteps.isEmpty) return;
     try {
       final funnel = await _api.fetchFunnel(widget.projectId, _funnelSteps, period: _period);
-      if (mounted) setState(() => _funnel = funnel);
+      if (mounted) {
+        setState(() => _funnel = funnel);
+        _writeCache();
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
     }
@@ -112,7 +153,11 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
     final tab = GoRouterState.of(context).uri.queryParameters['tab'];
     final q = {...p.toQuery(), if (tab != null && tab.isNotEmpty) 'tab': tab};
     context.go(Uri(path: '/p/${widget.projectId}/analytics', queryParameters: q).toString());
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);

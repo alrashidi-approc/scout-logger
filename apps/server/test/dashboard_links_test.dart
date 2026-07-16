@@ -38,7 +38,7 @@ void main() {
     );
     expect(
       url,
-      'http://46.62.217.25:8081/scout/dashboard/p/proj1/events?hours=1&type=crash',
+      'http://46.62.217.25:8081/scout/dashboard/p/proj1/events?hours=1&type=crash&environment=production',
     );
   });
 }

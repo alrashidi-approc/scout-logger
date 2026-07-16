@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
@@ -12,6 +13,7 @@ import '../widgets/stat_card.dart';
 import '../utils/date_range.dart';
 import '../utils/issue_view.dart';
 import '../utils/responsive.dart';
+import '../utils/screen_load.dart';
 import '../widgets/panel.dart';
 import '../widgets/trend_chart.dart';
 
@@ -29,31 +31,61 @@ class _StatsScreenState extends State<StatsScreen> {
   final _api = ScoutApi();
   Map<String, dynamic>? _data;
   bool _loading = true;
+  bool _refreshing = false;
+  bool _hasData = false;
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
+
+  String get _cacheKey => screenCacheKey(
+        'stats',
+        projectId: widget.projectId,
+        period: _period,
+      );
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, dynamic>>(_cacheKey);
+    if (cached == null) return false;
+    _data = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
     setState(() {
-      _loading = true;
       _error = null;
+      beginScreenLoad(
+        hasData: _hasData,
+        apply: ({required loading, required refreshing, error}) {
+          _loading = loading;
+          _refreshing = refreshing;
+          _error = error;
+        },
+      );
     });
     try {
       final data = await _api.fetchStats(widget.projectId, period: _period);
+      ScreenCache.instance.write(_cacheKey, data);
       if (mounted) setState(() {
         _data = data;
+        _hasData = true;
         _loading = false;
+        _refreshing = false;
       });
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
         _error = e;
         _loading = false;
+        _refreshing = false;
       });
     }
   }
@@ -61,7 +93,8 @@ class _StatsScreenState extends State<StatsScreen> {
   void _setPeriod(PeriodFilter p) {
     _period = p;
     context.go(Uri(path: '/p/${widget.projectId}', queryParameters: p.toQuery()).toString());
-    _load();
+    if (_restore()) setState(() {});
+    else _load();
   }
 
   double _delta(String key) {
@@ -76,6 +109,7 @@ class _StatsScreenState extends State<StatsScreen> {
   Widget build(BuildContext context) {
     return AsyncScreenBody(
       loading: _loading && _data == null,
+      refreshing: _refreshing,
       error: _error,
       onRetry: _load,
       builder: _buildContent,

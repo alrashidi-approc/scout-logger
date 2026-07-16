@@ -10,6 +10,8 @@ import '../utils/clipboard.dart';
 import '../utils/share_seo.dart';
 import '../theme/app_theme.dart';
 import '../widgets/page_placeholder.dart';
+import '../widgets/shared_report_view.dart';
+import 'package:scout_models/scout_models.dart';
 
 final _shareTokenRe = RegExp(r'^[a-zA-Z0-9_-]{20,128}$');
 
@@ -28,6 +30,7 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
   Map<String, dynamic>? _event;
   Map<String, dynamic>? _issue;
   Map<String, dynamic>? _alertData;
+  Report? _report;
   String? _expiresAt;
   bool _loading = true;
   bool _invalid = false;
@@ -62,6 +65,14 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
         setState(() {
           _type = type;
           _alertData = res;
+          _expiresAt = res['expiresAt'] as String?;
+          _loading = false;
+        });
+      } else if (type == 'report') {
+        final raw = res['report'];
+        setState(() {
+          _type = type;
+          _report = raw is Map ? Report.fromJson(Map<String, dynamic>.from(raw)) : null;
           _expiresAt = res['expiresAt'] as String?;
           _loading = false;
         });
@@ -111,6 +122,18 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
     }
     if (_type == 'alert' && _alertData != null) {
       return SharedAlertScreen(token: widget.token, data: _alertData!);
+    }
+    if (_type == 'report' && _report != null) {
+      return Material(
+        color: AppTheme.bg,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SharedBanner(shareUrl: _shareUrl, expiresAt: _expiresAt, onCopy: () => _copyLink(context)),
+            Expanded(child: SharedReportView(report: _report!)),
+          ],
+        ),
+      );
     }
     return Material(
       color: AppTheme.bg,

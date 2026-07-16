@@ -4,6 +4,7 @@ import 'package:scout_models/scout_models.dart';
 
 import '../services/api_client.dart';
 import '../services/project_access_service.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/notification_deliveries.dart';
 import '../utils/responsive.dart';
@@ -25,6 +26,21 @@ class ProjectNotificationsScreen extends StatefulWidget {
 
   @override
   State<ProjectNotificationsScreen> createState() => _ProjectNotificationsScreenState();
+}
+
+class _ProjectNotificationsCache {
+  const _ProjectNotificationsCache({
+    required this.cfg,
+    required this.facets,
+    required this.deliveries,
+    required this.summary,
+    required this.isOwner,
+  });
+  final Map<String, dynamic> cfg;
+  final Map<String, dynamic> facets;
+  final List<Map<String, dynamic>> deliveries;
+  final Map<String, dynamic> summary;
+  final bool isOwner;
 }
 
 class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen> {
@@ -81,6 +97,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   List<Map<String, dynamic>> _deliveries = [];
   Map<String, dynamic> _summary = {};
 
+  String get _cacheKey => screenCacheKey('project-notifications', projectId: widget.projectId);
+
   @override
   void dispose() {
     _slackWebhookCtrl.dispose();
@@ -96,7 +114,34 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<_ProjectNotificationsCache>(_cacheKey);
+    if (cached == null) return false;
+    _applyConfig(cached.cfg, cached.facets);
+    _deliveries = cached.deliveries;
+    _summary = cached.summary;
+    _isOwner = cached.isOwner;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache(Map<String, dynamic> cfg, Map<String, dynamic> facets) {
+    ScreenCache.instance.write(
+      _cacheKey,
+      _ProjectNotificationsCache(
+        cfg: cfg,
+        facets: facets,
+        deliveries: _deliveries,
+        summary: _summary,
+        isOwner: _isOwner,
+      ),
+    );
   }
 
   Future<void> _load() async {
@@ -126,7 +171,6 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       _applyConfig(cfg, facets);
       if (mounted) {
         setState(() {
-          // API only returns config for owners/admins — trust that, not a stale role cache.
           _isOwner = true;
           _deliveries = deliveries;
           _summary = summary;
@@ -134,6 +178,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           _loading = false;
           _refreshing = false;
         });
+        _writeCache(cfg, facets);
       }
     } catch (e) {
       if (mounted) {
@@ -283,7 +328,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     setState(() => _saving = true);
     try {
       final cfg = await _api.updateProjectNotifications(widget.projectId, _buildPatch());
-      _applyConfig(cfg, await _api.fetchFilterFacets(widget.projectId));
+      final facets = await _api.fetchFilterFacets(widget.projectId);
+      _applyConfig(cfg, facets);
       _slackWebhookCtrl.clear();
       _waPhoneCtrl.clear();
       _waKeyCtrl.clear();
@@ -292,6 +338,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       _smtpFromCtrl.clear();
       if (mounted) {
         setState(() => _saving = false);
+        _writeCache(cfg, facets);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Alert settings saved')));
       }
     } catch (e) {

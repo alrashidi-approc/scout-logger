@@ -1,14 +1,11 @@
 /// Render-agnostic report shapes shared by the server (assembly) and the
-/// dashboard (on-screen render + PDF export). Kept deliberately flat so new
-/// report types only need to emit different sections.
+/// dashboard (on-screen render + PDF export).
 
 class ReportKpi {
   const ReportKpi({required this.label, required this.value, this.deltaPct});
 
   final String label;
   final String value;
-
-  /// Percentage change vs the previous period (drives ▲▼ coloring). Null hides it.
   final double? deltaPct;
 
   Map<String, dynamic> toJson() => {
@@ -46,7 +43,6 @@ class ReportChart {
     required this.series,
   });
 
-  /// `line` or `bar`.
   final String kind;
   final String title;
   final List<String> xLabels;
@@ -71,21 +67,63 @@ class ReportChart {
       );
 }
 
+class ReportTableRow {
+  const ReportTableRow({required this.cells, this.linkUrl, this.issueId});
+
+  final List<String> cells;
+  final String? linkUrl;
+  final String? issueId;
+
+  Map<String, dynamic> toJson() => {
+        'cells': cells,
+        if (linkUrl != null) 'linkUrl': linkUrl,
+        if (issueId != null) 'issueId': issueId,
+      };
+
+  factory ReportTableRow.fromJson(dynamic raw) {
+    if (raw is Map) {
+      final j = Map<String, dynamic>.from(raw);
+      return ReportTableRow(
+        cells: ((j['cells'] as List?) ?? const []).map((e) => '$e').toList(),
+        linkUrl: j['linkUrl'] as String?,
+        issueId: j['issueId'] as String?,
+      );
+    }
+    return ReportTableRow(cells: (raw as List).map((e) => '$e').toList());
+  }
+}
+
 class ReportTable {
   const ReportTable({required this.title, required this.columns, required this.rows});
 
   final String title;
   final List<String> columns;
-  final List<List<String>> rows;
+  final List<ReportTableRow> rows;
 
-  Map<String, dynamic> toJson() => {'title': title, 'columns': columns, 'rows': rows};
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'columns': columns,
+        'rows': rows.map((r) => r.toJson()).toList(),
+      };
 
   factory ReportTable.fromJson(Map<String, dynamic> j) => ReportTable(
         title: j['title'] as String? ?? '',
         columns: ((j['columns'] as List?) ?? const []).map((e) => '$e').toList(),
-        rows: ((j['rows'] as List?) ?? const [])
-            .map((r) => ((r as List?) ?? const []).map((e) => '$e').toList())
-            .toList(),
+        rows: ((j['rows'] as List?) ?? const []).map(ReportTableRow.fromJson).toList(),
+      );
+}
+
+class ReportHighlight {
+  const ReportHighlight({required this.text, this.severity = 'info'});
+
+  final String text;
+  final String severity;
+
+  Map<String, dynamic> toJson() => {'text': text, 'severity': severity};
+
+  factory ReportHighlight.fromJson(Map<String, dynamic> j) => ReportHighlight(
+        text: j['text'] as String? ?? '',
+        severity: j['severity'] as String? ?? 'info',
       );
 }
 
@@ -132,6 +170,13 @@ class Report {
     required this.to,
     required this.generatedAt,
     required this.sections,
+    this.audience,
+    this.audienceLabel,
+    this.verdict,
+    this.verdictLabel,
+    this.highlights = const [],
+    this.snapshotUrl,
+    this.goNoGo,
   });
 
   final String type;
@@ -141,6 +186,13 @@ class Report {
   final DateTime to;
   final DateTime generatedAt;
   final List<ReportSection> sections;
+  final String? audience;
+  final String? audienceLabel;
+  final String? verdict;
+  final String? verdictLabel;
+  final List<ReportHighlight> highlights;
+  final String? snapshotUrl;
+  final String? goNoGo;
 
   Map<String, dynamic> toJson() => {
         'type': type,
@@ -150,6 +202,13 @@ class Report {
         'to': to.toIso8601String(),
         'generatedAt': generatedAt.toIso8601String(),
         'sections': sections.map((s) => s.toJson()).toList(),
+        if (audience != null) 'audience': audience,
+        if (audienceLabel != null) 'audienceLabel': audienceLabel,
+        if (verdict != null) 'verdict': verdict,
+        if (verdictLabel != null) 'verdictLabel': verdictLabel,
+        if (highlights.isNotEmpty) 'highlights': highlights.map((h) => h.toJson()).toList(),
+        if (snapshotUrl != null) 'snapshotUrl': snapshotUrl,
+        if (goNoGo != null) 'goNoGo': goNoGo,
       };
 
   factory Report.fromJson(Map<String, dynamic> j) => Report(
@@ -162,6 +221,15 @@ class Report {
         sections: ((j['sections'] as List?) ?? const [])
             .map((e) => ReportSection.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList(),
+        audience: j['audience'] as String?,
+        audienceLabel: j['audienceLabel'] as String?,
+        verdict: j['verdict'] as String?,
+        verdictLabel: j['verdictLabel'] as String?,
+        highlights: ((j['highlights'] as List?) ?? const [])
+            .map((e) => ReportHighlight.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList(),
+        snapshotUrl: j['snapshotUrl'] as String?,
+        goNoGo: j['goNoGo'] as String?,
       );
 }
 
@@ -179,4 +247,26 @@ enum ReportType {
     }
     return null;
   }
+}
+
+enum ReportAudience {
+  executive('executive', 'Executive'),
+  engineering('engineering', 'Engineering'),
+  client('client', 'Client'),
+  operations('operations', 'Operations'),
+  qaRelease('qa-release', 'QA / Release');
+
+  const ReportAudience(this.id, this.label);
+  final String id;
+  final String label;
+
+  static ReportAudience? fromId(String? id) {
+    if (id == null || id.isEmpty) return null;
+    for (final a in values) {
+      if (a.id == id) return a;
+    }
+    return null;
+  }
+
+  static ReportAudience fromIdOrDefault(String? id) => fromId(id) ?? ReportAudience.engineering;
 }

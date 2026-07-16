@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../widgets/event_card.dart';
 import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
@@ -68,6 +69,20 @@ class _IssuesScreenState extends State<IssuesScreen> {
   String? _appVersion;
   String? _deviceName;
 
+  String get _cacheKey => screenCacheKey(
+        'issues',
+        projectId: widget.projectId,
+        period: _period,
+        extra: {
+          'type': _typeFilter,
+          'status': _statusFilter,
+          'q': _search.isEmpty ? null : _search,
+          'environment': _environment,
+          'appVersion': _appVersion,
+          'device': _deviceName,
+        },
+      );
+
   @override
   void initState() {
     super.initState();
@@ -78,7 +93,32 @@ class _IssuesScreenState extends State<IssuesScreen> {
     _environment = widget.initialEnvironment;
     _appVersion = widget.initialAppVersion;
     _deviceName = widget.initialDeviceName;
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, Object>>(_cacheKey);
+    if (cached == null) return false;
+    final issues = cached['issues'];
+    if (issues is! List) return false;
+    _issues = issues.cast<Map<String, dynamic>>();
+    _environments = (cached['environments'] as List?)?.cast<String>() ?? [];
+    _appVersions = (cached['appVersions'] as List?)?.cast<String>() ?? [];
+    _deviceNames = (cached['deviceNames'] as List?)?.cast<String>() ?? [];
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    ScreenCache.instance.write(_cacheKey, {
+      'issues': _issues,
+      'environments': _environments,
+      'appVersions': _appVersions,
+      'deviceNames': _deviceNames,
+    });
   }
 
   void _syncUrl() {
@@ -121,9 +161,9 @@ class _IssuesScreenState extends State<IssuesScreen> {
         _issues = issues;
         _hasData = true;
         _loading = false;
-
         _refreshing = false;
       });
+      _writeCache();
       _loadFacets();
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
@@ -153,6 +193,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
         _deviceNames = (facets['deviceNames'] as List?)?.map((e) => e.toString()).toList() ?? [];
       });
+      _writeCache();
     } catch (_) {}
   }
 
@@ -186,7 +227,11 @@ class _IssuesScreenState extends State<IssuesScreen> {
       if (clearDeviceName) _deviceName = null;
     });
     _syncUrl();
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: (p) => _apply(period: p));

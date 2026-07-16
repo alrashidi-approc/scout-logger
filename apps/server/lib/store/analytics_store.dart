@@ -442,44 +442,62 @@ class AnalyticsStore {
     );
     final sess = sessions.first;
 
-    final crashSessions = await conn.execute(
-      Sql.named('''
-        SELECT COUNT(DISTINCT session_id)::int
-        FROM events
-        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type = 'crash' AND session_id IS NOT NULL
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-      '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
-    );
-
     final openIssues = await conn.execute(
       Sql.named('SELECT COUNT(*)::int FROM issues WHERE project_id = @pid AND status = \'open\''),
       parameters: {'pid': projectId},
     );
 
-    final byType = await conn.execute(
-      Sql.named('''
-        SELECT type, COUNT(*)::int FROM events
-        WHERE project_id = @pid
-          AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY type ORDER BY COUNT(*) DESC
-      '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
-    );
-
-    final byPlatform = await conn.execute(
-      Sql.named('''
-        SELECT platform, COUNT(*)::int FROM events
-        WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND platform IS NOT NULL
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 8
-      '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
-    );
+    late final List byType;
+    late final List byPlatform;
+    late final int crashedSessions;
+    if (useRollups) {
+      crashedSessions = 0; // approximate from crash events below
+      byType = const [];
+      final platforms = await conn.execute(
+        Sql.named('''
+          SELECT platform, COUNT(*)::int
+          FROM device_stats
+          WHERE project_id = @pid AND platform IS NOT NULL
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          GROUP BY platform ORDER BY 2 DESC LIMIT 8
+        '''),
+        parameters: {'pid': projectId, ...timeParams(w)},
+      );
+      byPlatform = platforms;
+    } else {
+      final crashSessions = await conn.execute(
+        Sql.named('''
+          SELECT COUNT(DISTINCT session_id)::int
+          FROM events
+          WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND type = 'crash' AND session_id IS NOT NULL
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        '''),
+        parameters: {'pid': projectId, ...timeParams(w)},
+      );
+      crashedSessions = crashSessions.first[0] as int;
+      byType = await conn.execute(
+        Sql.named('''
+          SELECT type, COUNT(*)::int FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          GROUP BY type ORDER BY COUNT(*) DESC
+        '''),
+        parameters: {'pid': projectId, ...timeParams(w)},
+      );
+      byPlatform = await conn.execute(
+        Sql.named('''
+          SELECT platform, COUNT(*)::int FROM events
+          WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND platform IS NOT NULL
+            AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 8
+        '''),
+        parameters: {'pid': projectId, ...timeParams(w)},
+      );
+    }
 
     final trend = await fetchEventTrend(conn, projectId, w, includeUsers: true);
 
@@ -488,15 +506,17 @@ class AnalyticsStore {
         previous == 0 ? (current == 0 ? 0.0 : 100.0) : ((current - previous) / previous * 100);
 
     final totalSessions = n(sess[0]);
-    final crashed = n(crashSessions.first[0]);
     final events = n(cur[0]);
     final errors = n(cur[1]);
+    final crashes = n(cur[2]);
+    // Rollup path: approximate crash-free from crash events vs sessions (not distinct crash sessions).
+    final crashed = useRollups ? crashes.clamp(0, totalSessions) : crashedSessions;
 
     return {
       'days': period,
       'events': n(cur[0]),
       'errors': n(cur[1]),
-      'crashes': n(cur[2]),
+      'crashes': crashes,
       'networkEvents': n(cur[3]),
       'sessionEvents': n(cur[4]),
       'spans': n(cur[5]),
@@ -525,6 +545,88 @@ class AnalyticsStore {
   Future<Map<String, dynamic>> dashboardInsights(String projectId, {int days = 7, TimeWindow? window}) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
+    // Multi-day: avoid full events JSON scans — those are the 20s+ waits on Overview.
+    if (preferIdentityRollups(w)) {
+      return _dashboardInsightsFromRollups(conn, projectId, w);
+    }
+    return _dashboardInsightsFromEvents(conn, projectId, w);
+  }
+
+  Future<Map<String, dynamic>> _dashboardInsightsFromRollups(
+    Connection conn,
+    String projectId,
+    TimeWindow w,
+  ) async {
+    final dp = dateParams(w);
+    final tp = timeParams(w);
+    final usersAffected = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(DISTINCT user_id)::int
+        FROM user_daily_stats
+        WHERE project_id = @pid AND error_count > 0
+          AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+          AND (@untilDate::date IS NULL OR date < @untilDate::date)
+      '''),
+      parameters: {'pid': projectId, ...dp},
+    );
+    final byEnv = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(environment, ''), 'unknown') AS environment, COUNT(*)::int
+        FROM user_stats
+        WHERE project_id = @pid
+          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+        GROUP BY 1 ORDER BY 2 DESC
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+    final byRelease = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(release, ''), 'unknown') AS release, COUNT(*)::int
+        FROM user_stats
+        WHERE project_id = @pid AND release IS NOT NULL
+          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 12
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+    final errorDevices = await conn.execute(
+      Sql.named('''
+        SELECT COALESCE(NULLIF(d.device_name, ''), 'unknown') AS device,
+               COALESCE(SUM(dd.error_count), 0)::int,
+               COUNT(DISTINCT d.install_id)::int
+        FROM device_stats d
+        INNER JOIN device_daily_stats dd
+          ON dd.project_id = d.project_id AND dd.install_id = d.install_id
+         AND (@fromDate::date IS NULL OR dd.date >= @fromDate::date)
+         AND (@untilDate::date IS NULL OR dd.date < @untilDate::date)
+        WHERE d.project_id = @pid AND dd.error_count > 0
+        GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+      '''),
+      parameters: {'pid': projectId, ...dp},
+    );
+    final n = (dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
+    return {
+      'usersAffectedByErrors': n(usersAffected.first[0]),
+      'peakHour': null,
+      'peakHourEvents': 0,
+      'peakErrorHour': null,
+      'peakErrorHourCount': 0,
+      'hourlyActivity': const <Map<String, dynamic>>[],
+      'topFailingEndpoints': const <Map<String, dynamic>>[],
+      'topCrashScreens': const <Map<String, dynamic>>[],
+      'topErrorDevices': errorDevices.map((r) => {'device': r[0], 'count': r[1], 'installs': r[2]}).toList(),
+      'byEnvironment': byEnv.map((r) => {'environment': r[0], 'count': r[1]}).toList(),
+      'eventsByRelease': byRelease.map((r) => {'release': r[0], 'count': r[1], 'errors': 0, 'crashes': 0}).toList(),
+      'byDeployment': const <Map<String, dynamic>>[],
+      'insightsLite': true,
+    };
+  }
+
+  Future<Map<String, dynamic>> _dashboardInsightsFromEvents(
+    Connection conn,
+    String projectId,
+    TimeWindow w,
+  ) async {
     final tp = timeParams(w);
     final p = {'pid': projectId, ...tp};
 

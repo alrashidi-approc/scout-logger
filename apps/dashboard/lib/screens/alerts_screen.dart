@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/notification_deliveries.dart';
 import '../utils/responsive.dart';
@@ -15,6 +16,12 @@ class AlertsScreen extends StatefulWidget {
   State<AlertsScreen> createState() => _AlertsScreenState();
 }
 
+class _AlertsCache {
+  const _AlertsCache({required this.deliveries, required this.summary});
+  final List<Map<String, dynamic>> deliveries;
+  final Map<String, dynamic> summary;
+}
+
 class _AlertsScreenState extends State<AlertsScreen> {
   final _api = ScoutApi();
   bool _loading = true;
@@ -24,10 +31,24 @@ class _AlertsScreenState extends State<AlertsScreen> {
   List<Map<String, dynamic>> _deliveries = [];
   Map<String, dynamic> _summary = {};
 
+  String get _cacheKey => screenCacheKey('alerts');
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<_AlertsCache>(_cacheKey);
+    if (cached == null) return false;
+    _deliveries = cached.deliveries;
+    _summary = cached.summary;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
@@ -43,10 +64,13 @@ class _AlertsScreenState extends State<AlertsScreen> {
     });
     try {
       final data = await _api.fetchAllNotificationDeliveries();
+      final deliveries = (data['deliveries'] as List).cast<Map<String, dynamic>>();
+      final summary = Map<String, dynamic>.from(data['summary'] as Map? ?? {});
+      ScreenCache.instance.write(_cacheKey, _AlertsCache(deliveries: deliveries, summary: summary));
       if (!mounted) return;
       setState(() {
-        _deliveries = (data['deliveries'] as List).cast<Map<String, dynamic>>();
-        _summary = Map<String, dynamic>.from(data['summary'] as Map? ?? {});
+        _deliveries = deliveries;
+        _summary = summary;
         _hasData = true;
         _loading = false;
         _refreshing = false;

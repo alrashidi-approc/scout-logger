@@ -1,22 +1,19 @@
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:printing/printing.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../services/api_client.dart';
 import '../services/dashboard_log_service.dart';
-import '../theme/app_theme.dart';
+import '../services/screen_cache.dart';
 import '../utils/date_range.dart';
 import '../utils/report_pdf.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
 import '../widgets/filter_bar.dart';
 import '../widgets/page_header.dart';
-import '../widgets/panel.dart';
 import '../widgets/period_picker.dart';
-import '../widgets/stat_card.dart';
-
-const _series = [AppTheme.accentPurple, AppTheme.error, AppTheme.success, AppTheme.warning];
+import '../widgets/shared_report_view.dart';
 
 class ReportsScreen extends StatefulWidget {
   const ReportsScreen({super.key, required this.projectId, this.initialPeriod = const PeriodFilter.days(30)});
@@ -31,6 +28,7 @@ class ReportsScreen extends StatefulWidget {
 class _ReportsScreenState extends State<ReportsScreen> {
   final _api = ScoutApi();
   ReportType _type = ReportType.executiveSummary;
+  ReportAudience _audience = ReportAudience.engineering;
   Report? _report;
   bool _loading = true;
   bool _refreshing = false;
@@ -39,10 +37,28 @@ class _ReportsScreenState extends State<ReportsScreen> {
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
+  String get _cacheKey => screenCacheKey(
+        'reports',
+        projectId: widget.projectId,
+        period: _period,
+        extra: {'type': _type.id, 'audience': _audience.id},
+      );
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Report>(_cacheKey);
+    if (cached == null) return false;
+    _report = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   Future<void> _load() async {
@@ -58,32 +74,55 @@ class _ReportsScreenState extends State<ReportsScreen> {
       );
     });
     try {
-      final report = await _api.fetchReport(widget.projectId, _type.id, period: _period);
-      if (mounted) setState(() {
-        _report = report;
-        _hasData = true;
-        _loading = false;
-        _refreshing = false;
-      });
+      final report = await _api.fetchReport(widget.projectId, _type.id, period: _period, audience: _audience);
+      ScreenCache.instance.write(_cacheKey, report);
+      if (mounted) {
+        setState(() {
+          _report = report;
+          _hasData = true;
+          _loading = false;
+          _refreshing = false;
+        });
+      }
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
-      if (mounted) setState(() {
-        _error = e;
-        _loading = false;
-        _refreshing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = e;
+          _loading = false;
+          _refreshing = false;
+        });
+      }
     }
   }
 
   void _setPeriod(PeriodFilter p) {
     _period = p;
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _selectType(ReportType t) {
     if (t == _type) return;
     setState(() => _type = t);
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
+  }
+
+  void _setAudience(ReportAudience a) {
+    if (a == _audience) return;
+    setState(() => _audience = a);
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   Future<void> _exportPdf() async {
@@ -91,7 +130,13 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (report == null || _exporting) return;
     setState(() => _exporting = true);
     try {
-      await Printing.layoutPdf(onLayout: (_) => buildReportPdf(report));
+      final enriched = await _api.exportReport(widget.projectId, _type.id, period: _period, audience: _audience);
+      await Printing.layoutPdf(onLayout: (_) => buildReportPdf(enriched));
+      if (mounted && enriched.snapshotUrl != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('PDF ready · readonly link expires with share token')),
+        );
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('PDF export failed: $e')));
     } finally {
@@ -119,17 +164,12 @@ class _ReportsScreenState extends State<ReportsScreen> {
       children: [
         PageHeader(
           title: 'Reports',
-          subtitle: 'Shareable summaries · ${_period.comparisonLabel()}',
+          subtitle: 'Audience-tailored briefs · ${_period.comparisonLabel()}',
           period: _period,
           onPeriodTap: _openPeriodPicker,
           actions: [
-            FilledButton.icon(
-              onPressed: report == null ? null : _exportPdf,
-              icon: _exporting
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.picture_as_pdf_outlined),
-              label: const Text('Save as PDF'),
-            ),
+            IconButton(onPressed: _load, icon: const Icon(Icons.refresh), tooltip: 'Refresh'),
+            _pdfSplitButton(report),
           ],
         ),
         const SizedBox(height: 16),
@@ -144,105 +184,52 @@ class _ReportsScreenState extends State<ReportsScreen> {
         FilterBar(period: _period, onPeriodChanged: _setPeriod),
         const SizedBox(height: 20),
         if (report != null)
-          for (final s in report.sections) ..._section(s),
-      ],
-    );
-  }
-
-  List<Widget> _section(ReportSection s) => [
-        Text(s.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-        const SizedBox(height: 12),
-        if (s.kpis.isNotEmpty)
-          KpiWrap(
-            children: [
-              for (final k in s.kpis)
-                StatCard(
-                  label: k.label,
-                  value: k.value,
-                  color: AppTheme.accentPurple,
-                  delta: k.deltaPct,
-                  deltaGoodWhenDown: true,
-                ),
-            ],
+          SharedReportView(
+            report: report,
+            onIssueTap: (issueId) => context.go('/p/${widget.projectId}/issues/$issueId'),
           ),
-        for (final c in s.charts)
-          if (!c.isEmpty) ...[
-            const SizedBox(height: 12),
-            DashboardPanel(title: c.title, child: SizedBox(height: 220, child: _chart(c))),
-          ],
-        for (final t in s.tables)
-          if (t.rows.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            DashboardPanel(title: t.title, child: _table(t)),
-          ],
-        const SizedBox(height: 24),
-      ];
-
-  Widget _chart(ReportChart c) {
-    final maxY = c.series.expand((s) => s.values).fold<double>(0, (m, v) => v > m ? v : m);
-    final top = maxY <= 0 ? 1.0 : maxY * 1.15;
-    final step = (c.xLabels.length / 6).ceil().clamp(1, 999);
-
-    Widget bottom(double value, TitleMeta meta) {
-      final i = value.toInt();
-      if (i < 0 || i >= c.xLabels.length || i % step != 0) return const SizedBox.shrink();
-      return Padding(
-        padding: const EdgeInsets.only(top: 6),
-        child: Text(c.xLabels[i], style: const TextStyle(fontSize: 9, color: AppTheme.muted)),
-      );
-    }
-
-    final titles = FlTitlesData(
-      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-      bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 26, getTitlesWidget: bottom)),
-      leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 34)),
-    );
-
-    if (c.kind == 'line') {
-      return LineChart(LineChartData(
-        minY: 0,
-        maxY: top,
-        titlesData: titles,
-        gridData: const FlGridData(show: true, drawVerticalLine: false),
-        borderData: FlBorderData(show: false),
-        lineBarsData: [
-          for (var i = 0; i < c.series.length; i++)
-            LineChartBarData(
-              isCurved: false,
-              barWidth: 2,
-              color: _series[i % _series.length],
-              dotData: const FlDotData(show: false),
-              spots: [for (var x = 0; x < c.series[i].values.length; x++) FlSpot(x.toDouble(), c.series[i].values[x])],
-            ),
-        ],
-      ));
-    }
-
-    final values = c.series.first.values;
-    return BarChart(BarChartData(
-      minY: 0,
-      maxY: top,
-      titlesData: titles,
-      gridData: const FlGridData(show: true, drawVerticalLine: false),
-      borderData: FlBorderData(show: false),
-      barGroups: [
-        for (var x = 0; x < values.length; x++)
-          BarChartGroupData(x: x, barRods: [BarChartRodData(toY: values[x], color: _series[0], width: 14, borderRadius: BorderRadius.circular(3))]),
       ],
-    ));
+    );
   }
 
-  Widget _table(ReportTable t) => SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          columnSpacing: 26,
-          headingTextStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: AppTheme.muted),
-          columns: [for (final col in t.columns) DataColumn(label: Text(col))],
-          rows: [
-            for (final row in t.rows)
-              DataRow(cells: [for (final cell in row) DataCell(Text(cell, style: const TextStyle(fontSize: 12)))]),
-          ],
+  Widget _pdfSplitButton(Report? report) {
+    final enabled = report != null && !_exporting;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FilledButton.icon(
+          onPressed: enabled ? _exportPdf : null,
+          icon: _exporting
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.picture_as_pdf_outlined),
+          label: Text('PDF: ${_audience.label}'),
+          style: FilledButton.styleFrom(
+            shape: const RoundedRectangleBorder(borderRadius: BorderRadius.horizontal(left: Radius.circular(20))),
+          ),
         ),
-      );
+        PopupMenuButton<ReportAudience>(
+          tooltip: 'Choose report audience',
+          enabled: enabled,
+          initialValue: _audience,
+          onSelected: _setAudience,
+          itemBuilder: (_) => [
+            for (final a in ReportAudience.values)
+              PopupMenuItem(value: a, child: Text(a == _audience ? '✓ ${a.label}' : a.label)),
+          ],
+          child: Padding(
+            padding: const EdgeInsets.only(left: 2),
+            child: FilledButton(
+              onPressed: enabled ? () {} : null,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                minimumSize: const Size(36, 40),
+                shape: const RoundedRectangleBorder(borderRadius: BorderRadius.horizontal(right: Radius.circular(20))),
+              ),
+              child: const Icon(Icons.arrow_drop_down, size: 22),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }

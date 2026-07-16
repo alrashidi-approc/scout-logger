@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -39,10 +40,33 @@ class _OverviewScreenState extends State<OverviewScreen> {
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
 
+  String get _cacheKey => screenCacheKey('overview', projectId: widget.projectId, period: _period);
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<Map<String, Object>>(_cacheKey);
+    if (cached == null) return false;
+    final d = cached['d'];
+    final issues = cached['recentIssues'];
+    if (d is! Map || issues is! List) return false;
+    _d = Map<String, dynamic>.from(d);
+    _recentIssues = issues.cast<Map<String, dynamic>>();
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
+  }
+
+  void _writeCache() {
+    final d = _d;
+    if (d == null) return;
+    ScreenCache.instance.write(_cacheKey, {'d': d, 'recentIssues': _recentIssues});
   }
 
   Future<void> _load() async {
@@ -60,21 +84,38 @@ class _OverviewScreenState extends State<OverviewScreen> {
     try {
       Map<String, dynamic> data;
       try {
-        data = await _api.fetchDashboard(widget.projectId, period: _period);
+        final results = await Future.wait<Object>([
+          _api.fetchDashboard(widget.projectId, period: _period),
+          _api.fetchIssues(widget.projectId, period: _period),
+        ]);
+        data = Map<String, dynamic>.from(results[0] as Map);
+        if (mounted) {
+          setState(() {
+            _d = data;
+            _recentIssues = (results[1] as List).cast<Map<String, dynamic>>().take(5).toList();
+            _hasData = true;
+            _loading = false;
+            _refreshing = false;
+          });
+          _writeCache();
+        }
+        return;
       } catch (_) {
         final overview = await _api.fetchOverview(widget.projectId, period: _period);
         final stats = await _api.fetchStats(widget.projectId, period: _period);
         data = {...overview, ...stats};
       }
       final issues = await _api.fetchIssues(widget.projectId, period: _period);
-      if (mounted) setState(() {
-        _d = data;
-        _recentIssues = issues.take(5).toList();
-        _hasData = true;
-        _loading = false;
-
-        _refreshing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _d = data;
+          _recentIssues = issues.take(5).toList();
+          _hasData = true;
+          _loading = false;
+          _refreshing = false;
+        });
+        _writeCache();
+      }
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) setState(() {
@@ -89,7 +130,11 @@ class _OverviewScreenState extends State<OverviewScreen> {
   void _setPeriod(PeriodFilter p) {
     _period = p;
     context.go(Uri(path: '/p/${widget.projectId}', queryParameters: p.toQuery()).toString());
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   double _delta(String key) {

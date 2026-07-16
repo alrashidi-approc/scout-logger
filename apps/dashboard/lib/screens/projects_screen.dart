@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/clipboard.dart';
 import '../utils/responsive.dart';
@@ -30,12 +31,25 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
   final _credentials = <String, Map<String, dynamic>>{};
   final _loadingCreds = <String>{};
 
+  String get _cacheKey => screenCacheKey('projects');
+
   bool get _canCreate => AuthService.instance.canCreateProjects;
 
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<List<Map<String, dynamic>>>(_cacheKey);
+    if (cached == null) return false;
+    _projects = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   @override
@@ -58,6 +72,7 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
     });
     try {
       final projects = await _api.fetchProjects();
+      ScreenCache.instance.write(_cacheKey, projects);
       if (mounted) setState(() {
         _projects = projects;
         _hasData = true;

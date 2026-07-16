@@ -55,7 +55,7 @@ Handler apiRoutes(
   NotificationStore? notificationStore,
 }) {
   final router = Router();
-  final reportService = ReportService(store, analytics);
+  final reportService = ReportService(store, analytics, notifications: notificationStore);
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
   router.get('/auth/me', meRoute(auth: authStore, config: config));
@@ -190,10 +190,17 @@ Handler apiRoutes(
       final q = request.url.queryParameters;
       final w = _window(q);
       try {
-        final overview = await store.projectOverview(id, window: w, includeTrend: false);
-        final stats = await analytics.projectStats(id, window: w);
-        final insights = await analytics.dashboardInsights(id, window: w);
-        final health = await store.sdkHealth(id, window: w);
+        // Parallel — was sequential and stacked 20s+ event scans on insights.
+        final parts = await Future.wait([
+          store.projectOverview(id, window: w, includeTrend: false),
+          analytics.projectStats(id, window: w),
+          analytics.dashboardInsights(id, window: w),
+          store.sdkHealth(id, window: w),
+        ]);
+        final overview = parts[0] as Map<String, dynamic>;
+        final stats = parts[1] as Map<String, dynamic>;
+        final insights = parts[2] as Map<String, dynamic>;
+        final health = parts[3] as Map<String, dynamic>;
         return Response.ok(
           jsonEncode({'ok': true, 'dashboard': {...overview, ...stats, ...insights, 'sdkHealth': health}}),
           headers: {'Content-Type': 'application/json'},
@@ -267,7 +274,37 @@ Handler apiRoutes(
       if (guard != null) return guard;
       final reportType = ReportType.fromId(type);
       if (reportType == null) return jsonErr('Unknown report type', status: 404);
-      final report = await reportService.build(reportType, id, _window(request.url.queryParameters, defaultDays: 30));
+      final audience = ReportAudience.fromIdOrDefault(request.url.queryParameters['audience']);
+      final report = await reportService.build(
+        reportType,
+        id,
+        _window(request.url.queryParameters, defaultDays: 30),
+        audience: audience,
+      );
+      return Response.ok(jsonEncode({'ok': true, 'report': report.toJson()}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.post('/projects/<id>/reports/<type>/export', (Request request, String id, String type) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final reportType = ReportType.fromId(type);
+      if (reportType == null) return jsonErr('Unknown report type', status: 404);
+      final body = jsonDecode(await readBody(request)) as Map<String, dynamic>? ?? {};
+      final audience = ReportAudience.fromIdOrDefault(body['audience']?.toString() ?? request.url.queryParameters['audience']);
+      final rawDays = body['expiresInDays'];
+      final expiresInDays = rawDays is num ? rawDays.toInt() : int.tryParse('$rawDays') ?? 30;
+      final auth = authFrom(request);
+      final report = await reportService.exportForPdf(
+        type: reportType,
+        projectId: id,
+        window: _window(request.url.queryParameters, defaultDays: 30),
+        audience: audience,
+        config: config,
+        createdBy: auth?.userId,
+        expiresInDays: expiresInDays,
+      );
       return Response.ok(jsonEncode({'ok': true, 'report': report.toJson()}), headers: {'Content-Type': 'application/json'});
     });
   });

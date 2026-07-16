@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -33,10 +34,28 @@ class _DevicesScreenState extends State<DevicesScreen> {
   late PeriodFilter _period = widget.initialPeriod;
   late String _search = widget.initialQuery ?? '';
 
+  String get _cacheKey => screenCacheKey(
+        'devices',
+        projectId: widget.projectId,
+        period: _period,
+        extra: _search.isNotEmpty ? {'q': _search} : null,
+      );
+
   @override
   void initState() {
     super.initState();
-    _load();
+    if (!_restore()) _load();
+  }
+
+  bool _restore() {
+    final cached = ScreenCache.instance.read<List<Map<String, dynamic>>>(_cacheKey);
+    if (cached == null) return false;
+    _devices = cached;
+    _hasData = true;
+    _loading = false;
+    _refreshing = false;
+    _error = null;
+    return true;
   }
 
   void _syncUrl() {
@@ -59,6 +78,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     });
     try {
       final devices = await _api.fetchDevices(widget.projectId, period: _period, q: _search.isEmpty ? null : _search);
+      ScreenCache.instance.write(_cacheKey, devices);
       if (mounted) setState(() {
         _devices = devices;
         _hasData = true;
@@ -78,13 +98,21 @@ class _DevicesScreenState extends State<DevicesScreen> {
   void _setPeriod(PeriodFilter p) {
     _period = p;
     _syncUrl();
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _setSearch(String q) {
     _search = q.trim();
     _syncUrl();
-    _load();
+    if (_restore()) {
+      setState(() {});
+    } else {
+      _load();
+    }
   }
 
   void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: _setPeriod);
