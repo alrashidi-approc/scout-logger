@@ -459,6 +459,7 @@ class AnalyticsStore {
           FROM device_stats
           WHERE project_id = @pid AND platform IS NOT NULL
             AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
           GROUP BY platform ORDER BY 2 DESC LIMIT 8
         '''),
         parameters: {'pid': projectId, ...timeParams(w)},
@@ -575,6 +576,7 @@ class AnalyticsStore {
         FROM user_stats
         WHERE project_id = @pid
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC
       '''),
       parameters: {'pid': projectId, ...tp},
@@ -585,6 +587,7 @@ class AnalyticsStore {
         FROM user_stats
         WHERE project_id = @pid AND release IS NOT NULL
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
         GROUP BY 1 ORDER BY 2 DESC LIMIT 12
       '''),
       parameters: {'pid': projectId, ...tp},

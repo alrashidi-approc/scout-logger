@@ -130,7 +130,9 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _SharedBanner(shareUrl: _shareUrl, expiresAt: _expiresAt, onCopy: () => _copyLink(context)),
-            Expanded(child: SharedReportView(report: _report!)),
+            Expanded(
+              child: SingleChildScrollView(child: SharedReportView(report: _report!)),
+            ),
           ],
         ),
       );
