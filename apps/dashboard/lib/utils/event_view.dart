@@ -29,6 +29,35 @@ class EventView {
   String get networkOutcome => str(networkReadable['faultLabel']) ?? str(networkReadable['outcomeLabel']) ?? '—';
   NetworkFaultInfo? get networkFault => NetworkFaultInfo.fromJson(networkReadable['fault']);
   Map<String, dynamic> get custom => asMap(payload['custom']);
+  Map<String, dynamic> get diagnosis => asMap(payload['diagnosis']);
+  bool get hasDiagnosis {
+    final d = diagnosis;
+    return d.isNotEmpty &&
+        ((str(d['summary'])?.trim().isNotEmpty ?? false) ||
+            (str(d['likelyCause'])?.trim().isNotEmpty ?? false));
+  }
+
+  String get diagnosisSummary => str(diagnosis['summary']) ?? str(diagnosis['likelyCause']) ?? '';
+  String? get diagnosisLikelyCause => str(diagnosis['likelyCause']);
+  String? get diagnosisConfidence => str(diagnosis['confidence']);
+  String? get diagnosisOperation => str(diagnosis['operation']);
+  String? get diagnosisStage => str(diagnosis['stage']);
+  List<Map<String, dynamic>> get diagnosisEvidence {
+    final raw = diagnosis['evidence'];
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .where((e) => str(e['label']) != null)
+        .toList();
+  }
+
+  List<String> get diagnosisNextSteps {
+    final raw = diagnosis['nextSteps'];
+    if (raw is! List) return const [];
+    return raw.map((e) => e?.toString().trim()).whereType<String>().where((s) => s.isNotEmpty).toList();
+  }
+
   Map<String, dynamic>? get issue => event['issue'] is Map ? Map<String, dynamic>.from(event['issue'] as Map) : null;
 
   String get type => str(event['type']) ?? 'error';
@@ -328,6 +357,7 @@ class EventView {
       'message', 'stack', 'stackTrace', 'stacktrace', 'release', 'environment', 'level', 'category',
       'user', 'device', 'screen', 'network', 'method', 'url', 'statusCode', 'route', 'breadcrumbs',
       'userFlow', 'screenTrail', 'custom', 'context', 'overview', 'session', 'sessionId',
+      'diagnosis', 'diagnosisContext',
     };
     final out = <DetailField>[];
     for (final e in payload.entries) {
@@ -341,6 +371,7 @@ class EventView {
   }
 
   List<String> summaryLines() => [
+        if (hasDiagnosis && diagnosisSummary.isNotEmpty) 'Diagnosis: $diagnosisSummary',
         'Level: ${level.toUpperCase()}${category.isNotEmpty ? ' · $category' : ''}',
         if (environment != '—') 'Environment: $environment',
         if (route != '—') 'User was on screen: $route',

@@ -427,6 +427,118 @@ class SummaryList extends StatelessWidget {
   }
 }
 
+class DiagnosisPanel extends StatelessWidget {
+  const DiagnosisPanel({super.key, required this.view});
+
+  final EventView view;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!view.hasDiagnosis) return const SizedBox.shrink();
+
+    final confidence = view.diagnosisConfidence?.toLowerCase();
+    final accent = switch (confidence) {
+      'high' => AppTheme.error,
+      'medium' => AppTheme.warning,
+      _ => AppTheme.info,
+    };
+    final chips = <String>[
+      if (view.diagnosisOperation != null) view.diagnosisOperation!,
+      if (view.diagnosisStage != null) view.diagnosisStage!,
+      if (confidence != null) confidence,
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: accent.withValues(alpha: 0.25)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(Icons.troubleshoot_outlined, color: accent, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (chips.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: chips
+                        .map((c) => Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: accent.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(c, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: accent)),
+                            ))
+                        .toList(),
+                  ),
+                ),
+              SelectableText(
+                view.diagnosisSummary,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, height: 1.35),
+              ),
+              if (view.diagnosisLikelyCause != null && view.diagnosisLikelyCause != view.diagnosisSummary) ...[
+                const SizedBox(height: 8),
+                SelectableText(
+                  view.diagnosisLikelyCause!,
+                  style: TextStyle(fontSize: 13, color: accent, height: 1.45),
+                ),
+              ],
+            ]),
+          ),
+        ]),
+        if (view.diagnosisEvidence.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const Text('Evidence', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: view.diagnosisEvidence
+                .map((e) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: RichText(
+                        text: TextSpan(
+                          style: const TextStyle(fontSize: 12, color: AppTheme.text, height: 1.35),
+                          children: [
+                            TextSpan(text: '${e['label']}: ', style: const TextStyle(fontWeight: FontWeight.w700)),
+                            TextSpan(text: '${e['value']}'),
+                          ],
+                        ),
+                      ),
+                    ))
+                .toList(),
+          ),
+        ],
+        if (view.diagnosisNextSteps.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const Text('Suggested next steps', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+          const SizedBox(height: 8),
+          ...view.diagnosisNextSteps.map((step) => Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Icon(Icons.arrow_right_alt, size: 18, color: accent),
+                  const SizedBox(width: 4),
+                  Expanded(child: SelectableText(step, style: const TextStyle(fontSize: 13, height: 1.45))),
+                ]),
+              )),
+        ],
+      ]),
+    );
+  }
+}
+
 class StackTracePanel extends StatelessWidget {
   const StackTracePanel({super.key, required this.stack});
 

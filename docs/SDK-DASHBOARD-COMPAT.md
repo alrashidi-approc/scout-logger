@@ -399,6 +399,7 @@ Suggested layout in **scout_logger_plus**:
 | Technical → Network | `network` object |
 | Technical → Device | `device` object |
 | Raw data tab | Full payload (automatic if you send rich payload) |
+| **Diagnosis** | `payload.diagnosis` — see [SCOUT-DIAGNOSIS.md](./SCOUT-DIAGNOSIS.md) |
 | Issues grouping | `type` error/crash/network + stack/message fingerprint |
 | Analytics funnels | Distinct `screenTrail[].route` values across sessions |
 | Sessions replay | `type: session` + `screenTrail` + `summary` |
@@ -443,6 +444,7 @@ cd apps/dashboard && flutter build web
 | Area | Path |
 |------|------|
 | Navigation contract | `packages/scout_models/lib/src/navigation.dart` |
+| **Diagnosis spec** | `docs/SCOUT-DIAGNOSIS.md` |
 | Event types / levels | `packages/scout_models/lib/src/taxonomy.dart` |
 | Remote SDK config schema | `packages/scout_models/lib/src/sdk_config.dart` |
 | Client config route | `apps/server/lib/routes/client_config_routes.dart` |

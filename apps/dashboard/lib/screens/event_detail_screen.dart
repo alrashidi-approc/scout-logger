@@ -266,6 +266,14 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                 const SizedBox(height: 12),
                 _IssueLink(projectId: pid, issue: v.issue!, shared: shared),
               ],
+              if (v.hasDiagnosis) ...[
+                InfoSection(
+                  title: 'Diagnosis',
+                  icon: Icons.troubleshoot_outlined,
+                  subtitle: 'What likely went wrong',
+                  child: DiagnosisPanel(view: v),
+                ),
+              ],
               InfoSection(
                   title: 'What happened',
                   icon: Icons.info_outline,
