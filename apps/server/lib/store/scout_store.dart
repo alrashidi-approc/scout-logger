@@ -897,6 +897,11 @@ class ScoutStore {
             OR EXISTS (
               SELECT 1 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
                 AND (e.message ILIKE '%' || @q::text || '%'
+                  OR e.user_id ILIKE '%' || @q::text || '%'
+                  OR e.install_id ILIKE '%' || @q::text || '%'
+                  OR ${sqlDeviceNameExpr(alias: 'e')} ILIKE '%' || @q::text || '%'
+                  OR NULLIF(TRIM(e.payload->'user'->>'email'), '') ILIKE '%' || @q::text || '%'
+                  OR NULLIF(TRIM(e.payload->'user'->>'name'), '') ILIKE '%' || @q::text || '%'
                   OR e.payload->>'stack' ILIKE '%' || @q::text || '%'
                   OR e.payload->'network'->>'url' ILIKE '%' || @q::text || '%')
             )

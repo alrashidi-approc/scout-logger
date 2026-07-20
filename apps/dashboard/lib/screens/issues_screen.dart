@@ -269,7 +269,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
                 period: _period,
                 onPeriodChanged: (p) => _apply(period: p),
                 includeHourPresets: true,
-                searchHint: 'Search issue title…',
+                searchHint: 'Title, user id, device id, email…',
                 searchValue: _search,
                 onSearch: (q) => _apply(search: q),
                 typeOptions: const [null, 'error', 'crash', 'network'],
