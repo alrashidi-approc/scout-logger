@@ -12,7 +12,9 @@ import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../utils/share_link.dart';
 import '../widgets/notify_team_sheet.dart';
+import '../widgets/smart_summary_card.dart';
 import '../utils/screen_load.dart';
+import '../utils/smart_issue_summary.dart';
 import '../widgets/page_header.dart';
 
 class IssueDetailScreen extends StatefulWidget {
@@ -327,6 +329,8 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             _statTile('Status', issue['status'] as String? ?? 'open', Icons.flag_outlined),
           ],
         ),
+        const SizedBox(height: 20),
+        SmartSummaryCard(markdown: SmartIssueSummary.fromIssue(issue, events)),
         if (issue['insights'] is Map) ...[
           const SizedBox(height: 20),
           _insightsCard(Map<String, dynamic>.from(issue['insights'] as Map)),

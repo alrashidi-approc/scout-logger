@@ -13,7 +13,9 @@ import '../utils/clipboard.dart';
 import '../utils/share_link.dart';
 import '../widgets/notify_team_sheet.dart';
 import '../widgets/event_detail_widgets.dart';
+import '../widgets/smart_summary_card.dart';
 import '../utils/screen_load.dart';
+import '../utils/smart_issue_summary.dart';
 import '../widgets/page_header.dart';
 
 class EventDetailScreen extends StatefulWidget {
@@ -255,6 +257,8 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                 ? () => context.go('/p/$pid/geo')
                 : null,
           ),
+          const SizedBox(height: 16),
+          SmartSummaryCard(markdown: SmartIssueSummary.fromEvent(v)),
           const SizedBox(height: 16),
           EventDetailGroup(
             title: 'Overview',
