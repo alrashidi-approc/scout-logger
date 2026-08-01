@@ -257,8 +257,10 @@ class ScoutApi {
     PeriodFilter? period,
     int limit = 50,
     int offset = 0,
+    String view = 'focus',
+    String? groupKey,
   }) async {
-    final params = <String, String>{'limit': '$limit', 'offset': '$offset'};
+    final params = <String, String>{'limit': '$limit', 'offset': '$offset', 'view': view};
     if (type != null) params['type'] = type;
     if (level != null) params['level'] = level;
     if (category != null) params['category'] = category;
@@ -267,6 +269,7 @@ class ScoutApi {
     if (environment != null) params['environment'] = environment;
     if (appVersion != null) params['appVersion'] = appVersion;
     if (deviceName != null) params['device'] = deviceName;
+    if (groupKey != null && groupKey.isNotEmpty) params['group'] = groupKey;
     params.addAll((period ?? const PeriodFilter.days(30)).toQuery());
     final uri = _uri('/api/projects/$projectId/events').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
@@ -274,7 +277,9 @@ class ScoutApi {
     final body = jsonDecode(res.body) as Map;
     final pag = body['pagination'] is Map ? Map<String, dynamic>.from(body['pagination'] as Map) : <String, dynamic>{};
     return {
+      'view': body['view']?.toString() ?? view,
       'events': jsonListMaps(body['events']),
+      'groups': jsonListMaps(body['groups']),
       'total': pag['total'] as int? ?? 0,
       'limit': pag['limit'] as int? ?? limit,
       'offset': pag['offset'] as int? ?? offset,

@@ -55,6 +55,7 @@ Handler shareRoutes(ScoutStore store) {
           environment: filters['environment'] as String?,
           window: window,
           limit: 50,
+          view: 'all',
         );
         return Response.ok(
           jsonEncode({

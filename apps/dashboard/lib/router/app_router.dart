@@ -290,6 +290,8 @@ GoRouter createRouter() {
                   initialAppVersion: q['appVersion'],
                   initialDeviceName: q['device'] ?? q['deviceName'],
                   initialOffset: int.tryParse(q['offset'] ?? '') ?? 0,
+                  initialView: q['view'] ?? 'focus',
+                  initialGroupKey: q['group'] ?? q['groupKey'],
                 ),
               );
             },

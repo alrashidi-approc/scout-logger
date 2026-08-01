@@ -407,11 +407,15 @@ Handler apiRoutes(
         appVersion: q['appVersion'] ?? q['app_version'],
         deviceName: q['device'] ?? q['deviceName'],
         window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        view: q['view'] ?? 'all',
+        groupKey: q['group'] ?? q['groupKey'],
       );
       return Response.ok(
         jsonEncode({
           'ok': true,
+          'view': page['view'],
           'events': page['events'],
+          'groups': page['groups'],
           'pagination': {
             'total': page['total'],
             'limit': page['limit'],

@@ -17,6 +17,16 @@ init_ssh_opts() {
     SSH_OPTS+=(-i "$key")
   fi
 
+  # One password / passphrase for the whole deploy (reuse TCP + auth)
+  local cm_dir="${HOME}/.ssh/scout-cm"
+  mkdir -p "$cm_dir"
+  chmod 700 "$cm_dir"
+  SSH_OPTS+=(
+    -o ControlMaster=auto
+    -o ControlPersist=5m
+    -o "ControlPath=${cm_dir}/%r@%h:%p"
+  )
+
   # CI / key-only hosts only — blocks password prompts
   if [[ "${SSH_BATCH_MODE:-0}" == "1" ]]; then
     SSH_OPTS+=(-o BatchMode=yes)
@@ -32,6 +42,12 @@ rsync_ssh_shell() {
   printf '%q ' "${parts[@]}"
 }
 
+ssh_close_master() {
+  local host="${1:-}"
+  [[ -z "$host" ]] && return 0
+  ssh -O exit "${SSH_OPTS[@]}" "$host" 2>/dev/null || true
+}
+
 check_ssh() {
   local host="$1"
   echo "==> SSH check ${host}..."
@@ -40,7 +56,7 @@ check_ssh() {
   fi
 
   echo ""
-  echo "Cannot SSH to ${host} with non-interactive options."
+  echo "Cannot SSH to ${host}."
   echo ""
   echo "Common fixes:"
   echo "  1. Add your Mac key to the server (recommended — one-time):"
@@ -51,7 +67,7 @@ check_ssh() {
   echo "       HETZNER_SSH_PORT=22"
   echo ""
   echo "Manual test: ssh ${SSH_OPTS[*]} ${host}"
-  echo "(Deploy does not use BatchMode so password auth can work, but rsync will ask many times — use a key.)"
+  echo "(Password auth works; ControlMaster asks once per deploy. Prefer a key.)"
   exit 1
 }
 

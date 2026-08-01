@@ -171,5 +171,35 @@ void main() {
       expect(composeAppVersion(appVersion: '1.0.2+46', buildNumber: '99'), '1.0.2+46');
       expect(composeAppVersion(appVersion: '1.0.2'), '1.0.2');
     });
+
+    test('isRoutineEvent hides session_start lifecycle noise', () {
+      expect(isRoutineEvent('log', {'action': 'session_start'}), isTrue);
+      expect(isRoutineEvent('log', {}, message: 'session_start'), isTrue);
+      expect(isRoutineEvent('session', {'action': 'start'}), isTrue);
+      expect(isRoutineEvent('session', {'action': 'heartbeat'}), isTrue);
+      expect(isRoutineEvent('error', {}, message: 'registration_failed'), isFalse);
+      expect(isRoutineEvent('log', {}, message: 'payment failed'), isFalse);
+    });
+
+    test('eventGroupKey buckets logs by action/message', () {
+      expect(
+        eventGroupKey(type: 'log', message: 'session_start', payload: {'action': 'session_start'}),
+        'log|session_start',
+      );
+      expect(
+        eventGroupKey(type: 'network', payload: {
+          'network': {'method': 'GET', 'url': 'https://api.co/users/1?x=1'},
+        }),
+        'network|GET|https://api.co/users/1',
+      );
+      expect(eventGroupKey(type: 'error', issueId: 'iss_1', message: 'boom'), 'issue|iss_1');
+    });
+
+    test('focus SQL fragment is valid AND clause', () {
+      expect(sqlFocusWorthyEvent, contains('NOT'));
+      expect(sqlFocusWorthyEvent, contains('session_start'));
+      final sql = 'AND $sqlFocusWorthyEvent';
+      expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
+    });
   });
 }

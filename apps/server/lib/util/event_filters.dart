@@ -6,6 +6,114 @@ const sqlHideSessionHeartbeat =
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
 
+/// Routine lifecycle noise — hide in Focus view; still visible in All / Grouped.
+const sqlIsRoutineEvent = '''
+(
+  (
+    type = 'session'
+    AND LOWER(COALESCE(payload->>'action', '')) IN (
+      'start', 'end', 'session_start', 'session_end'
+    )
+  )
+  OR (
+    type IN ('log', 'session')
+    AND (
+      LOWER(COALESCE(payload->>'action', '')) IN (
+        'session_start', 'session_end',
+        'app_background', 'app_foreground', 'app_resumed', 'app_paused',
+        'app_backgrounded', 'app_foregrounded'
+      )
+      OR LOWER(TRIM(COALESCE(message, ''))) IN (
+        'session_start', 'session_end', 'session start', 'session end',
+        'app backgrounded', 'app foregrounded', 'app resumed', 'app paused'
+      )
+      OR LOWER(TRIM(COALESCE(message, ''))) ~
+        '^(session[ _-]?(start|end)|app (backgrounded|foregrounded|resumed|paused))\$'
+    )
+  )
+)
+''';
+
+/// Append as `AND $sqlFocusWorthyEvent` when view=focus.
+const sqlFocusWorthyEvent = 'NOT $sqlIsRoutineEvent';
+
+/// Stable bucket key for Grouped events view (ephemeral API rollup).
+String sqlEventGroupKey({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return '''
+CASE
+  WHEN ${p}issue_id IS NOT NULL THEN 'issue|' || ${p}issue_id::text
+  WHEN ${p}type = 'network' THEN
+    'network|' || UPPER(COALESCE(${p}payload->'network'->>'method', 'GET')) || '|' ||
+    SPLIT_PART(COALESCE(${p}payload->'network'->>'url', ${p}payload->'network'->>'path', ''), '?', 1)
+  ELSE
+    ${p}type || '|' || LOWER(LEFT(TRIM(BOTH FROM COALESCE(
+      NULLIF(${p}payload->>'action', ''),
+      NULLIF(${p}message, ''),
+      ${p}type
+    )), 160))
+END''';
+}
+
+/// Mirror of [sqlIsRoutineEvent] for unit tests / clients.
+bool isRoutineEvent(String type, Map<String, dynamic> payload, {String? message}) {
+  if (isSessionHeartbeat(type, payload)) return true;
+  final action = (payload['action']?.toString() ?? '').toLowerCase().trim();
+  final msg = (message ?? payload['message']?.toString() ?? '').toLowerCase().trim();
+  const sessionActions = {'start', 'end', 'session_start', 'session_end'};
+  const lifeActions = {
+    'session_start',
+    'session_end',
+    'app_background',
+    'app_foreground',
+    'app_resumed',
+    'app_paused',
+    'app_backgrounded',
+    'app_foregrounded',
+  };
+  const lifeMessages = {
+    'session_start',
+    'session_end',
+    'session start',
+    'session end',
+    'app backgrounded',
+    'app foregrounded',
+    'app resumed',
+    'app paused',
+  };
+  if (type == 'session' && sessionActions.contains(action)) return true;
+  if (type == 'log' || type == 'session') {
+    if (lifeActions.contains(action) || lifeMessages.contains(msg)) return true;
+    if (RegExp(r'^(session[ _-]?(start|end)|app (backgrounded|foregrounded|resumed|paused))$')
+        .hasMatch(msg)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+String eventGroupKey({
+  required String type,
+  String? issueId,
+  String? message,
+  Map<String, dynamic>? payload,
+}) {
+  final p = payload ?? const <String, dynamic>{};
+  if (issueId != null && issueId.isNotEmpty) return 'issue|$issueId';
+  if (type == 'network') {
+    final network = p['network'] is Map ? Map<String, dynamic>.from(p['network'] as Map) : p;
+    final method = (network['method']?.toString() ?? 'GET').toUpperCase();
+    final url = (network['url'] ?? network['path'] ?? '').toString().split('?').first;
+    return 'network|$method|$url';
+  }
+  final action = p['action']?.toString().trim();
+  final title = (action != null && action.isNotEmpty)
+      ? action
+      : (message ?? p['message']?.toString() ?? type);
+  final clipped = title.length > 160 ? title.substring(0, 160) : title;
+  return '$type|${clipped.toLowerCase()}';
+}
+
 /// True failures only — inline expression (works without `is_error` column).
 /// Keep in sync with [isErrorEvent] and 014_event_outcome_columns.sql.
 String sqlIsErrorEvent({String alias = ''}) {

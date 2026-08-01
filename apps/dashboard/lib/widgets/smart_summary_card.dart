@@ -40,7 +40,7 @@ class SmartSummaryCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Interpreted root-cause writeup — paste into a ticket or agent prompt',
+              'Short agent brief — Where / Failed at / Why / Next',
               style: TextStyle(fontSize: 12, color: AppTheme.muted),
             ),
             const SizedBox(height: 12),
@@ -48,18 +48,13 @@ class SmartSummaryCard extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: AppTheme.codeBg,
+                color: AppTheme.primarySoft,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.border),
+                border: Border.all(color: AppTheme.primary.withValues(alpha: 0.2)),
               ),
               child: SelectableText(
                 markdown,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  height: 1.45,
-                  color: AppTheme.text,
-                ),
+                style: const TextStyle(fontSize: 13, height: 1.5, color: AppTheme.text),
               ),
             ),
           ],

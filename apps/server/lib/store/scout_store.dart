@@ -1595,15 +1595,27 @@ class ScoutStore {
     String? deviceName,
     int? days,
     TimeWindow? window,
+    /// `focus` | `all` (default) | `grouped`
+    String view = 'all',
+    /// Drill into one Grouped bucket (forces flat event list).
+    String? groupKey,
   }) async {
     final conn = await db.connect();
     final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
     final kind = type;
     final lim = limit.clamp(1, 100);
     final off = offset < 0 ? 0 : offset;
+    final normalizedView = switch (view.toLowerCase()) {
+      'all' || 'grouped' => view.toLowerCase(),
+      _ => 'focus',
+    };
+    final grouped = normalizedView == 'grouped' && (groupKey == null || groupKey.isEmpty);
+    final focus = normalizedView == 'focus' && (groupKey == null || groupKey.isEmpty);
+    final groupKeyExpr = sqlEventGroupKey();
     final filters = '''
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
+          ${focus ? 'AND $sqlFocusWorthyEvent' : ''}
           AND (
             @kind::text IS NULL
             OR (@kind::text = 'errors' AND ${sqlIsErrorEvent()})
@@ -1631,6 +1643,7 @@ class ScoutStore {
           ${sqlEventFacetFilters()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+          AND (@groupKey::text IS NULL OR ($groupKeyExpr) = @groupKey::text)
     ''';
     final params = {
       'pid': projectId,
@@ -1642,8 +1655,63 @@ class ScoutStore {
       'env': environment,
       'ver': appVersion,
       'device': deviceName,
+      'groupKey': groupKey,
       ...timeParams(w),
     };
+
+    if (grouped) {
+      final total = (await conn.execute(
+        Sql.named('SELECT COUNT(*)::int FROM (SELECT 1 $filters GROUP BY ($groupKeyExpr)) g'),
+        parameters: params,
+      ))
+          .first[0] as int;
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT
+            ($groupKeyExpr) AS group_key,
+            COUNT(*)::int AS event_count,
+            MAX(occurred_at) AS last_seen_at,
+            MIN(occurred_at) AS first_seen_at,
+            (ARRAY_AGG(type ORDER BY occurred_at DESC))[1] AS type,
+            (ARRAY_AGG(COALESCE(NULLIF(payload->>'action', ''), NULLIF(message, ''), type) ORDER BY occurred_at DESC))[1] AS title,
+            (ARRAY_AGG(id ORDER BY occurred_at DESC))[1] AS sample_event_id,
+            (ARRAY_AGG(payload->>'level' ORDER BY occurred_at DESC))[1] AS level,
+            (ARRAY_AGG(payload->>'category' ORDER BY occurred_at DESC))[1] AS category,
+            (ARRAY_AGG(issue_id ORDER BY occurred_at DESC))[1] AS issue_id
+          $filters
+          GROUP BY ($groupKeyExpr)
+          ORDER BY last_seen_at DESC
+          LIMIT @lim OFFSET @off
+        '''),
+        parameters: {...params, 'lim': lim, 'off': off},
+      );
+      final groups = rows.map((r) {
+        final key = r[0] as String? ?? '';
+        final title = r[5]?.toString() ?? key;
+        return {
+          'key': key,
+          'count': r[1],
+          'lastSeenAt': (r[2] as DateTime).toUtc().toIso8601String(),
+          'firstSeenAt': (r[3] as DateTime).toUtc().toIso8601String(),
+          'type': r[4],
+          'title': title,
+          'sampleEventId': r[6],
+          'level': r[7],
+          'category': r[8],
+          'issueId': r[9],
+        };
+      }).toList();
+      return {
+        'view': 'grouped',
+        'events': const <Map<String, dynamic>>[],
+        'groups': groups,
+        'total': total,
+        'limit': lim,
+        'offset': off,
+        'hasMore': off + groups.length < total,
+      };
+    }
+
     final total = (await conn.execute(Sql.named('SELECT COUNT(*)::int $filters'), parameters: params)).first[0] as int;
     final rows = await conn.execute(
       Sql.named('''
@@ -1688,7 +1756,9 @@ class ScoutStore {
         })
         .toList();
     return {
+      'view': groupKey != null && groupKey.isNotEmpty ? 'all' : normalizedView,
       'events': events,
+      'groups': const <Map<String, dynamic>>[],
       'total': total,
       'limit': lim,
       'offset': off,

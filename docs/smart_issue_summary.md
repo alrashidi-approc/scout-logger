@@ -1,15 +1,26 @@
 # Smart issue / event summaries
 
-Dashboard generates a copy-pasteable **Smart summary** on issue and event detail pages (client-side, no API).
+Short **agent brief** on issue/event detail (client-side, no LLM).
 
-## UI
+## Output shape
 
-- **Event inspector** — card under Quick facts; **Copy ticket** still dumps raw JSON.
-- **Issue detail** — card under stats; uses the newest member event + issue aggregates.
+```md
+## Smart summary
 
-## Host-app context keys (preferred)
+**Where:** `/splash` · `device_bootstrap_launch-auth-retry`
+**Failed at:** device_guard · `registration_failed`
+**Why:** … (diagnosis prose if present, else heuristic)
+**Next:** … · …
+**Meta:** app@version · platform · env/release · events=N
+```
 
-When present on `payload.context`, these beat breadcrumb regex:
+## Priority of signals
+
+1. `payload.diagnosis` (summary, likelyCause, stage, nextSteps)
+2. `payload.context.failure_layer` / structured keys
+3. Breadcrumb + message heuristics
+
+## Host-app context keys
 
 ```json
 {
@@ -17,9 +28,7 @@ When present on `payload.context`, these beat breadcrumb regex:
   "step": "2_device_guard",
   "failure_layer": "device_guard",
   "platform_code": "registration_failed",
-  "platform_message": "null",
   "app_check_provider": "play_integrity",
-  "flavor": "dev",
   "kDebugMode": "false",
   "attempt": "retry",
   "outcome": "failed_final",
@@ -29,10 +38,6 @@ When present on `payload.context`, these beat breadcrumb regex:
 }
 ```
 
-Also set `payload.context.operation` (or keep it where the SDK already puts it).
-
-## Generator
-
-`SmartIssueSummary.fromEvent(EventView)` / `fromIssue(issue, events)` → markdown.
+See also [SCOUT-DIAGNOSIS.md](./SCOUT-DIAGNOSIS.md).
 
 Tests: `apps/dashboard/test/smart_issue_summary_test.dart`.

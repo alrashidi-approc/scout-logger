@@ -33,6 +33,8 @@ if [[ -z "$HETZNER_HOST" ]]; then
   exit 1
 fi
 
+trap 'ssh_close_master "$HETZNER_HOST"' EXIT
+
 if ! command -v rsync >/dev/null 2>&1; then
   echo "rsync required (macOS: xcode-select --install)"
   exit 1
