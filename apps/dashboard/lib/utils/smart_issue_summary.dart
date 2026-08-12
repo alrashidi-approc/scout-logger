@@ -1,30 +1,56 @@
+import 'package:scout_models/scout_models.dart';
+
 import 'event_view.dart';
+import 'product_readable.dart';
+
+/// Structured + copyable agent brief for issue/event detail.
+class SmartSummary {
+  const SmartSummary({
+    required this.where,
+    required this.failedAt,
+    required this.why,
+    required this.next,
+    required this.meta,
+    required this.markdown,
+  });
+
+  final String where;
+  final String failedAt;
+  final String why;
+  final List<String> next;
+  final List<String> meta;
+  final String markdown;
+}
 
 /// Short agent brief for issue/event detail. Prefer `payload.diagnosis`, then heuristics.
 class SmartIssueSummary {
   SmartIssueSummary._();
 
-  static String fromEvent(EventView v) => _render(_briefFromEvent(v));
+  static SmartSummary fromEvent(EventView v) => _toSummary(_briefFromEvent(v));
 
-  static String fromIssue(Map<String, dynamic> issue, List<Map<String, dynamic>> events) {
+  static SmartSummary fromIssue(Map<String, dynamic> issue, List<Map<String, dynamic>> events) {
     if (events.isEmpty) {
       final title = str(issue['title']) ?? 'unknown';
       final count = (issue['eventCount'] as num?)?.toInt() ?? 0;
-      return [
-        '## Smart summary',
-        '',
-        '**Where:** unknown',
-        '**Failed at:** unknown',
-        '**Why:** Issue `$title` has no loaded events to interpret.',
-        '**Next:** Open a member event and copy its summary.',
-        '**Meta:** events=`$count`',
-      ].join('\n');
+      const where = 'unknown';
+      const failedAt = 'unknown';
+      final why = 'Issue `$title` has no loaded events to interpret.';
+      const next = ['Open a member event and copy its summary.'];
+      final meta = ['events=`$count`'];
+      return SmartSummary(
+        where: where,
+        failedAt: failedAt,
+        why: why,
+        next: next,
+        meta: meta,
+        markdown: _markdown(where: where, failedAt: failedAt, why: why, next: next, meta: meta),
+      );
     }
     final primary = _briefFromEvent(EventView(events.first));
     final storm = primary.storm ||
         events.take(8).any((e) => _briefFromEvent(EventView(e)).storm) ||
         ((issue['eventCount'] as num?)?.toInt() ?? 0) >= 10;
-    return _render(primary.copyWith(
+    return _toSummary(primary.copyWith(
       storm: storm,
       issueTitle: str(issue['title']),
       eventCount: (issue['eventCount'] as num?)?.toInt(),
@@ -33,7 +59,146 @@ class SmartIssueSummary {
     ));
   }
 
+  static SmartSummary _toSummary(_Brief b) {
+    final meta = <String>[
+      b.app,
+      b.platform,
+      '${prettyProductScalar(b.env)} / ${b.release}',
+      if (b.issueTitle != null) 'issue=`${b.issueTitle}`',
+      if (b.eventCount != null) 'events=`${b.eventCount}`',
+      if (b.firstSeen != null) 'first=`${b.firstSeen}`',
+      if (b.lastSeen != null) 'last=`${b.lastSeen}`',
+      if (b.storm) 'Retry storm',
+    ];
+    return SmartSummary(
+      where: b.where,
+      failedAt: b.failedAt,
+      why: b.why,
+      next: b.next,
+      meta: meta,
+      markdown: _markdown(where: b.where, failedAt: b.failedAt, why: b.why, next: b.next, meta: meta),
+    );
+  }
+
+  static String _markdown({
+    required String where,
+    required String failedAt,
+    required String why,
+    required List<String> next,
+    required List<String> meta,
+  }) {
+    final buf = StringBuffer()
+      ..writeln('## Smart summary')
+      ..writeln()
+      ..writeln('**Where:** $where')
+      ..writeln('**Failed at:** $failedAt')
+      ..writeln('**Why:** $why');
+    if (next.isNotEmpty) buf.writeln('**Next:** ${next.join(' · ')}');
+    buf.writeln('**Meta:** ${meta.join(' · ')}');
+    return buf.toString().trimRight();
+  }
+
   static _Brief _briefFromEvent(EventView v) {
+    if (v.hasDiagnosis) {
+      return _diagnosisBrief(v);
+    }
+    if (v.network.isNotEmpty) {
+      return _networkBrief(v);
+    }
+    return _heuristicBrief(v);
+  }
+
+  static _Brief _diagnosisBrief(EventView v) {
+    final ctx = v.context;
+    final crumbs = v.breadcrumbs;
+    final message = v.message;
+    final operation = _pick(ctx, 'operation') ??
+        _pick(v.custom, 'operation') ??
+        v.diagnosisOperation ??
+        _matchOp(message);
+    final stage = v.diagnosisStage ?? _pick(ctx, 'step') ?? _pick(ctx, 'stage');
+    final entrypoint = _pick(ctx, 'entrypoint') ?? _entrypoint(operation);
+    final platformCode = _pick(ctx, 'platform_code') ?? _platformCode(message);
+    final structuredLayer = _pick(ctx, 'failure_layer');
+    final attempt = _pick(ctx, 'attempt');
+    final outcome = _pick(ctx, 'outcome');
+    final layers = _layers(crumbs, message, platformCode, structuredLayer);
+    final layer = structuredLayer ??
+        (v.diagnosisStage != null ? _layerFromStage(v.diagnosisStage!) : null) ??
+        (layers.isEmpty ? 'unknown' : layers.first);
+    final contributing = layers.where((l) => l != layer).toSet().toList();
+    final storm = _isStorm(crumbs, attempt, outcome) ||
+        (attempt == 'retry' && (outcome == 'failed_final' || layers.length >= 2));
+    final appVersionOk = _appVersionOk(crumbs);
+    final netCall = v.network.isNotEmpty ? _networkCallLabel(v) : null;
+    final whereBits = <String>[
+      if (v.route != '—') v.route,
+      if (operation != null) prettyProductScalar(operation),
+      if (entrypoint != null && !(operation?.contains(entrypoint) ?? false))
+        prettyProductScalar(entrypoint),
+      if (netCall != null) netCall,
+    ];
+    final failedBits = <String>[
+      prettyProductScalar(layer),
+      if (stage != null && stage != layer) prettyProductScalar(stage),
+      if (platformCode != null) prettyProductScalar(platformCode),
+    ];
+    return _Brief(
+      where: whereBits.isEmpty ? 'unknown' : whereBits.join(' · '),
+      failedAt: failedBits.join(' · '),
+      why: _diagnosisWhy(v, contributing, storm, appVersionOk),
+      next: v.diagnosisNextSteps.isNotEmpty
+          ? v.diagnosisNextSteps.take(2).toList()
+          : _next(layer, storm, ctx),
+      app: _appLabel(v),
+      platform: _platformLabel(v),
+      env: v.environment == '—' ? 'unknown' : v.environment,
+      release: v.release == '—' ? 'unknown' : v.release,
+      storm: storm,
+      layer: layer,
+    );
+  }
+
+  static _Brief _networkBrief(EventView v) {
+    final readable = v.networkReadable;
+    final fault = v.networkFault;
+    final error = str(v.network['error'])?.trim();
+    final clientCode = _clientErrorCode(error);
+    final outcomeLabel = str(readable['outcomeLabel']) ?? str(readable['outcome']);
+    final call = _networkCallLabel(v);
+
+    final whereBits = <String>[
+      if (v.route != '—') v.route,
+      if (call != null) call,
+    ];
+
+    final failedBits = <String>[
+      'Network',
+      if (clientCode != null) prettyProductScalar(clientCode),
+      if (fault != null && fault.label.isNotEmpty) fault.label,
+      if (clientCode == null && outcomeLabel != null) outcomeLabel,
+    ];
+    // Dedupe adjacent identical labels
+    final failedAt = <String>[];
+    for (final b in failedBits) {
+      if (failedAt.isEmpty || failedAt.last.toLowerCase() != b.toLowerCase()) failedAt.add(b);
+    }
+
+    return _Brief(
+      where: whereBits.isEmpty ? 'unknown' : whereBits.join(' · '),
+      failedAt: failedAt.join(' · '),
+      why: _networkWhy(v, error: error, clientCode: clientCode, fault: fault),
+      next: _networkNext(v, clientCode: clientCode, fault: fault),
+      app: _appLabel(v),
+      platform: _platformLabel(v),
+      env: v.environment == '—' ? 'unknown' : v.environment,
+      release: v.release == '—' ? 'unknown' : v.release,
+      storm: false,
+      layer: 'network',
+    );
+  }
+
+  static _Brief _heuristicBrief(EventView v) {
     final ctx = v.context;
     final crumbs = v.breadcrumbs;
     final message = v.message;
@@ -57,28 +222,25 @@ class SmartIssueSummary {
         (attempt == 'retry' && (outcome == 'failed_final' || layers.length >= 2));
     final appVersionOk = _appVersionOk(crumbs);
 
-    // Diagnosis wins for prose when present.
-    final why = v.hasDiagnosis
-        ? _diagnosisWhy(v, contributing, storm, appVersionOk)
-        : _heuristicWhy(layer, platformCode, message, contributing, storm, appVersionOk, ctx);
-
-    final next = v.diagnosisNextSteps.isNotEmpty
-        ? v.diagnosisNextSteps.take(2).toList()
-        : _next(layer, storm, ctx);
+    final why = _heuristicWhy(layer, platformCode, message, contributing, storm, appVersionOk, ctx);
+    final next = _next(layer, storm, ctx);
 
     final whereBits = <String>[
       if (v.route != '—') v.route,
-      if (operation != null) operation,
-      if (entrypoint != null && !(operation?.contains(entrypoint) ?? false)) entrypoint,
+      if (operation != null) prettyProductScalar(operation),
+      if (entrypoint != null && !(operation?.contains(entrypoint) ?? false))
+        prettyProductScalar(entrypoint),
+    ];
+
+    final failedBits = <String>[
+      prettyProductScalar(layer),
+      if (stage != null && stage != layer) prettyProductScalar(stage),
+      if (platformCode != null) prettyProductScalar(platformCode),
     ];
 
     return _Brief(
       where: whereBits.isEmpty ? 'unknown' : whereBits.join(' · '),
-      failedAt: [
-        layer,
-        if (stage != null && stage != layer) stage,
-        if (platformCode != null) '`$platformCode`',
-      ].join(platformCode != null || (stage != null && stage != layer) ? ' · ' : ''),
+      failedAt: failedBits.join(' · '),
       why: why,
       next: next,
       app: _appLabel(v),
@@ -90,28 +252,74 @@ class SmartIssueSummary {
     );
   }
 
-  static String _render(_Brief b) {
-    final buf = StringBuffer()
-      ..writeln('## Smart summary')
-      ..writeln()
-      ..writeln('**Where:** ${b.where}')
-      ..writeln('**Failed at:** ${b.failedAt}')
-      ..writeln('**Why:** ${b.why}');
-    if (b.next.isNotEmpty) {
-      buf.writeln('**Next:** ${b.next.join(' · ')}');
+  static String? _networkCallLabel(EventView v) {
+    final readable = v.networkReadable;
+    final req = asMap(readable['request']);
+    final method = str(req['method']) ?? str(v.network['method']) ?? 'REQUEST';
+    final path = str(req['path']) ??
+        () {
+          final url = str(v.network['url']) ?? '';
+          final uri = Uri.tryParse(url);
+          if (uri == null) return url;
+          return uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
+        }();
+    if (path == null || path.isEmpty) return null;
+    final short = path.length > 64 ? '${path.substring(0, 61)}…' : path;
+    return '$method $short';
+  }
+
+  static String? _clientErrorCode(String? error) {
+    if (error == null || error.isEmpty) return null;
+    return RegExp(r'\[client:([^\]]+)\]').firstMatch(error)?.group(1);
+  }
+
+  static String _networkWhy(
+    EventView v, {
+    required String? error,
+    required String? clientCode,
+    required NetworkFaultInfo? fault,
+  }) {
+    final parts = <String>[];
+    if (clientCode != null) {
+      final detail = (error ?? '').replaceFirst(RegExp(r'\[client:[^\]]+\]\s*'), '').trim();
+      parts.add(
+        'Client blocked the request before HTTP (`$clientCode`)'
+        '${detail.isNotEmpty ? ': $detail' : ''}.',
+      );
+      if (clientCode == 'tenant_missing') {
+        parts.add('Not a server outage — missing tenant header on the client.');
+      }
+    } else if (error != null && error.isNotEmpty) {
+      parts.add(error.endsWith('.') ? error : '$error.');
+    } else if (v.message.trim().isNotEmpty) {
+      parts.add(v.message.trim());
     }
-    final meta = <String>[
-      b.app,
-      b.platform,
-      '${b.env} / ${b.release}',
-      if (b.issueTitle != null) 'issue=`${b.issueTitle}`',
-      if (b.eventCount != null) 'events=`${b.eventCount}`',
-      if (b.firstSeen != null) 'first=`${b.firstSeen}`',
-      if (b.lastSeen != null) 'last=`${b.lastSeen}`',
-      if (b.storm) 'retry-storm',
+    final hint = fault?.actionHint.trim();
+    if (hint != null && hint.isNotEmpty && !(parts.join(' ').contains(hint))) {
+      parts.add(hint);
+    }
+    if (parts.isEmpty) return 'Network request failed with insufficient detail.';
+    return parts.join(' ');
+  }
+
+  static List<String> _networkNext(
+    EventView v, {
+    required String? clientCode,
+    required NetworkFaultInfo? fault,
+  }) {
+    final next = <String>[
+      if (clientCode == 'tenant_missing') ...[
+        'Attach `x-tenant-id` (tenant context) before khadamat API calls',
+        'Confirm tenant is set after bootstrap and survives navigation to this screen',
+      ] else if (clientCode != null) ...[
+        'Fix client precondition `$clientCode` before retrying this endpoint',
+        if (fault != null && fault.actionHint.isNotEmpty) fault.actionHint,
+      ] else if (fault != null && fault.actionHint.isNotEmpty)
+        fault.actionHint
+      else
+        'Inspect Network panel (request headers, error, cURL)',
     ];
-    buf.writeln('**Meta:** ${meta.join(' · ')}');
-    return buf.toString().trimRight();
+    return next.take(2).toList();
   }
 
   static String _diagnosisWhy(
@@ -126,9 +334,9 @@ class SmartIssueSummary {
         v.diagnosisLikelyCause!,
     ];
     final extras = <String>[
-      if (appVersionOk) 'app-version OK (200)',
+      if (appVersionOk) 'App version OK (200)',
       if (contributing.contains('app_check')) 'App Check also failed in same loop',
-      if (contributing.contains('device_guard')) 'DeviceGuard also failed in same loop',
+      if (contributing.contains('device_guard')) 'Device Guard also failed in same loop',
       if (storm) 'retry storm — not N independent crashes',
     ];
     if (extras.isNotEmpty) parts.add(extras.join('; '));
@@ -144,13 +352,14 @@ class SmartIssueSummary {
     bool appVersionOk,
     Map<String, dynamic> ctx,
   ) {
+    final code = platformCode == null ? null : prettyProductScalar(platformCode);
     final primary = switch (layer) {
       'device_guard' =>
-        'DeviceGuard Keystore/identity enrollment failed'
-            '${platformCode != null ? ' (`$platformCode`)' : ''} — not Firebase Auth.',
+        'Device Guard Keystore/identity enrollment failed'
+            '${code != null ? ' ($code)' : ''} — not Firebase Auth.',
       'app_check' =>
         'App Check token unavailable'
-            '${_pick(ctx, 'app_check_provider') != null ? ' (provider=${_pick(ctx, 'app_check_provider')})' : ''}'
+            '${_pick(ctx, 'app_check_provider') != null ? ' (${productHumanLine('app_check_provider', _pick(ctx, 'app_check_provider'))})' : ''}'
             '; on *.dev release builds often Play Integrity, not Firebase down.',
       'bootstrap_api' => 'Bootstrap API error.',
       'hang' => 'Hang/timeout during bootstrap.',
@@ -160,33 +369,52 @@ class SmartIssueSummary {
           : (message.length > 120 ? '${message.substring(0, 117)}…' : message),
     };
     final extras = <String>[
-      if (appVersionOk) 'app-version OK (200) — not Kong',
+      if (appVersionOk) 'App version OK (200) — not Kong',
       if (contributing.contains('app_check') && layer != 'app_check')
         'App Check also failed in same loop',
       if (contributing.contains('device_guard') && layer != 'device_guard')
-        'DeviceGuard also failed in same loop',
+        'Device Guard also failed in same loop',
       if (storm) 'retry storm — downgrade mid-retry from crashing',
     ];
     return extras.isEmpty ? primary : '$primary ${extras.join('; ')}.';
   }
 
   static List<String> _next(String layer, bool storm, Map<String, dynamic> ctx) {
+    String? ctxLine(String key) {
+      final v = _pick(ctx, key);
+      if (v == null) return null;
+      if (v == 'true' || v == 'false') return productHumanLine(key, v == 'true');
+      return productHumanLine(key, v);
+    }
+
     final next = <String>[
       switch (layer) {
-        'device_guard' =>
-          'Check DeviceGuard identity (`identity_state`=${_pick(ctx, 'identity_state') ?? '?'}, `has_hw_key`=${_pick(ctx, 'has_hw_key') ?? '?'})',
-        'app_check' =>
-          'Confirm App Check provider (provider=${_pick(ctx, 'app_check_provider') ?? '?'}, kDebugMode=${_pick(ctx, 'kDebugMode') ?? '?'})',
+        'device_guard' => () {
+            final bits = [
+              if (ctxLine('identity_state') != null) ctxLine('identity_state')!,
+              if (ctxLine('has_hw_key') != null) ctxLine('has_hw_key')!,
+            ];
+            return bits.isEmpty
+                ? 'Check Device Guard identity'
+                : 'Check Device Guard identity (${bits.join('; ')})';
+          }(),
+        'app_check' => () {
+            final bits = [
+              if (ctxLine('app_check_provider') != null) ctxLine('app_check_provider')!,
+              if (ctxLine('kDebugMode') != null) ctxLine('kDebugMode')!,
+            ];
+            return bits.isEmpty
+                ? 'Confirm App Check provider'
+                : 'Confirm App Check provider (${bits.join('; ')})';
+          }(),
         'bootstrap_api' => 'Inspect `/bootstrap/*` status + HMAC',
         'hang' => 'Profile splash for blocking native calls',
         _ => 'Confirm first hard failure in Timeline',
       },
-      if (storm) 'Keep `crashing` for failed_final only; mid-retry → error/warning',
+      if (storm) 'Keep crashing for Failed Final only; mid-retry → error/warning',
     ];
     return next;
   }
-
-  // ── helpers ──────────────────────────────────────────────────────
 
   static String? _pick(Map<String, dynamic> m, String key) {
     final v = str(m[key])?.trim();

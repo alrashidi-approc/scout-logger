@@ -2,13 +2,20 @@
 
 Short **agent brief** on issue/event detail (client-side, no LLM).
 
-## Output shape
+## UI
+
+Structured card: **Where** / **Failed at** / **Why** / **Next** (bullets) / **Meta** (chips).  
+**Copy** still pastes markdown for agents.
+
+Tokens are humanized (`device_guard` → Device Guard) via `product_readable` helpers.
+
+## Output shape (markdown copy)
 
 ```md
 ## Smart summary
 
-**Where:** `/splash` · `device_bootstrap_launch-auth-retry`
-**Failed at:** device_guard · `registration_failed`
+**Where:** `/splash` · Device Bootstrap Launch Auth Retry
+**Failed at:** Device Guard · Registration Failed
 **Why:** … (diagnosis prose if present, else heuristic)
 **Next:** … · …
 **Meta:** app@version · platform · env/release · events=N

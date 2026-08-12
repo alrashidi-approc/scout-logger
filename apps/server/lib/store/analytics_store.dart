@@ -370,7 +370,11 @@ class AnalyticsStore {
             SELECT
               COALESCE(SUM(events_total), 0)::int,
               COALESCE(SUM(errors), 0)::int,
-              COALESCE(SUM(crashes), 0)::int
+              COALESCE(SUM(crashes), 0)::int,
+              COALESCE(SUM(network_total), 0)::int,
+              COALESCE(SUM(session_total), 0)::int,
+              COALESCE(SUM(span_total), 0)::int,
+              COALESCE(SUM(log_total), 0)::int
             FROM daily_stats
             WHERE project_id = @pid
               AND (@fromDate::date IS NULL OR date >= @fromDate::date)
@@ -398,7 +402,7 @@ class AnalyticsStore {
           parameters: {'pid': projectId, ...timeParams(range)},
         );
         final d = daily.first;
-        return [d[0], d[1], d[2], 0, 0, 0, 0, users.first[0], sessions.first[0]];
+        return [d[0], d[1], d[2], d[3], d[4], d[5], d[6], users.first[0], sessions.first[0]];
       }
 
       final rows = await conn.execute(
@@ -452,7 +456,23 @@ class AnalyticsStore {
     late final int crashedSessions;
     if (useRollups) {
       crashedSessions = 0; // approximate from crash events below
-      byType = const [];
+      int countAt(int i) {
+        final v = cur[i];
+        return v == null ? 0 : (v is int ? v : (v as num).toInt());
+      }
+
+      final network = countAt(3);
+      final sessionsCount = countAt(4);
+      final spans = countAt(5);
+      final logs = countAt(6);
+      byType = [
+        if (network > 0) ['network', network],
+        if (sessionsCount > 0) ['session', sessionsCount],
+        if (spans > 0) ['span', spans],
+        if (logs > 0) ['log', logs],
+        if (countAt(1) > 0) ['error', countAt(1)],
+        if (countAt(2) > 0) ['crash', countAt(2)],
+      ];
       final platforms = await conn.execute(
         Sql.named('''
           SELECT platform, COUNT(*)::int

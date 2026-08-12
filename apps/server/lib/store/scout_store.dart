@@ -743,14 +743,29 @@ class ScoutStore {
     final day = occurredAt.toIso8601String().substring(0, 10);
     final errFlag = isErrorEvent(event.type, payload) ? 1 : 0;
     final crashFlag = event.type == 'crash' ? 1 : 0;
+    final networkFlag = event.type == 'network' ? 1 : 0;
+    final networkSuccess = event.type == 'network' && isSuccessEvent(event.type, payload) ? 1 : 0;
+    final networkError = event.type == 'network' && isErrorEvent(event.type, payload) ? 1 : 0;
+    final sessionFlag = event.type == 'session' ? 1 : 0;
+    final spanFlag = event.type == 'span' ? 1 : 0;
+    final logFlag = event.type == 'log' ? 1 : 0;
     await conn.execute(
       Sql.named('''
-        INSERT INTO daily_stats (project_id, date, country, events_total, errors, crashes, unique_users)
-        VALUES (@pid, @day::date, @country, 1, @err, @crash, @uu)
+        INSERT INTO daily_stats (
+          project_id, date, country, events_total, errors, crashes, unique_users,
+          network_total, network_success, network_error, session_total, span_total, log_total
+        )
+        VALUES (@pid, @day::date, @country, 1, @err, @crash, @uu, @net, @nets, @nete, @sess, @span, @log)
         ON CONFLICT (project_id, date, country) DO UPDATE SET
           events_total = daily_stats.events_total + 1,
           errors = daily_stats.errors + EXCLUDED.errors,
-          crashes = daily_stats.crashes + EXCLUDED.crashes
+          crashes = daily_stats.crashes + EXCLUDED.crashes,
+          network_total = daily_stats.network_total + EXCLUDED.network_total,
+          network_success = daily_stats.network_success + EXCLUDED.network_success,
+          network_error = daily_stats.network_error + EXCLUDED.network_error,
+          session_total = daily_stats.session_total + EXCLUDED.session_total,
+          span_total = daily_stats.span_total + EXCLUDED.span_total,
+          log_total = daily_stats.log_total + EXCLUDED.log_total
       '''),
       parameters: {
         'pid': projectId,
@@ -759,6 +774,12 @@ class ScoutStore {
         'err': errFlag,
         'crash': crashFlag,
         'uu': 0,
+        'net': networkFlag,
+        'nets': networkSuccess,
+        'nete': networkError,
+        'sess': sessionFlag,
+        'span': spanFlag,
+        'log': logFlag,
       },
     );
 
@@ -2155,7 +2176,11 @@ class ScoutStore {
     if (rows.isEmpty) throw ArgumentError('Project not found');
     final raw = rows.first[0];
     final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
-    return ProjectRemoteConfig.fromSettings(settings).toClientResponse();
+    final remote = ProjectRemoteConfig.fromSettings(settings);
+    return {
+      ...remote.toClientResponse(),
+      'retention': retentionFromSettings(settings).toClientJson(),
+    };
   }
 
   Future<Map<String, dynamic>> getClientConfig(String projectId) async => getProjectSettings(projectId);
@@ -2180,17 +2205,113 @@ class ScoutStore {
     final raw = rows.first[0];
     final current = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     final prev = ProjectRemoteConfig.fromSettings(current);
-    final merged = prev.sdk.mergePatch(patch);
-    final next = ProjectRemoteConfig(
-      configVersion: prev.configVersion + 1,
-      updatedAt: DateTime.now().toUtc().toIso8601String(),
-      sdk: merged,
-    );
+    final retentionPatch = patch['retention'];
+    final retention = retentionPatch is Map
+        ? retentionFromSettings(current).mergePatch(Map<String, dynamic>.from(retentionPatch))
+        : retentionFromSettings(current);
+    ProjectRemoteConfig next = prev;
+    if (patch.containsKey('sdk')) {
+      final merged = prev.sdk.mergePatch(patch);
+      next = ProjectRemoteConfig(
+        configVersion: prev.configVersion + 1,
+        updatedAt: DateTime.now().toUtc().toIso8601String(),
+        sdk: merged,
+      );
+    }
+    final settings = {
+      ...next.toSettingsJson(),
+      'retention': retention.toJson(),
+    };
     await conn.execute(
       Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
-      parameters: {'id': projectId, 'settings': jsonEncode(next.toSettingsJson())},
+      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
     );
-    return next.toClientResponse();
+    return {
+      ...next.toClientResponse(),
+      'retention': retention.toClientJson(),
+    };
+  }
+
+  /// Delete expired raw events for every project. Rollups and issue counts are kept.
+  Future<Map<String, int>> runEventRetentionForAllProjects({int batchSize = 10000}) async {
+    final conn = await db.connect();
+    final rows = await conn.execute('SELECT id, settings FROM projects');
+    final out = <String, int>{};
+    for (final row in rows) {
+      final projectId = row[0] as String;
+      final settings = row[1] is Map ? Map<String, dynamic>.from(row[1] as Map) : <String, dynamic>{};
+      final retention = retentionFromSettings(settings);
+      if (!retention.enabled) continue;
+      final deleted = await purgeExpiredEvents(projectId, retention: retention, batchSize: batchSize);
+      if (deleted > 0) out[projectId] = deleted;
+    }
+    return out;
+  }
+
+  /// Purge raw events past per-project retention windows. Does not touch rollups.
+  Future<int> purgeExpiredEvents(
+    String projectId, {
+    required ProjectRetentionConfig retention,
+    int batchSize = 10000,
+  }) async {
+    if (!retention.enabled) return 0;
+    final conn = await db.connect();
+    var total = 0;
+    final routineCutoff = DateTime.now().toUtc().subtract(Duration(days: retention.routineDays));
+    total += await _deleteExpiredEventBatch(
+      conn,
+      projectId: projectId,
+      cutoff: routineCutoff,
+      predicate: sqlRoutineRetentionEvent,
+      batchSize: batchSize,
+    );
+    if (retention.errorDays > 0) {
+      final errorCutoff = DateTime.now().toUtc().subtract(Duration(days: retention.errorDays));
+      total += await _deleteExpiredEventBatch(
+        conn,
+        projectId: projectId,
+        cutoff: errorCutoff,
+        predicate: sqlErrorRetentionEvent,
+        batchSize: batchSize,
+      );
+    }
+    await conn.execute(
+      Sql.named('''
+        DELETE FROM app_sessions
+        WHERE project_id = @pid AND started_at < @cutoff::timestamptz
+      '''),
+      parameters: {'pid': projectId, 'cutoff': routineCutoff},
+    );
+    return total;
+  }
+
+  Future<int> _deleteExpiredEventBatch(
+    Connection conn, {
+    required String projectId,
+    required DateTime cutoff,
+    required String predicate,
+    required int batchSize,
+  }) async {
+    var total = 0;
+    while (true) {
+      final rows = await conn.execute(
+        Sql.named('''
+          DELETE FROM events
+          WHERE id IN (
+            SELECT id FROM events
+            WHERE project_id = @pid
+              AND occurred_at < @cutoff::timestamptz
+              AND $predicate
+            LIMIT @limit
+          )
+          RETURNING id
+        '''),
+        parameters: {'pid': projectId, 'cutoff': cutoff, 'limit': batchSize},
+      );
+      total += rows.length;
+      if (rows.length < batchSize) break;
+    }
+    return total;
   }
 
   Future<void> appendDashboardLog({

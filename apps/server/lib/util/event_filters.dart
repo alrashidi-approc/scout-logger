@@ -37,6 +37,19 @@ const sqlIsRoutineEvent = '''
 /// Append as `AND $sqlFocusWorthyEvent` when view=focus.
 const sqlFocusWorthyEvent = 'NOT $sqlIsRoutineEvent';
 
+/// Raw events eligible for routine retention (logs, sessions, spans, success network).
+/// Keeps errors, crashes, and issue-linked rows for [errorDays].
+const sqlRoutineRetentionEvent = '''
+(
+  issue_id IS NULL
+  AND NOT is_error
+  AND NOT is_heartbeat
+)
+''';
+
+/// Raw events eligible for error retention when errorDays > 0.
+const sqlErrorRetentionEvent = '(is_error OR issue_id IS NOT NULL)';
+
 /// Stable bucket key for Grouped events view (ephemeral API rollup).
 String sqlEventGroupKey({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';

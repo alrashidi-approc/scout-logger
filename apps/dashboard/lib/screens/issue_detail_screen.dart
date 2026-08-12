@@ -330,7 +330,7 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           ],
         ),
         const SizedBox(height: 20),
-        SmartSummaryCard(markdown: SmartIssueSummary.fromIssue(issue, events)),
+        SmartSummaryCard(summary: SmartIssueSummary.fromIssue(issue, events)),
         if (issue['insights'] is Map) ...[
           const SizedBox(height: 20),
           _insightsCard(Map<String, dynamic>.from(issue['insights'] as Map)),

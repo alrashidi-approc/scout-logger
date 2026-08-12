@@ -37,6 +37,9 @@ class _ProjectSettingsCache {
     required this.ignoreCodes,
     required this.networkLogScope,
     required this.faultEdits,
+    required this.retentionEnabled,
+    required this.routineDays,
+    required this.errorDays,
   });
 
   final String? role;
@@ -51,6 +54,9 @@ class _ProjectSettingsCache {
   final Set<int> ignoreCodes;
   final String networkLogScope;
   final Map<int, String> faultEdits;
+  final bool retentionEnabled;
+  final int routineDays;
+  final int errorDays;
 }
 
 class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
@@ -76,6 +82,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
   Map<int, String> _faultEdits = {};
   final _newFaultCodeCtrl = TextEditingController();
+  bool _retentionEnabled = true;
+  int _routineDays = 30;
+  int _errorDays = 90;
+  final _routineDaysCtrl = TextEditingController(text: '30');
+  final _errorDaysCtrl = TextEditingController(text: '90');
   List<Map<String, dynamic>> _members = [];
   String _newMemberRole = assignableProjectRoles.first;
   bool _addingMember = false;
@@ -87,6 +98,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   void dispose() {
     _ignoreCodesCtrl.dispose();
     _newFaultCodeCtrl.dispose();
+    _routineDaysCtrl.dispose();
+    _errorDaysCtrl.dispose();
     _memberEmailCtrl.dispose();
     _memberPasswordCtrl.dispose();
     super.dispose();
@@ -114,6 +127,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
     _networkLogScope = cached.networkLogScope;
     _faultEdits = cached.faultEdits;
+    _retentionEnabled = cached.retentionEnabled;
+    _routineDays = cached.routineDays;
+    _errorDays = cached.errorDays;
+    _routineDaysCtrl.text = '$_routineDays';
+    _errorDaysCtrl.text = _errorDays == 0 ? '0' : '$_errorDays';
     _hasData = true;
     _loading = false;
     _refreshing = false;
@@ -137,6 +155,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         ignoreCodes: _ignoreCodes,
         networkLogScope: _networkLogScope,
         faultEdits: _faultEdits,
+        retentionEnabled: _retentionEnabled,
+        routineDays: _routineDays,
+        errorDays: _errorDays,
       ),
     );
   }
@@ -176,6 +197,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         sdk: ProjectSdkConfig.fromJson(settings['sdk'] is Map ? Map<String, dynamic>.from(settings['sdk'] as Map) : null),
       );
       final sdk = remote.sdk.resolved();
+      final retention = ProjectRetentionConfig.fromJson(
+        settings['retention'] is Map ? Map<String, dynamic>.from(settings['retention'] as Map) : null,
+      );
       List<Map<String, dynamic>> members = [];
       final canManage = role == 'owner' || AuthService.instance.isAdmin;
       if (canManage) {
@@ -195,6 +219,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
           _faultEdits = _buildFaultEdits(sdk.networkFaultByStatusCode ?? const {});
+          _retentionEnabled = retention.enabled;
+          _routineDays = retention.routineDays;
+          _errorDays = retention.errorDays;
+          _routineDaysCtrl.text = '${retention.routineDays}';
+          _errorDaysCtrl.text = retention.errorDays == 0 ? '0' : '${retention.errorDays}';
           _sdkHealth = health;
           _hasData = true;
           _loading = false;
@@ -229,6 +258,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'networkIgnoreStatusCodes': normalizeStatusCodes(_ignoreCodes.toList()),
           'networkLogScope': normalizeNetworkLogScope(_networkLogScope),
           'networkFaultByStatusCode': _faultOverridesToSave(),
+        },
+        'retention': {
+          'enabled': _retentionEnabled,
+          'routineDays': clampRetentionDays(int.tryParse(_routineDaysCtrl.text.trim()), defaultValue: _routineDays, max: ProjectRetentionConfig.maxRoutineDays),
+          'errorDays': clampErrorDays(int.tryParse(_errorDaysCtrl.text.trim())),
         },
       });
       if (mounted) {
@@ -749,6 +783,55 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                         _ignoreCodesCtrl.text = normalizeStatusCodes(_ignoreCodes.toList()).join(', ');
                       }),
                     ),
+                ],
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Data retention', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'Delete raw event payloads after N days. Daily counts and issue totals are kept forever.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Automatic cleanup'),
+                subtitle: const Text('Runs every few hours on the server'),
+                value: _retentionEnabled,
+                onChanged: (v) => setState(() => _retentionEnabled = v),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _routineDaysCtrl,
+                      enabled: _retentionEnabled,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Routine events (days)',
+                        helperText: 'Logs, sessions, spans, success network',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: TextField(
+                      controller: _errorDaysCtrl,
+                      enabled: _retentionEnabled,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Errors & issues (days)',
+                        helperText: '0 = keep raw errors forever',
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ]),

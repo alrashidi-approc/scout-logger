@@ -1076,3 +1076,74 @@ class NetworkReadablePanel extends StatelessWidget {
         ]),
       );
 }
+
+class ProductReadablePanel extends StatelessWidget {
+  const ProductReadablePanel({super.key, required this.view});
+
+  final EventView view;
+
+  @override
+  Widget build(BuildContext context) {
+    final readable = view.productReadable;
+    if (readable.isEmpty) return const SizedBox.shrink();
+
+    final chips = readable['chips'];
+    final lines = readable['lines'];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppTheme.info.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.info.withValues(alpha: 0.25)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (chips is List && chips.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final c in chips.whereType<Map>())
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppTheme.info.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '${c['label']}: ${c['value']}',
+                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppTheme.info),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            SelectableText(
+              str(readable['title']) ?? 'Product context',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, height: 1.35),
+            ),
+          ]),
+        ),
+        if (lines is List && lines.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          const Text('What this means', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+          const SizedBox(height: 8),
+          ...lines.whereType<String>().map(
+                (line) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('• ', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700)),
+                    Expanded(child: SelectableText(line, style: const TextStyle(fontSize: 13, height: 1.45))),
+                  ]),
+                ),
+              ),
+        ],
+      ],
+    );
+  }
+}

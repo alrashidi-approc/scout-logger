@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:scout_models/scout_models.dart';
 
 import 'geo_source.dart';
+import 'product_readable.dart';
 import 'user_identity.dart';
 
 Map<String, dynamic> asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : {};
@@ -352,21 +353,31 @@ class EventView {
     ];
   }
 
-  List<DetailField> customFields() {
+  /// Product tags (`custom` / `context` / unknown payload keys). Later keys win.
+  Map<String, dynamic> productFieldsMap() {
     const known = {
       'message', 'stack', 'stackTrace', 'stacktrace', 'release', 'environment', 'level', 'category',
       'user', 'device', 'screen', 'network', 'method', 'url', 'statusCode', 'route', 'breadcrumbs',
       'userFlow', 'screenTrail', 'custom', 'context', 'overview', 'session', 'sessionId',
       'diagnosis', 'diagnosisContext',
     };
-    final out = <DetailField>[];
+    final out = <String, dynamic>{};
     for (final e in payload.entries) {
       if (known.contains(e.key)) continue;
+      out[e.key] = e.value;
+    }
+    out.addAll(custom);
+    out.addAll(context);
+    return out;
+  }
+
+  Map<String, dynamic> get productReadable => productReadableFrom(productFieldsMap());
+
+  List<DetailField> customFields() {
+    final out = <DetailField>[];
+    for (final e in productFieldsMap().entries) {
       out.add(DetailField(e.key, _fmt(e.value), mono: e.value is Map || e.value is List));
     }
-    // SDK puts product tags in `custom` and diagnostic flags in `context`.
-    out.addAll(_extraMap(custom));
-    out.addAll(_extraMap(context));
     return out;
   }
 

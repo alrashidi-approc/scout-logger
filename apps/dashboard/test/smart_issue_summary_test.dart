@@ -51,7 +51,7 @@ Map<String, dynamic> _crumb(String message, {String? at}) => {
 
 void main() {
   test('1. registration_failed → device_guard, Keystore not Firebase Auth', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       operation: 'device_bootstrap_launch-auth-retry',
       breadcrumbs: [
@@ -61,15 +61,16 @@ void main() {
       ],
     )));
 
-    expect(md, contains('**Failed at:** device_guard'));
-    expect(md, contains('Keystore'));
-    expect(md, contains('not Firebase Auth'));
-    expect(md, contains('registration_failed'));
-    expect(md, isNot(contains('### Flow')));
+    expect(s.failedAt, contains('Device Guard'));
+    expect(s.failedAt, contains('Registration Failed'));
+    expect(s.why, contains('Keystore'));
+    expect(s.why, contains('not Firebase Auth'));
+    expect(s.markdown, contains('**Failed at:** Device Guard'));
+    expect(s.markdown, isNot(contains('### Flow')));
   });
 
   test('2. App Check only → app_check', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'Firebase App Check token unavailable',
       operation: 'device_bootstrap_launch',
       breadcrumbs: [
@@ -78,13 +79,13 @@ void main() {
       ],
     )));
 
-    expect(md, contains('**Failed at:** app_check'));
-    expect(md, contains('App Check'));
-    expect(md, isNot(contains('**Failed at:** device_guard')));
+    expect(s.failedAt, contains('App Check'));
+    expect(s.why, contains('App Check'));
+    expect(s.failedAt, isNot(contains('Device Guard')));
   });
 
   test('3. Mixed → first blocking primary; other in Why', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       operation: 'device_bootstrap_launch-auth-retry',
       breadcrumbs: [
@@ -93,12 +94,12 @@ void main() {
       ],
     )));
 
-    expect(md, contains('**Failed at:** device_guard'));
-    expect(md, contains('App Check also failed'));
+    expect(s.failedAt, contains('Device Guard'));
+    expect(s.why, contains('App Check also failed'));
   });
 
   test('4. Retry storm noted in Why/Meta', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       operation: 'device_bootstrap_launch-auth-retry',
       context: {'attempt': 'retry', 'outcome': 'failed_final'},
@@ -109,11 +110,12 @@ void main() {
       ],
     )));
 
-    expect(md.toLowerCase(), contains('retry'));
+    expect(s.markdown.toLowerCase(), contains('retry'));
+    expect(s.meta, contains('Retry storm'));
   });
 
   test('5. app-version 200 → noted as not Kong', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       operation: 'device_bootstrap_launch',
       breadcrumbs: [
@@ -122,24 +124,24 @@ void main() {
       ],
     )));
 
-    expect(md, contains('app-version OK'));
+    expect(s.why, contains('App version OK'));
   });
 
   test('6. Missing breadcrumbs → still renders brief', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'Something broke',
       breadcrumbs: null,
     )));
 
-    expect(md, contains('## Smart summary'));
-    expect(md, contains('**Where:**'));
-    expect(md, contains('**Why:**'));
-    expect(md, contains('**Meta:**'));
-    expect(md, isNot(contains('| App |')));
+    expect(s.markdown, contains('## Smart summary'));
+    expect(s.where, isNotEmpty);
+    expect(s.why, isNotEmpty);
+    expect(s.meta, isNotEmpty);
+    expect(s.markdown, isNot(contains('| App |')));
   });
 
   test('prefers diagnosis prose over heuristics', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       diagnosis: {
         'summary': 'App Check token fetch failed',
@@ -150,23 +152,23 @@ void main() {
       breadcrumbs: [_crumb('device guard registration_failed')],
     )));
 
-    expect(md, contains('App Check token fetch failed'));
-    expect(md, contains('Debug token not registered'));
-    expect(md, contains('Register debug token'));
+    expect(s.why, contains('App Check token fetch failed'));
+    expect(s.why, contains('Debug token not registered'));
+    expect(s.next, contains('Register debug token'));
   });
 
   test('prefers structured failure_layer', () {
-    final md = SmartIssueSummary.fromEvent(EventView(_event(
+    final s = SmartIssueSummary.fromEvent(EventView(_event(
       message: 'PlatformException(registration_failed, null, null, null)',
       context: {'failure_layer': 'app_check'},
       breadcrumbs: [_crumb('device guard registration_failed')],
     )));
 
-    expect(md, contains('**Failed at:** app_check'));
+    expect(s.failedAt, contains('App Check'));
   });
 
   test('issue aggregation includes event count', () {
-    final md = SmartIssueSummary.fromIssue(
+    final s = SmartIssueSummary.fromIssue(
       {
         'title': 'registration_failed',
         'eventCount': 42,
@@ -185,13 +187,74 @@ void main() {
         ),
       ],
     );
-    expect(md, contains('events=`42`'));
-    expect(md, contains('retry-storm'));
+    expect(s.meta.join(' '), contains('events=`42`'));
+    expect(s.meta, contains('Retry storm'));
   });
 
   test('empty issue events still renders', () {
-    final md = SmartIssueSummary.fromIssue({'title': 'empty', 'eventCount': 0}, const []);
-    expect(md, contains('## Smart summary'));
-    expect(md, contains('**Why:**'));
+    final s = SmartIssueSummary.fromIssue({'title': 'empty', 'eventCount': 0}, const []);
+    expect(s.markdown, contains('## Smart summary'));
+    expect(s.why, isNotEmpty);
+  });
+
+  test('network tenant_missing explains client header failure', () {
+    final s = SmartIssueSummary.fromEvent(EventView({
+      'id': 'evt_net',
+      'type': 'network',
+      'environment': 'staging',
+      'payload': {
+        'message': 'GET /khadamat-service/api/v1/mobile/faqs?page=1&page_size=10 — no response (unknown)',
+        'level': 'error',
+        'category': 'network',
+        'environment': 'staging',
+        'screen': {'currentRoute': '/faqs'},
+        'device': {'platform': 'ios', 'osVersion': '26.5.2', 'manufacturer': 'Apple', 'model': 'iPhone'},
+        'release': {
+          'name': 'com.example.egyptconsulate.dev@1.0.2+85',
+          'bundleId': 'com.example.egyptconsulate.dev',
+          'version': '1.0.2',
+          'buildNumber': '85',
+        },
+        'packageName': 'com.example.egyptconsulate.dev',
+        'network': {
+          'url': 'https://mofa-api-gateway-srvice.fedis.app/khadamat-service/api/v1/mobile/faqs?page=1&page_size=10',
+          'method': 'GET',
+          'error': '[client:tenant_missing] x-tenant-id is not set',
+          'errorType': 'unknown',
+          'durationMs': 395,
+          'hasResponse': false,
+          'readable': {
+            'title': 'GET /khadamat-service/api/v1/mobile/faqs?page=1&page_size=10 — no response (unknown)',
+            'outcome': 'no_response',
+            'outcomeLabel': 'No response',
+            'actionHint': 'No usable HTTP response — check connectivity, TLS, timeouts, or client config.',
+            'request': {
+              'method': 'GET',
+              'path': '/khadamat-service/api/v1/mobile/faqs?page=1&page_size=10',
+              'summary': 'GET /faqs',
+            },
+            'fault': {
+              'kind': 'transport',
+              'label': 'Transport failure',
+              'actionHint': 'No usable HTTP response — check connectivity, TLS, timeouts, or client config.',
+              'faultClass': 'critical',
+              'alertWorthy': true,
+              'issueWorthy': true,
+              'operationalError': true,
+            },
+          },
+        },
+      },
+    }));
+
+    expect(s.where, contains('/faqs'));
+    expect(s.where, contains('GET'));
+    expect(s.failedAt, contains('Network'));
+    expect(s.failedAt, contains('Tenant Missing'));
+    expect(s.why, contains('tenant_missing'));
+    expect(s.why, contains('x-tenant-id'));
+    expect(s.why.toLowerCase(), isNot(contains('failed at: unknown')));
+    expect(s.next.join(' '), contains('x-tenant-id'));
+    expect(s.next.join(' '), isNot(contains('Confirm first hard failure')));
   });
 }

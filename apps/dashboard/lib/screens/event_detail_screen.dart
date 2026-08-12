@@ -258,7 +258,7 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
                 : null,
           ),
           const SizedBox(height: 16),
-          SmartSummaryCard(markdown: SmartIssueSummary.fromEvent(v)),
+          SmartSummaryCard(summary: SmartIssueSummary.fromEvent(v)),
           const SizedBox(height: 16),
           EventDetailGroup(
             title: 'Overview',
@@ -397,10 +397,27 @@ class _EventDetailScreenState extends State<EventDetailScreen> {
               InfoSection(
                 title: 'Product context',
                 icon: Icons.business_outlined,
-                child: v.customFields().isEmpty
-                    ? const Text('No extra context',
-                        style: TextStyle(color: AppTheme.muted))
-                    : FieldGrid(fields: v.customFields()),
+                child: () {
+                  final fields = v.customFields();
+                  if (fields.isEmpty) {
+                    return const Text('No extra context',
+                        style: TextStyle(color: AppTheme.muted));
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ProductReadablePanel(view: v),
+                      const SizedBox(height: 16),
+                      const Text('Technical details',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.muted)),
+                      const SizedBox(height: 8),
+                      FieldGrid(fields: fields),
+                    ],
+                  );
+                }(),
               ),
             ],
           ),
