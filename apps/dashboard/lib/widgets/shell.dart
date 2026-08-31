@@ -39,6 +39,7 @@ class _DashboardShellState extends State<DashboardShell> {
     (Icons.public_outlined, Icons.public, 'Geography'),
     (Icons.terminal_outlined, Icons.terminal, 'UI errors'),
     (Icons.description_outlined, Icons.description, 'Reports'),
+    (Icons.monitor_heart_outlined, Icons.monitor_heart, 'Server health'),
     (Icons.notifications_outlined, Icons.notifications, 'Notifications'),
     (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
@@ -89,8 +90,9 @@ class _DashboardShellState extends State<DashboardShell> {
     if (path.contains('/geo')) return 7;
     if (path.contains('/logs')) return 8;
     if (path.contains('/reports')) return 9;
-    if (path.contains('/notifications')) return 10;
-    if (path.contains('/settings')) return 11;
+    if (path.contains('/health-check')) return 10;
+    if (path.contains('/notifications')) return 11;
+    if (path.contains('/settings')) return 12;
     return 0;
   }
 
@@ -109,8 +111,9 @@ class _DashboardShellState extends State<DashboardShell> {
       7 => '/p/$id/geo',
       8 => '/p/$id/logs',
       9 => '/p/$id/reports',
-      10 => '/p/$id/notifications',
-      11 => '/p/$id/settings',
+      10 => '/p/$id/health-check',
+      11 => '/p/$id/notifications',
+      12 => '/p/$id/settings',
       _ => '/projects',
     };
     return Uri(path: path, queryParameters: periodQ).toString();

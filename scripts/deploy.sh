@@ -85,6 +85,9 @@ else
   fi
 fi
 
+echo "==> Fetching Linux Dart SDK for health-check scripts..."
+bash "${ROOT}/scripts/fetch-dart-sdk.sh"
+
 RSYNC_EXCLUDES=(
   --exclude .git
   --exclude .ship

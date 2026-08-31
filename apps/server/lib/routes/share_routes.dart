@@ -93,6 +93,25 @@ Handler shareRoutes(ScoutStore store) {
         );
       }
 
+      if (type == 'health_check') {
+        final raw = meta['payload'];
+        final snapshot = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : raw is String
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+                : <String, dynamic>{};
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'type': 'health_check',
+            'projectName': projectName,
+            'snapshot': snapshot,
+            'expiresAt': meta['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       final rid = meta['resourceId'] as String;
 
       if (type == 'event') {

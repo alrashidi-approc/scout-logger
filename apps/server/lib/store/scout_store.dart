@@ -2476,6 +2476,124 @@ class ScoutStore {
     return {'token': token, 'expiresAt': expiresAt.toIso8601String()};
   }
 
+  /// Stable per-project share link — payload updates on each health check run.
+  Future<Map<String, dynamic>> upsertHealthCheckShareSnapshot({
+    required String projectId,
+    required Map<String, dynamic> snapshot,
+    String? createdBy,
+    int expiresInDays = 365,
+  }) async {
+    final conn = await db.connect();
+    final projRows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id FOR UPDATE'),
+      parameters: {'id': projectId},
+    );
+    if (projRows.isEmpty) throw ArgumentError('Project not found');
+
+    final settings = projRows.first[0] is Map
+        ? Map<String, dynamic>.from(projRows.first[0] as Map)
+        : <String, dynamic>{};
+    final healthCheck = settings['healthCheck'] is Map
+        ? Map<String, dynamic>.from(settings['healthCheck'] as Map)
+        : <String, dynamic>{};
+    final shareMeta = healthCheck['share'] is Map
+        ? Map<String, dynamic>.from(healthCheck['share'] as Map)
+        : <String, dynamic>{};
+
+    final expiresAt = DateTime.now().toUtc().add(Duration(days: expiresInDays.clamp(30, 365)));
+    final token = (shareMeta['token'] as String?)?.trim();
+    final useToken = token != null && token.isNotEmpty ? token : newToken();
+    final payloadJson = jsonEncode(snapshot);
+
+    final existing = await conn.execute(
+      Sql.named('''
+        SELECT 1 FROM share_tokens
+        WHERE project_id = @pid AND resource_type = 'health_check' AND token_hash = @hash
+          AND revoked_at IS NULL
+        LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'hash': hashToken(useToken)},
+    );
+
+    if (existing.isNotEmpty) {
+      await conn.execute(
+        Sql.named('''
+          UPDATE share_tokens
+          SET payload = @payload::jsonb, expires_at = @exp
+          WHERE project_id = @pid AND resource_type = 'health_check' AND token_hash = @hash
+            AND revoked_at IS NULL
+        '''),
+        parameters: {
+          'payload': payloadJson,
+          'exp': expiresAt,
+          'pid': projectId,
+          'hash': hashToken(useToken),
+        },
+      );
+    } else {
+      await conn.execute(
+        Sql.named('''
+          INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, created_by, payload)
+          VALUES (@id, @pid, 'health_check', @pid, @hash, @exp, @uid, @payload::jsonb)
+        '''),
+        parameters: {
+          'id': newId(),
+          'pid': projectId,
+          'hash': hashToken(useToken),
+          'exp': expiresAt,
+          'uid': createdBy,
+          'payload': payloadJson,
+        },
+      );
+    }
+
+    final share = {
+      'token': useToken,
+      'expiresAt': expiresAt.toIso8601String(),
+      'updatedAt': DateTime.now().toUtc().toIso8601String(),
+    };
+    healthCheck['share'] = share;
+    settings['healthCheck'] = healthCheck;
+    await conn.execute(
+      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
+      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
+    );
+    return share;
+  }
+
+  Future<Map<String, dynamic>?> getHealthCheckShareMeta(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named("SELECT settings->'healthCheck' FROM projects WHERE id = @id"),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) return null;
+    final raw = rows.first[0];
+    if (raw is! Map) return null;
+    final healthCheck = Map<String, dynamic>.from(raw);
+    final share = healthCheck['share'];
+    if (share is! Map) return null;
+    final token = share['token']?.toString();
+    if (token == null || token.isEmpty) return null;
+
+    final valid = await conn.execute(
+      Sql.named('''
+        SELECT expires_at FROM share_tokens
+        WHERE project_id = @pid AND resource_type = 'health_check' AND token_hash = @hash
+          AND revoked_at IS NULL AND expires_at > now()
+        LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'hash': hashToken(token)},
+    );
+    if (valid.isEmpty) return null;
+
+    return {
+      'token': token,
+      'expiresAt': (valid.first[0] as DateTime).toUtc().toIso8601String(),
+      'updatedAt': share['updatedAt'],
+    };
+  }
+
   Future<Map<String, dynamic>?> resolveShareToken(String rawToken) async {
     if (rawToken.isEmpty || rawToken.length > 128) return null;
     final conn = await db.connect();

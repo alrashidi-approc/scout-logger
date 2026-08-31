@@ -9,6 +9,7 @@ import '../services/api_client.dart';
 import '../utils/clipboard.dart';
 import '../utils/share_seo.dart';
 import '../theme/app_theme.dart';
+import '../widgets/shared_health_check_view.dart';
 import '../widgets/page_placeholder.dart';
 import '../widgets/shared_report_view.dart';
 import 'package:scout_models/scout_models.dart';
@@ -31,6 +32,8 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
   Map<String, dynamic>? _issue;
   Map<String, dynamic>? _alertData;
   Report? _report;
+  Map<String, dynamic>? _healthCheckSnapshot;
+  String? _projectName;
   String? _expiresAt;
   bool _loading = true;
   bool _invalid = false;
@@ -73,6 +76,15 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
         setState(() {
           _type = type;
           _report = raw is Map ? Report.fromJson(Map<String, dynamic>.from(raw)) : null;
+          _expiresAt = res['expiresAt'] as String?;
+          _loading = false;
+        });
+      } else if (type == 'health_check') {
+        final raw = res['snapshot'];
+        setState(() {
+          _type = type;
+          _projectName = res['projectName'] as String?;
+          _healthCheckSnapshot = raw is Map ? Map<String, dynamic>.from(raw) : null;
           _expiresAt = res['expiresAt'] as String?;
           _loading = false;
         });
@@ -137,6 +149,28 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
         ),
       );
     }
+    if (_type == 'health_check' && _healthCheckSnapshot != null) {
+      return Material(
+        color: AppTheme.bg,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SharedBanner(
+              shareUrl: _shareUrl,
+              expiresAt: _expiresAt,
+              onCopy: () => _copyLink(context),
+              hint: 'Snapshot updates when the health check runs again',
+            ),
+            Expanded(
+              child: SharedHealthCheckView(
+                projectName: _projectName ?? 'Project',
+                snapshot: _healthCheckSnapshot!,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Material(
       color: AppTheme.bg,
       child: Column(
@@ -159,11 +193,17 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
 }
 
 class _SharedBanner extends StatelessWidget {
-  const _SharedBanner({required this.shareUrl, this.expiresAt, required this.onCopy});
+  const _SharedBanner({
+    required this.shareUrl,
+    this.expiresAt,
+    required this.onCopy,
+    this.hint,
+  });
 
   final String shareUrl;
   final String? expiresAt;
   final VoidCallback onCopy;
+  final String? hint;
 
   @override
   Widget build(BuildContext context) {
@@ -180,7 +220,8 @@ class _SharedBanner extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                expiryText != null ? 'Read-only · $expiryText' : 'Read-only · view only, no edits',
+                hint ??
+                    (expiryText != null ? 'Read-only · $expiryText' : 'Read-only · view only, no edits'),
                 style: const TextStyle(fontSize: 12, color: AppTheme.muted, fontWeight: FontWeight.w600),
               ),
             ),

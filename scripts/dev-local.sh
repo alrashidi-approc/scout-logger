@@ -71,6 +71,7 @@ case "$cmd" in
           echo "Build dashboard first: ./dev dashboard"
           exit 1
         fi
+        bash "${ROOT}/scripts/fetch-dart-sdk.sh"
         export PORT="$DEV_PORT"
         export PUBLIC_URL="http://localhost:${DEV_PORT}"
         export DB_PORT="$DEV_DB_PORT"

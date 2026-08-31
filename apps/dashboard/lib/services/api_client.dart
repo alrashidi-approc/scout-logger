@@ -414,6 +414,44 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['health']);
   }
 
+  Future<Map<String, dynamic>> fetchHealthCheck(String projectId) async {
+    final res = await _client.get(_uri('/api/projects/$projectId/health-check'), headers: _headers);
+    _ok(res);
+    final body = jsonDecode(res.body) as Map;
+    return {
+      'script': jsonMap(body['script']),
+      'latestRun': body['latestRun'] == null ? null : jsonMap(body['latestRun']),
+      'share': body['share'] == null ? null : jsonMap(body['share']),
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> fetchHealthCheckRuns(String projectId, {int limit = 20}) async {
+    final uri = _uri('/api/projects/$projectId/health-check/runs').replace(queryParameters: {'limit': '$limit'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonListMaps((jsonDecode(res.body) as Map)['runs']);
+  }
+
+  Future<Map<String, dynamic>> saveHealthCheckScript(String projectId, String script) async {
+    final res = await _client.put(
+      _uri('/api/projects/$projectId/health-check/script'),
+      headers: _headers,
+      body: jsonEncode({'script': script}),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['script']);
+  }
+
+  Future<Map<String, dynamic>> runHealthCheck(String projectId) async {
+    final res = await _client.post(_uri('/api/projects/$projectId/health-check/run'), headers: _headers);
+    _ok(res, projectId: projectId);
+    final body = jsonDecode(res.body) as Map;
+    return {
+      'run': jsonMap(body['run']),
+      'share': body['share'] == null ? null : jsonMap(body['share']),
+    };
+  }
+
   Future<Map<String, dynamic>> fetchProjectSettings(String projectId) async {
     final res = await _client.get(_uri('/api/projects/$projectId/settings'), headers: _headers);
     _ok(res);

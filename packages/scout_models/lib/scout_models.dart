@@ -10,3 +10,4 @@ export 'src/notification_config.dart';
 export 'src/report.dart';
 export 'src/sdk_config.dart';
 export 'src/retention_config.dart';
+export 'src/health_check.dart';

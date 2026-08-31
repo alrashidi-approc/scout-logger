@@ -16,7 +16,10 @@ import '../store/scout_store.dart';
 import '../notifications/notification_service.dart';
 import '../notifications/notification_router.dart';
 import '../reports/report_service.dart';
+import '../store/health_check_store.dart';
+import '../health_check/health_check_runner.dart';
 import '../util/dates.dart';
+import '../util/dashboard_links.dart';
 import 'admin_routes.dart';
 
 TimeWindow _window(Map<String, String> q, {int defaultDays = 7}) =>
@@ -56,6 +59,8 @@ Handler apiRoutes(
 }) {
   final router = Router();
   final reportService = ReportService(store, analytics, notifications: notificationStore);
+  final healthCheckStore = HealthCheckStore(store.db);
+  final healthCheckRunner = HealthCheckRunner(healthCheckStore, store, config);
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
   router.get('/auth/me', meRoute(auth: authStore, config: config));
@@ -594,6 +599,125 @@ Handler apiRoutes(
       } on ArgumentError {
         return jsonErr('Project not found', status: 404);
       }
+    });
+  });
+
+  router.get('/projects/<id>/health-check', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final script = await healthCheckStore.getScript(id);
+      final runs = await healthCheckStore.listRuns(id, limit: 1);
+      var shareMeta = await store.getHealthCheckShareMeta(id);
+      if (shareMeta == null && runs.isNotEmpty && runs.first['report'] != null) {
+        final runId = runs.first['id'] as String;
+        final run = await healthCheckStore.getRun(id, runId);
+        if (run != null && run['report'] != null) {
+          await store.upsertHealthCheckShareSnapshot(
+            projectId: id,
+            snapshot: {
+              'runId': run['id'],
+              'status': run['status'],
+              if (run['startedAt'] != null) 'startedAt': run['startedAt'],
+              if (run['finishedAt'] != null) 'finishedAt': run['finishedAt'],
+              if (run['durationMs'] != null) 'durationMs': run['durationMs'],
+              'report': Map<String, dynamic>.from(run['report'] as Map),
+            },
+          );
+          shareMeta = await store.getHealthCheckShareMeta(id);
+        }
+      }
+      Map<String, dynamic>? share;
+      if (shareMeta != null) {
+        final token = shareMeta['token'] as String;
+        share = {
+          'token': token,
+          'url': dashboardShareUrl(config, token),
+          'path': '${config.dashboardUrlPath}/share/$token',
+          'expiresAt': shareMeta['expiresAt'],
+          if (shareMeta['updatedAt'] != null) 'updatedAt': shareMeta['updatedAt'],
+        };
+      }
+      return Response.ok(
+        jsonEncode({
+          'ok': true,
+          'script': script,
+          'latestRun': runs.isEmpty ? null : runs.first,
+          if (share != null) 'share': share,
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    });
+  });
+
+  router.put('/projects/<id>/health-check/script', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      try {
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final script = body['script']?.toString() ?? '';
+        final auth = authFrom(request);
+        final saved = await healthCheckStore.saveScript(
+          projectId: id,
+          script: script,
+          updatedBy: auth?.userId,
+        );
+        return Response.ok(jsonEncode({'ok': true, 'script': saved}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr('$e', status: 400);
+      }
+    });
+  });
+
+  router.post('/projects/<id>/health-check/run', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      try {
+        final auth = authFrom(request);
+        final run = await healthCheckRunner.run(id, triggeredBy: auth?.userId);
+        final shareMeta = await store.getHealthCheckShareMeta(id);
+        Map<String, dynamic>? share;
+        if (shareMeta != null) {
+          final token = shareMeta['token'] as String;
+          share = {
+            'token': token,
+            'url': dashboardShareUrl(config, token),
+            'path': '${config.dashboardUrlPath}/share/$token',
+            'expiresAt': shareMeta['expiresAt'],
+            if (shareMeta['updatedAt'] != null) 'updatedAt': shareMeta['updatedAt'],
+          };
+        }
+        return Response.ok(
+          jsonEncode({'ok': true, 'run': run, if (share != null) 'share': share}),
+          headers: {'Content-Type': 'application/json'},
+        );
+      } on ArgumentError catch (e) {
+        return jsonErr('$e', status: 400);
+      } on StateError catch (e) {
+        return jsonErr('$e', status: 409);
+      }
+    });
+  });
+
+  router.get('/projects/<id>/health-check/runs', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 20;
+      final runs = await healthCheckStore.listRuns(id, limit: limit);
+      return Response.ok(jsonEncode({'ok': true, 'runs': runs}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/health-check/runs/<runId>', (Request request, String id, String runId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final run = await healthCheckStore.getRun(id, runId);
+      if (run == null) return jsonErr('Run not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'run': run}), headers: {'Content-Type': 'application/json'});
     });
   });
 

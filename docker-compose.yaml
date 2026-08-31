@@ -24,6 +24,7 @@ services:
     build:
       context: .
       dockerfile: apps/server/Dockerfile
+      network: host
     restart: unless-stopped
     env_file:
       - .env

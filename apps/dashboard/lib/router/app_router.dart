@@ -18,6 +18,7 @@ import '../screens/overview_screen.dart';
 import '../screens/reports_screen.dart';
 import '../screens/dashboard_logs_screen.dart';
 import '../screens/project_notifications_screen.dart';
+import '../screens/health_check_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/session_detail_screen.dart';
@@ -331,6 +332,10 @@ GoRouter createRouter() {
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters, defaultDays: 30),
               ),
             ),
+          ),
+          GoRoute(
+            path: '/p/:projectId/health-check',
+            pageBuilder: (c, s) => scoutPage(s, HealthCheckScreen(projectId: s.pathParameters['projectId']!)),
           ),
           GoRoute(
             path: '/p/:projectId/settings',
