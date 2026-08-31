@@ -391,17 +391,38 @@ class _HistoryTile extends StatelessWidget {
     final report = run['report'] is Map ? HealthCheckReport.fromJson(Map<String, dynamic>.from(run['report'] as Map)) : null;
     final stats = report?.stats;
     final okLabel = stats != null ? '${stats.ok}/${stats.total} ok' : '${report?.okCount ?? 0}/${report?.checks.length ?? 0} ok';
-    return ListTile(
-      selected: selected,
-      onTap: onTap,
-      leading: Icon(
-        Icons.circle,
-        size: 10,
-        color: report != null ? HealthCheckReportCard.verdictColor(report.verdict) : AppTheme.muted,
+    final issues = (report?.failCount ?? 0) + (report?.timeoutCount ?? 0);
+    final duration = (run['durationMs'] as num?)?.toInt();
+    final durLabel = duration == null
+        ? '—'
+        : duration >= 1000
+            ? '${(duration / 1000).toStringAsFixed(1)}s'
+            : '${duration}ms';
+    return Card(
+      margin: const EdgeInsets.only(bottom: 6),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: selected ? AppTheme.primary : AppTheme.border, width: selected ? 1.5 : 1),
       ),
-      title: Text(report?.summary ?? '${run['status']} · ${run['startedAt'] ?? ''}'),
-      subtitle: report != null ? Text('$okLabel · ${report.verdict}') : null,
-      trailing: Text('${run['durationMs'] ?? '—'} ms', style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
+      child: ListTile(
+        selected: selected,
+        onTap: onTap,
+        leading: CircleAvatar(
+          radius: 14,
+          backgroundColor: (report != null ? HealthCheckReportCard.verdictColor(report.verdict) : AppTheme.muted).withValues(alpha: 0.12),
+          child: Icon(
+            report != null ? Icons.monitor_heart_outlined : Icons.help_outline,
+            size: 16,
+            color: report != null ? HealthCheckReportCard.verdictColor(report.verdict) : AppTheme.muted,
+          ),
+        ),
+        title: Text(report?.summary ?? '${run['status']} · ${run['startedAt'] ?? ''}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        subtitle: report != null
+            ? Text('$okLabel · ${report.verdict}${issues > 0 ? ' · $issues issue${issues == 1 ? '' : 's'}' : ''}', style: const TextStyle(fontSize: 11))
+            : null,
+        trailing: Text(durLabel, style: const TextStyle(color: AppTheme.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+      ),
     );
   }
 }
