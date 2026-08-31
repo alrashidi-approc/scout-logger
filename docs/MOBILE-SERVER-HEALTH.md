@@ -18,7 +18,8 @@ Each Scout project can upload a **Dart script** that probes the backend servers 
 
 - Language: **Dart** (SDK ^3.5).
 - Entry: `main()` in a single file named `health_check.dart`.
-- Output: print **one JSON object per check** to stdout (prefix `SCOUT_REPORT:`). Scout keeps the latest line — so timeouts still show completed checks.
+- Output: print **`SCOUT_REPORT:{json}`** after each check to stdout (with **`stdout.flush()`**). Scout keeps the richest report — so timeouts still show completed checks.
+- Human logs: **stderr only** (`stderr.writeln('→ auth.login')`).
 - Allowed imports: Dart core libraries only (`dart:io`, `dart:convert`, `dart:async`, …). No `pubspec.yaml` — keep checks self-contained with `HttpClient`.
 - Max size: **128 KB**.
 
@@ -51,7 +52,9 @@ Each Scout project can upload a **Dart script** that probes the backend servers 
 | `checks` | Yes | Array of check results |
 | `checks[].name` | Yes | MD `id` slug |
 | `checks[].status` | Yes | `ok` · `fail` · `timeout` · `skipped` |
-| `stats` | Yes | Running totals (see prompt helper) |
+| `checks[].url` | Yes | Full URL (Copy URL / cURL in dashboard) |
+| `checks[].detail` | Yes | `HTTP {code}` · `TimeoutException after 10s` · `skipped: …` |
+| `stats` | Yes | Running totals on **every** emit |
 | `current` | Recommended | Check running **before** HTTP call |
 | `pending` | Recommended | IDs not started yet |
 

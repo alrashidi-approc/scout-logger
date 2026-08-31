@@ -16,6 +16,11 @@ import 'dart:io';
 const exampleHealthUrl = 'https://example.com/health';
 const includeWrite = false;
 
+const globalDeadline = Duration(seconds: 280);
+const checkTimeout = Duration(seconds: 10);
+
+bool pastDeadline(Stopwatch sw) => sw.elapsed >= globalDeadline;
+
 void emitReport({
   required List<Map<String, dynamic>> checks,
   required List<String> allIds,
@@ -25,57 +30,66 @@ void emitReport({
   final ok = checks.where((c) => c['status'] == 'ok').length;
   final fail = checks.where((c) => c['status'] == 'fail').length;
   final timeout = checks.where((c) => c['status'] == 'timeout').length;
+  final skipped = checks.where((c) => c['status'] == 'skipped').length;
   final completed = checks.length;
   final total = allIds.length;
   final pendingN = pending.isNotEmpty ? pending.length : total - completed - (current == null ? 0 : 1);
   final verdict = fail + timeout == 0 && pendingN == 0 ? 'healthy' : ok > 0 ? 'degraded' : 'unhealthy';
+  final summary = current == null
+      ? '\$ok/\$total ok\${fail > 0 ? ', \$fail fail' : ''}\${timeout > 0 ? ', \$timeout timeout' : ''}'
+      : '\$completed/\$total done — running \$current';
   stdout.writeln('SCOUT_REPORT:\${jsonEncode({
     'verdict': verdict,
-    'summary': current == null ? '\$ok/\$total ok' : '\$completed/\$total — running \$current',
+    'summary': summary,
     'checks': checks,
-    'stats': {'total': total, 'completed': completed, 'ok': ok, 'fail': fail, 'timeout': timeout, 'pending': pendingN},
+    'stats': {'total': total, 'completed': completed, 'ok': ok, 'fail': fail, 'timeout': timeout, 'skipped': skipped, 'pending': pendingN},
     if (current != null) 'current': current,
     if (pending.isNotEmpty) 'pending': pending,
   })}');
   stdout.flush();
 }
 
+Map<String, dynamic> checkResult({required String name, required String status, required String url, required int latencyMs, required String detail}) =>
+    {'name': name, 'status': status, 'url': url, 'latencyMs': latencyMs, 'detail': detail};
+
 Future<void> main() async {
+  final sw = Stopwatch()..start();
   const allIds = ['example.health'];
   final checks = <Map<String, dynamic>>[];
 
-  for (final id in allIds) {
-    final pending = allIds.skip(allIds.indexOf(id) + 1).toList();
-    emitReport(checks: checks, allIds: allIds, current: id, pending: pending);
+  for (var i = 0; i < allIds.length; i++) {
+    if (pastDeadline(sw)) break;
+    final id = allIds[i];
     final url = exampleHealthUrl;
-    final sw = Stopwatch()..start();
+    final pending = allIds.sublist(i + 1);
+    emitReport(checks: checks, allIds: allIds, current: id, pending: pending);
+    stderr.writeln('→ \$id');
+    final rowSw = Stopwatch()..start();
     try {
       final client = HttpClient();
-      final req = await client.getUrl(Uri.parse(url)).timeout(const Duration(seconds: 10));
-      final res = await req.close().timeout(const Duration(seconds: 10));
-      sw.stop();
-      final ok = res.statusCode >= 200 && res.statusCode < 300;
-      checks.add({
-        'name': id,
-        'status': ok ? 'ok' : 'fail',
-        'url': url,
-        'latencyMs': sw.elapsedMilliseconds,
-        'detail': 'HTTP \${res.statusCode}',
-      });
+      final req = await client.getUrl(Uri.parse(url)).timeout(checkTimeout);
+      final res = await req.close().timeout(checkTimeout);
+      rowSw.stop();
+      final code = res.statusCode;
+      await res.drain();
       client.close(force: true);
+      checks.add(checkResult(
+        name: id,
+        status: code >= 200 && code < 300 ? 'ok' : 'fail',
+        url: url,
+        latencyMs: rowSw.elapsedMilliseconds,
+        detail: 'HTTP \$code',
+      ));
+    } on TimeoutException {
+      rowSw.stop();
+      checks.add(checkResult(name: id, status: 'timeout', url: url, latencyMs: rowSw.elapsedMilliseconds, detail: 'TimeoutException after 10s'));
     } catch (e) {
-      sw.stop();
-      final timedOut = '\$e'.contains('TimeoutException');
-      checks.add({
-        'name': id,
-        'status': timedOut ? 'timeout' : 'fail',
-        'url': url,
-        'latencyMs': sw.elapsedMilliseconds,
-        'detail': '\$e',
-      });
+      rowSw.stop();
+      checks.add(checkResult(name: id, status: 'fail', url: url, latencyMs: rowSw.elapsedMilliseconds, detail: '\$e'));
     }
     emitReport(checks: checks, allIds: allIds);
   }
+  emitReport(checks: checks, allIds: allIds);
 }
 ''';
 

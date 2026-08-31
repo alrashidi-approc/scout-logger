@@ -29,7 +29,7 @@ Follow this structure exactly. Use the EPA example below as the format reference
 
 | Field | Description |
 |-------|-------------|
-| `id` | Stable slug for enable/disable in script |
+| `id` | Stable slug for enable/disable in script — **becomes `checks[].name` in Scout dashboard** (filters, cURL, copy URL) |
 | `method` | GET | POST | PUT | PATCH | DELETE | POST_BYTES | POST_FORM | PUT_FORM | DOWNLOAD |
 | `path` | Relative path or full URL pattern (`{{var}}` = runtime placeholder) |
 | `base` | Named base URL key from Base URLs table |
@@ -52,7 +52,7 @@ Group endpoints logically (same as app features). Include **external** third-par
 
 ### Closing sections (required)
 
-1. **Suggested script execution order** — numbered list of `id` values respecting `depends_on` and auth flow
+1. **Suggested script execution order** — numbered list of **every `id`** that the health script should run (read checks first, then optional write). Scout uses this order for progress UI.
 2. **Skip in automated checks** — list `safe: write` endpoints to skip unless test accounts exist
 3. **Unused endpoint constants** — constants defined but never called (if any)
 4. **Features with no API implementation** — stubs with no real calls (if any)
@@ -60,7 +60,8 @@ Group endpoints logically (same as app features). Include **external** third-par
 ## Rules
 
 - Every real network call in the app must appear exactly once with a unique `id` (dot-separated slug, e.g. `auth.login`, `home.applications`).
-- Use `{{placeholder}}` for runtime values (civilId, tokens, userId, etc.) — do not invent real secrets.
+- IDs must be stable across releases — Scout history compares runs by `id`.
+- Use `{{placeholder}}` for runtime values (civilId, tokens, userId, etc.) — do not invent real secrets in the MD.
 - Map `base` to keys in the Base URLs table, not raw URLs in the path column (unless `external`).
 - Infer auth from interceptors/Dio providers/API clients — document how tokens/keys are attached.
 - Mark `safe: read` for GET/list/lookup/smoke calls; `safe: write` for create/update/delete/pay/vote.
@@ -111,6 +112,8 @@ Return the **complete markdown file** only. No preamble, no "here is your file".
   static const prompt2ConvertToDartScript = '''
 You are converting an **API Calls Reference** markdown file into a **single Dart health-check script** that runs on Scout Logger (no pubspec, no external packages).
 
+The script must emit **incremental `SCOUT_REPORT:` lines** so the Scout dashboard shows live progress, per-check URLs, HTTP codes, latency, cURL copy, and issue filters — same UX for every project.
+
 ## Input
 
 Paste the full API reference MD below:
@@ -119,78 +122,98 @@ Paste the full API reference MD below:
 {PASTE YOUR docs/API-HEALTH-REFERENCE.md CONTENT HERE}
 ---END API REFERENCE MD---
 
-## Scout output contract (mandatory)
+## Scout dashboard contract (mandatory — all projects)
 
-Scout reads **every stdout line**. After **each check** (and before starting the next), print a full progress report so timeouts still show what finished.
+Scout reads **stdout line by line**. Each line must be either:
+- `SCOUT_REPORT:{json}` — progress + final report (required), or
+- nothing else on stdout (no debug prints on stdout).
 
-Prefix each line with `SCOUT_REPORT:` or print raw JSON (one object per line):
+Human logs go to **stderr only**: `stderr.writeln('→ auth.login');`
 
-```
-SCOUT_REPORT:{"verdict":"degraded","summary":"3/20 — auth.login ok, home.applications running","checks":[...],"stats":{...},"current":"home.applications","pending":["falcon.list",...]}
-```
+After **every** `stdout.writeln('SCOUT_REPORT:...')` call **`stdout.flush()`** (Scout runs the script in a pipe).
 
-### Final JSON shape
+### JSON shape (emit after each check + before starting next)
 
 ```json
 {
-  "verdict": "healthy",
-  "summary": "12/14 read checks passed",
+  "verdict": "degraded",
+  "summary": "3/22 done — running home.applications (0 fail, 1 timeout)",
   "checks": [
     {
       "name": "auth.login",
       "status": "ok",
-      "url": "https://full-url-called",
-      "latencyMs": 142,
+      "url": "https://api.example.com/mob/auth",
+      "latencyMs": 811,
       "detail": "HTTP 200"
     },
     {
-      "name": "home.applications",
+      "name": "falcon.list",
       "status": "timeout",
-      "url": "https://...",
-      "latencyMs": 10001,
+      "url": "https://api.example.com/apirouter/app/falcon/list",
+      "latencyMs": 10000,
       "detail": "TimeoutException after 10s"
     }
   ],
   "stats": {
-    "total": 14,
-    "completed": 8,
-    "ok": 7,
+    "total": 22,
+    "completed": 2,
+    "ok": 1,
     "fail": 0,
     "timeout": 1,
-    "skipped": 2,
-    "pending": 4
+    "skipped": 0,
+    "pending": 19
   },
-  "current": "falcon.list",
-  "pending": ["falcon.list", "john.ships"]
+  "current": "home.applications",
+  "pending": ["jahra.visit.list", "john.ships"]
 }
 ```
 
 | Field | Rule |
 |-------|------|
-| `verdict` | `healthy` (0 fail/timeout) · `degraded` (some failed/timed out) · `unhealthy` (auth failed or all failed) |
-| `summary` | Always include counts, e.g. `"8/14 ok — 1 timeout at home.applications"` |
-| `checks[].name` | MD table `id` |
+| `verdict` | `healthy` if 0 fail/timeout and 0 pending · `degraded` if some ok but any fail/timeout/pending · `unhealthy` if auth prerequisite failed or 0 ok with failures |
+| `summary` | Counts always: in-progress `"N/total done — running {id}"` · final `"N/total ok, F fail, T timeout"` |
+| `checks[].name` | **Exact** MD table `id` (e.g. `auth.login`) |
 | `checks[].status` | `ok` · `fail` · `timeout` · `skipped` |
-| `checks[].url` | Full URL requested |
-| `checks[].latencyMs` | Round-trip ms |
-| `checks[].detail` | `HTTP {code}`, exception, or `skipped: write endpoint` |
-| `stats` | **Required** — running totals after each check |
-| `current` | ID about to run (set **before** the HTTP call) |
-| `pending` | IDs not started yet |
+| `checks[].url` | **Full URL** attempted (required whenever URL is known — dashboard Copy URL / Open / cURL) |
+| `checks[].latencyMs` | Round-trip ms (use ~10000 on timeout) |
+| `checks[].detail` | **Strict format** — see below (dashboard parses HTTP code) |
+| `stats` | **Required** on every emit — running totals |
+| `current` | Set **before** HTTP call; omit on final emit when done |
+| `pending` | IDs not started yet (after `current`) |
 
-## Critical: incremental progress (prevents empty timeout reports)
+### `detail` field format (required for dashboard)
 
-1. Build ordered list of check IDs from MD (read-only by default).
-2. Before each HTTP call: set `current`, update `pending`, call `emitReport(...)`.
-3. After each HTTP call: append to `checks`, update `stats`, call `emitReport(...)` again.
-4. Per-check HTTP timeout: **10 seconds** (never 15+). Use `.timeout(const Duration(seconds: 10))` on connect + response.
-5. Global deadline: stop before **280s**; emit final report with remaining `pending` marked as skipped.
-6. Log human-readable lines to **stderr** only (`stderr.writeln('→ auth.login ...')`).
-7. After each `SCOUT_REPORT` line call **`stdout.flush()`** (required when Scout runs the script in a pipe).
+| Situation | `detail` value |
+|-----------|----------------|
+| HTTP response | `HTTP {statusCode}` e.g. `HTTP 200`, `HTTP 404` |
+| Timeout | `TimeoutException after 10s` |
+| Skipped write | `skipped: write endpoint` |
+| Skipped download | `skipped: download endpoint` |
+| Other error | Short exception: `SocketException: ...` |
 
-## Required helper (include in generated script)
+Never use vague details like `"OK"` or `"failed"` — always include HTTP code or exception name.
+
+## Critical: incremental progress
+
+1. Build `allIds` from **Suggested script execution order** (read checks; include write only if `includeWrite`).
+2. **Before** each HTTP call: set `current`, compute `pending`, call `emitReport(checks, allIds, current: id, pending: pending)`.
+3. **After** each call: append check map to `checks`, call `emitReport` again with `current: null` for that step (or set next `current` before next call).
+4. Per-check timeout: **10 seconds** on connect + response (never 15+).
+5. Global deadline: **280 seconds** — then mark remaining IDs as `skipped` with `detail: "skipped: global deadline"` and emit final report.
+6. On timeout/fail for one check: **continue** to next (do not exit early).
+7. If `depends_on` prerequisite failed: skip dependent checks with `status: skipped`, `detail: "skipped: depends on {id}"`.
+
+## Required helpers (copy verbatim into script)
 
 ```dart
+import 'dart:convert';
+import 'dart:io';
+
+const globalDeadline = Duration(seconds: 280);
+const checkTimeout = Duration(seconds: 10);
+
+bool pastDeadline(Stopwatch sw) => sw.elapsed >= globalDeadline;
+
 void emitReport({
   required List<Map<String, dynamic>> checks,
   required List<String> allIds,
@@ -210,7 +233,7 @@ void emitReport({
           ? 'degraded'
           : 'unhealthy';
   final summary = current == null
-      ? '\$ok/\$total ok\${fail > 0 ? ', \$fail fail' : ''}\${timeout > 0 ? ', \$timeout timeout' : ''}'
+      ? '\$ok/\$total ok\${fail > 0 ? ', \$fail fail' : ''}\${timeout > 0 ? ', \$timeout timeout' : ''}\${skipped > 0 ? ', \$skipped skipped' : ''}'
       : '\$completed/\$total done — running \$current\${fail + timeout > 0 ? ' (\$fail fail, \$timeout timeout)' : ''}';
   stdout.writeln('SCOUT_REPORT:\${jsonEncode({
     'verdict': verdict,
@@ -230,54 +253,123 @@ void emitReport({
   })}');
   stdout.flush();
 }
+
+Map<String, dynamic> checkResult({
+  required String name,
+  required String status,
+  required String url,
+  required int latencyMs,
+  required String detail,
+}) => {
+      'name': name,
+      'status': status,
+      'url': url,
+      'latencyMs': latencyMs,
+      'detail': detail,
+    };
 ```
+
+## Per-check runner pattern (required)
+
+Use one async function per MD row. Always capture URL **before** the request so timeouts still have a URL:
+
+```dart
+Future<Map<String, dynamic>> runGet(String id, String url, {Map<String, String>? headers}) async {
+  final sw = Stopwatch()..start();
+  stderr.writeln('→ \$id');
+  try {
+    final client = HttpClient();
+    final req = await client.getUrl(Uri.parse(url)).timeout(checkTimeout);
+    if (headers != null) headers.forEach(req.headers.set);
+    final res = await req.close().timeout(checkTimeout);
+    sw.stop();
+    final code = res.statusCode;
+    await res.drain();
+    client.close(force: true);
+    final ok = code >= 200 && code < 300;
+    return checkResult(
+      name: id,
+      status: ok ? 'ok' : 'fail',
+      url: url,
+      latencyMs: sw.elapsedMilliseconds,
+      detail: 'HTTP \$code',
+    );
+  } on TimeoutException {
+    sw.stop();
+    return checkResult(name: id, status: 'timeout', url: url, latencyMs: sw.elapsedMilliseconds, detail: 'TimeoutException after 10s');
+  } catch (e) {
+    sw.stop();
+    return checkResult(name: id, status: 'fail', url: url, latencyMs: sw.elapsedMilliseconds, detail: '\$e');
+  }
+}
+```
+
+Adapt for POST/POST_FORM using the same `checkResult` + `detail: 'HTTP \$code'` pattern.
 
 ## Dart script rules
 
 - Single file, `Future<void> main() async`, imports: `dart:convert`, `dart:io` only.
 - Use `HttpClient` (no dio/http package).
-- **All config as Dart variables at the top of the script** — base URLs, test civilId, API keys, credentials. Do **not** use `Platform.environment` or server `.env` (script is saved in Scout and edited in the dashboard).
-- Group config in a clear block, e.g. `const citizenBaseUrl = '...';`, `const testCivilId = '...';`, `const includeWrite = false;`.
+- **All config as Dart constants at the top** — base URLs, test civilId, API keys, credentials. Do **not** use `Platform.environment` or server `.env`.
+- `const includeWrite = false;` · `const includeDownload = false;` by default.
 - **By default only run `safe: read`** endpoints from the MD.
 - Follow **Suggested script execution order**; honor `depends_on`.
 - Implement auth modes from the MD (`none`, `app_key`, `citizen_token`, `eprocess_creds`, `github_token`).
-- On single-check timeout: record `status: timeout` for that check, **continue** to next check.
-- Skip `safe: write` unless `includeWrite == true` — add check with `status: skipped`.
-- Skip DOWNLOAD/binary unless `includeDownload == true`.
+- Skip `safe: write` unless `includeWrite == true` — emit skipped check with `detail: "skipped: write endpoint"`.
+- Skip DOWNLOAD unless `includeDownload == true` — `detail: "skipped: download endpoint"`.
 
-## Code structure (required)
+## main() loop (required structure)
 
 ```dart
-import 'dart:convert';
-import 'dart:io';
-
-// --- Config ---
-const citizenBaseUrl = 'https://staging-api.example.com';
-const eprocessBaseUrl = 'https://eprocess.example.com';
-const testCivilId = '123456789012';
-const appApiKey = 'your-app-key';
-const includeWrite = false;
-const includeDownload = false;
-
-void emitReport({...}) { ... }
-
 Future<void> main() async {
-  final bases = {'citizen': citizenBaseUrl, 'eprocess': eprocessBaseUrl};
-  final allIds = ['auth.login', 'home.applications', ...];
-  ...
+  final sw = Stopwatch()..start();
+  final checks = <Map<String, dynamic>>[];
+  final allIds = ['auth.login', 'home.applications', /* every id in execution order */];
+
+  for (var i = 0; i < allIds.length; i++) {
+    if (pastDeadline(sw)) break;
+    final id = allIds[i];
+    final pending = allIds.sublist(i + 1);
+
+    if (!includeWrite && /* id is write-only from MD */) {
+      checks.add(checkResult(name: id, status: 'skipped', url: '', latencyMs: 0, detail: 'skipped: write endpoint'));
+      emitReport(checks: checks, allIds: allIds);
+      continue;
+    }
+
+    emitReport(checks: checks, allIds: allIds, current: id, pending: pending);
+    checks.add(await /* run check for id */);
+    emitReport(checks: checks, allIds: allIds);
+  }
+
+  // Mark any not-run ids after deadline
+  for (final id in allIds) {
+    if (checks.any((c) => c['name'] == id)) continue;
+    checks.add(checkResult(name: id, status: 'skipped', url: '', latencyMs: 0, detail: 'skipped: global deadline'));
+  }
+  emitReport(checks: checks, allIds: allIds);
 }
 ```
 
 ## Mapping MD → code
 
-- `base` column → lookup in a `Map<String, String> bases` built from **config constants**
-- `path` with `{{var}}` → string replace from config vars (`testCivilId`, tokens from login response, etc.)
-- `method` POST_FORM / PUT_FORM → multipart or application/x-www-form-urlencoded as app does (simplify if unknown; note in detail)
-- Each table row with `safe: read` and in execution order → one check function returning a check map
-- `checks[].name` **must equal** the row's `id` so Scout report matches the MD
+- `base` → lookup in `Map<String, String> bases` from config constants
+- `path` with `{{var}}` → replace from config / tokens from login
+- `checks[].name` **must equal** MD `id` exactly
+- `allIds.length` must match `stats.total` in every emit
+
+## Validation checklist (before returning code)
+
+- [ ] Every emit uses `SCOUT_REPORT:` prefix + `stdout.flush()`
+- [ ] No stdout debug prints — stderr only for `→ id` lines
+- [ ] Every check has `name`, `status`, `url`, `latencyMs`, `detail`
+- [ ] Success/fail use `detail: "HTTP {code}"`
+- [ ] Timeouts use `detail: "TimeoutException after 10s"`
+- [ ] `stats` on every line; `current`/`pending` while running
+- [ ] Script finishes within 280s or marks rest as skipped
 
 ## Output
 
-Return **only the Dart source code** — no markdown fence explanation before/after unless one ```dart block. Ready to paste into Scout dashboard **Server health** script editor.
+Return **only the Dart source code** — one ```dart block or raw source. Ready to paste into Scout **Server health** script editor.
 ''';
 }
