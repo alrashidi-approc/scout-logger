@@ -84,6 +84,7 @@ class HealthCheckReport {
     this.timedOutAt,
     this.pending = const [],
     this.wafLearning,
+    this.networkProbe,
   });
 
   final String verdict;
@@ -94,6 +95,7 @@ class HealthCheckReport {
   final String? timedOutAt;
   final List<String> pending;
   final Map<String, dynamic>? wafLearning;
+  final Map<String, dynamic>? networkProbe;
 
   int get okCount => checks.where((c) => c.ok).length;
   int get failCount => checks.where((c) => c.status == 'fail').length;
@@ -108,6 +110,7 @@ class HealthCheckReport {
         if (timedOutAt != null) 'timedOutAt': timedOutAt,
         if (pending.isNotEmpty) 'pending': pending,
         if (wafLearning != null) 'wafLearning': wafLearning,
+        if (networkProbe != null) 'networkProbe': networkProbe,
       };
 
   factory HealthCheckReport.fromJson(Map<String, dynamic> j) => HealthCheckReport(
@@ -122,6 +125,9 @@ class HealthCheckReport {
         pending: ((j['pending'] as List?) ?? const []).map((e) => '$e').toList(),
         wafLearning: j['wafLearning'] is Map
             ? Map<String, dynamic>.from(j['wafLearning'] as Map)
+            : null,
+        networkProbe: j['networkProbe'] is Map
+            ? Map<String, dynamic>.from(j['networkProbe'] as Map)
             : null,
       );
 }

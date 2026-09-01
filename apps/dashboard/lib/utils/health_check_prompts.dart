@@ -201,7 +201,34 @@ Never use vague details like `"OK"` or `"failed"` — always include HTTP code o
 4. Per-check timeout: **10 seconds** on connect + response (never 15+).
 5. Global deadline: **280 seconds** — then mark remaining IDs as `skipped` with `detail: "skipped: global deadline"` and emit final report.
 6. On timeout/fail for one check: **continue** to next (do not exit early).
-7. If `depends_on` prerequisite failed: skip dependent checks with `status: skipped`, `detail: "skipped: depends on {id}"`.
+7. If a **direct** `depends_on` prerequisite failed: skip with `status: skipped`, `detail: "skipped: depends on {id}"` — **only the IDs listed in that row's `depends_on` column**, never unrelated auth chains.
+
+## Auth chains — do not mix (critical)
+
+Apps often have **separate** API backends. `depends_on` must reflect **only direct** prerequisites:
+
+| Chain | Login check | Endpoints | depends_on |
+|-------|-------------|-----------|------------|
+| Citizen / mobapp | `auth.login` | `home.*`, `falcon.*`, `jahra.*`, … | `auth.login` only |
+| E-process | `eprocess.login` | `eprocess.*` (inbox, lookups, site_allowance, …) | `eprocess.login` only — **never `auth.login`** |
+| External | none | `news.*`, `config.github_*` | `—` |
+
+**Wrong:** `eprocess.site_allowance.query` skipped because `auth.login` timed out.
+**Right:** run `eprocess.site_allowance.query` when `eprocess.login` is `ok`, even if `auth.login` failed.
+
+```dart
+bool prereqFailed(String depId, List<Map<String, dynamic>> checks) {
+  final row = checks.cast<Map<String, dynamic>?>().whereType<Map<String, dynamic>>().where((c) => c['name'] == depId);
+  if (row.isEmpty) return true;
+  return row.first['status'] != 'ok';
+}
+
+// For each endpoint, read depends_on from MD (comma-separated) — skip only if ANY *listed* dep failed:
+bool shouldSkip(List<String> deps, List<Map<String, dynamic>> checks) =>
+    deps.any((d) => d.isNotEmpty && prereqFailed(d.trim(), checks));
+```
+
+Do **not** use a global "if auth.login failed skip everything" guard.
 
 ## Required helpers (copy verbatim into script)
 
@@ -366,7 +393,8 @@ Future<void> main() async {
 - [ ] Success/fail use `detail: "HTTP {code}"`
 - [ ] Timeouts use `detail: "TimeoutException after 10s"`
 - [ ] `stats` on every line; `current`/`pending` while running
-- [ ] Script finishes within 280s or marks rest as skipped
+- [ ] `depends_on` uses **direct** deps only — eprocess.* never depends on auth.login
+- [ ] Scout attaches `networkProbe` automatically — script URLs in config are used for host probes
 
 ## Output
 

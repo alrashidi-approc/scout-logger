@@ -57,6 +57,7 @@ Each Scout project can upload a **Dart script** that probes the backend servers 
 | `stats` | Yes | Running totals on **every** emit |
 | `current` | Recommended | Check running **before** HTTP call |
 | `pending` | Recommended | IDs not started yet |
+| `networkProbe` | Auto (Scout) | Per-host reachability from the Scout server (DNS + HTTP) |
 
 ### Configuration (in the script — not `.env`)
 

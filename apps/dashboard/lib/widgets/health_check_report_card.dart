@@ -126,6 +126,12 @@ class _HealthCheckReportCardState extends State<HealthCheckReportCard> {
               ),
             ),
           ],
+          if (report?.networkProbe != null) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: _NetworkProbePanel(probe: report!.networkProbe!),
+            ),
+          ],
           if (report == null)
             _EmptyReport(timedOut: timedOut, run: widget.run)
           else ...[
@@ -885,6 +891,81 @@ class _LogBlock extends StatelessWidget {
   }
 }
 
+class _NetworkProbePanel extends StatelessWidget {
+  const _NetworkProbePanel({required this.probe});
+
+  final Map<String, dynamic> probe;
+
+  @override
+  Widget build(BuildContext context) {
+    final probes = (probe['probes'] as List?)?.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() ?? [];
+    final summary = probe['summary'] as String? ?? '';
+    final hint = probe['hint'] as String?;
+    final scoutHost = probe['scoutHost'] as String?;
+    final hasIssue = probes.any((p) => p['status'] != 'ok');
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: (hasIssue ? AppTheme.warning : AppTheme.info).withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: (hasIssue ? AppTheme.warning : AppTheme.info).withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.public, size: 20, color: hasIssue ? AppTheme.warning : AppTheme.info),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Scout server network probe', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14))),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(summary, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          if (scoutHost != null) Text('From host: $scoutHost', style: const TextStyle(fontSize: 11, color: AppTheme.muted)),
+          if (hint != null) ...[
+            const SizedBox(height: 8),
+            Text(hint, style: TextStyle(fontSize: 12, color: hasIssue ? AppTheme.warning : AppTheme.muted, height: 1.35)),
+          ],
+          if (probes.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            ...probes.map((p) {
+              final status = p['status'] as String? ?? 'fail';
+              final color = HealthCheckReportCard.statusColor(status == 'ok' ? 'ok' : status == 'timeout' ? 'timeout' : 'fail');
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(HealthCheckReportCard.statusIcon(status == 'ok' ? 'ok' : status == 'timeout' ? 'timeout' : 'fail'), size: 18, color: color),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(p['host'] as String? ?? '—', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                          if (p['resolvedIps'] != null)
+                            Text('DNS: ${p['resolvedIps']}', style: const TextStyle(fontSize: 10, color: AppTheme.muted, fontFamily: 'monospace')),
+                          Text(p['detail'] as String? ?? '', style: const TextStyle(fontSize: 11)),
+                          if (p['sampleUrl'] != null)
+                            SelectableText(p['sampleUrl'] as String, style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
+                        ],
+                      ),
+                    ),
+                    if (p['latencyMs'] != null)
+                      Text('${p['latencyMs']} ms', style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _RunFooter extends StatelessWidget {
   const _RunFooter({required this.run});
   final Map<String, dynamic> run;
@@ -969,7 +1050,9 @@ String _actionHint(HealthCheckItem item) {
   return switch (item.status) {
     'ok' => 'Endpoint responded successfully (${item.detail ?? 'OK'}). No action needed unless latency is unexpectedly high.',
     'timeout' => 'No response within 10 seconds. Test the URL from your machine and from the Scout server network. Check firewall, VPN, or upstream slowness.',
-    'skipped' => 'Skipped by script configuration (e.g. write/download checks disabled). Enable in script constants if you need this endpoint tested.',
+    'skipped' => (item.detail ?? '').startsWith('skipped: depends on')
+        ? 'Skipped because a listed prerequisite failed or timed out. Check whether that dependency is really required — citizen auth and e-process auth are separate chains.'
+        : 'Skipped by script configuration. Enable in script constants or fix prerequisite checks.',
     'fail' when code == '404' => 'HTTP 404 — URL or resource path may be wrong. Verify base URL, branch name, and route in your API reference.',
     'fail' when code != null && (int.tryParse(code) ?? 0) >= 500 => 'HTTP $code server error — backend issue. Retry manually; check server logs on the API side.',
     'fail' when code != null && (int.tryParse(code) ?? 0) >= 400 => 'HTTP $code client/auth error — verify credentials, headers, or request body in the script.',

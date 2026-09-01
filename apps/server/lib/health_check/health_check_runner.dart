@@ -8,6 +8,7 @@ import '../config/env_file.dart';
 import '../config/server_config.dart';
 import '../store/health_check_store.dart';
 import '../store/scout_store.dart';
+import 'network_probe.dart';
 
 const healthCheckTimeout = Duration(seconds: 300);
 
@@ -124,6 +125,7 @@ class HealthCheckRunner {
 
     final runId = await store.createRun(projectId: projectId, triggeredBy: triggeredBy);
     final sw = Stopwatch()..start();
+    final networkProbe = await runNetworkProbe(script);
     Directory? tempDir;
     Process? process;
 
@@ -184,6 +186,7 @@ class HealthCheckRunner {
         final stderrStr = stderrBuf.toString();
         final partial = latestReport ?? parseHealthCheckReport(stdoutStr);
         final report = _timeoutReport(partial, limitSec: healthCheckTimeout.inSeconds);
+        final reportJson = mergeReportWithProbe(latestReportRaw ?? report.toJson(), networkProbe);
         await store.finishRun(
           runId: runId,
           status: 'timeout',
@@ -191,7 +194,7 @@ class HealthCheckRunner {
           stdout: stdoutStr.isEmpty ? null : stdoutStr,
           stderr: stderrStr.isEmpty ? 'Script exceeded ${healthCheckTimeout.inSeconds}s timeout' : stderrStr.toString(),
           report: report,
-          reportJson: latestReportRaw ?? report.toJson(),
+          reportJson: reportJson,
           durationMs: sw.elapsedMilliseconds,
         );
         final timedRun = await store.getRun(projectId, runId);
@@ -209,6 +212,10 @@ class HealthCheckRunner {
       final stderrStr = stderrBuf.toString();
       final report = latestReport ?? parseHealthCheckReport(stdoutStr);
       final status = report != null ? 'success' : 'failed';
+      final reportJson = mergeReportWithProbe(
+        latestReportRaw ?? report?.toJson(),
+        networkProbe,
+      );
 
       await store.finishRun(
         runId: runId,
@@ -217,7 +224,7 @@ class HealthCheckRunner {
         stdout: stdoutStr.isEmpty ? null : stdoutStr,
         stderr: stderrStr.isEmpty ? null : stderrStr.toString(),
         report: report,
-        reportJson: latestReportRaw ?? report?.toJson(),
+        reportJson: reportJson,
         durationMs: sw.elapsedMilliseconds,
       );
 
