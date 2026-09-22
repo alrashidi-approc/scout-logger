@@ -5,11 +5,13 @@ import 'package:scout_server/config/server_config.dart';
 import 'package:scout_server/db/scout_db.dart';
 import 'package:scout_server/store/analytics_store.dart';
 import 'package:scout_server/services/key_cipher.dart';
+import 'package:scout_server/store/health_check_store.dart';
 import 'package:scout_server/store/notification_store.dart';
 import 'package:scout_server/store/platform_store.dart';
 import 'package:scout_server/notifications/notification_dispatcher.dart';
 import 'package:scout_server/notifications/notification_service.dart';
 import 'package:scout_server/notifications/monitor_scheduler.dart';
+import 'package:scout_server/health_check/uptime_monitor.dart';
 import 'package:scout_server/retention/retention_scheduler.dart';
 import 'package:scout_server/reports/report_service.dart';
 import 'package:scout_server/store/scout_store.dart';
@@ -42,6 +44,14 @@ Future<void> main() async {
       platformStore: platformStore,
       dispatcher: dispatcher,
       reports: ReportService(store, analytics),
+      config: config,
+    ).start();
+    final healthCheckStore = HealthCheckStore(db);
+    UptimeMonitorScheduler(
+      healthStore: healthCheckStore,
+      notificationStore: notificationStore,
+      platformStore: platformStore,
+      notifications: notificationService,
       config: config,
     ).start();
     RetentionScheduler(store: store).start();

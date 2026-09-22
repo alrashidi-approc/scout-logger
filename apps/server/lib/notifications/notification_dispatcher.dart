@@ -82,13 +82,18 @@ class NotificationDispatcher {
 
   String? _decrypt(String? enc) => _cipher?.decrypt(enc) ?? enc;
 
+  String _slackText(NotificationJob job) {
+    final urgency = job.isEmergency ? '🚨 ' : '';
+    return '$urgency*${job.title}*\n${job.body}\n<${job.eventUrl}|Open in Scout>';
+  }
+
   Future<void> _sendSlack(
       NotificationJob job, ProjectNotificationConfig config) async {
     final url = _decrypt(config.slack.webhookUrlEnc);
     if (url == null || url.isEmpty)
       throw _PermanentSendError('Slack webhook not configured');
 
-    final text = '*${job.title}*\n${job.body}\n<${job.eventUrl}|Open in Scout>';
+    final text = _slackText(job);
     final payload = <String, dynamic>{'text': text};
     if (slackInteractive && job.issueId != null) {
       payload['blocks'] = [

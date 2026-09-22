@@ -54,10 +54,17 @@ class NotificationStore {
       settings['notifications'] is Map ? Map<String, dynamic>.from(settings['notifications'] as Map) : null,
     );
     final next = _merge(current, patch);
-    settings['notifications'] = next.toJson();
     await conn.execute(
-      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
-      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
+      Sql.named('''
+        UPDATE projects SET settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{notifications}',
+          @notifications::jsonb,
+          true
+        )
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'notifications': jsonEncode(next.toJson())},
     );
     return next;
   }
@@ -77,8 +84,12 @@ class NotificationStore {
     final waPatch = channels['whatsapp'] is Map ? Map<String, dynamic>.from(channels['whatsapp'] as Map) : null;
     final emailPatch = channels['email'] is Map ? Map<String, dynamic>.from(channels['email'] as Map) : null;
 
-    return ProjectNotificationConfig(
+    var next = ProjectNotificationConfig(
       enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
+      preset: patch.containsKey('preset') ? _normPreset(patch['preset']) : current.preset,
+      healthCheckNotify: patch.containsKey('healthCheckNotify')
+          ? patch['healthCheckNotify'] == true
+          : current.healthCheckNotify,
       dedupMinutes: patch.containsKey('dedupMinutes') ? _clampDedup(patch['dedupMinutes']) : current.dedupMinutes,
       maxAlertsPerHour: patch.containsKey('maxAlertsPerHour') ? _clampRate(patch['maxAlertsPerHour']) : current.maxAlertsPerHour,
       groupMinutes: patch.containsKey('groupMinutes') ? _clampGroupMinutes(patch['groupMinutes']) : current.groupMinutes,
@@ -93,6 +104,18 @@ class NotificationStore {
           ? DigestConfig.fromJson(Map<String, dynamic>.from(patch['digest'] as Map))
           : current.digest,
     );
+
+    // Selecting a named preset expands knobs server-side so Simple UI can send preset alone.
+    final requested = patch['preset']?.toString().trim().toLowerCase();
+    if (requested != null && requested != 'custom' && kNotificationPresets.contains(requested)) {
+      next = applyNotificationPreset(next, requested);
+    }
+    return next;
+  }
+
+  String _normPreset(dynamic raw) {
+    final p = raw?.toString().trim().toLowerCase() ?? '';
+    return kNotificationPresets.contains(p) ? p : kDefaultNotificationPreset;
   }
 
   SlackChannelConfig _mergeSlack(SlackChannelConfig current, Map<String, dynamic>? patch) {
@@ -191,13 +214,33 @@ class NotificationStore {
         WHERE project_id = @pid
           AND dedup_key = @dk
           AND channel = @ch
-          AND status = 'sent'
+          AND status IN ('sent', 'pending')
           AND created_at >= now() - (@mins::text || ' minutes')::interval
         LIMIT 1
       '''),
       parameters: {'pid': projectId, 'dk': dedupKey, 'ch': channel, 'mins': withinMinutes},
     );
     return rows.isNotEmpty;
+  }
+
+  /// Count how many events for this dedup key were suppressed or batched recently (for "Seen N×").
+  Future<int> recentActivityCount({
+    required String projectId,
+    required String dedupKey,
+    required int withinMinutes,
+  }) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT COUNT(*)::int FROM notification_deliveries
+        WHERE project_id = @pid
+          AND dedup_key = @dk
+          AND status IN ('sent', 'batched', 'pending', 'skipped_dedup', 'grouped')
+          AND created_at >= now() - (@mins::text || ' minutes')::interval
+      '''),
+      parameters: {'pid': projectId, 'dk': dedupKey, 'mins': withinMinutes},
+    );
+    return (rows.first[0] as int?) ?? 0;
   }
 
   Future<void> logDelivery({
@@ -208,15 +251,17 @@ class NotificationStore {
     required String category,
     required String channel,
     required String status,
+    String urgency = kDefaultAlertUrgency,
     String? errorMessage,
   }) async {
     final conn = await db.connect();
+    final urg = kAlertUrgencies.contains(urgency) ? urgency : kDefaultAlertUrgency;
     await conn.execute(
       Sql.named('''
         INSERT INTO notification_deliveries (
-          id, project_id, event_id, issue_id, dedup_key, category, channel, status, error_message
+          id, project_id, event_id, issue_id, dedup_key, category, channel, status, urgency, error_message
         ) VALUES (
-          @id, @pid, @eid, @iid, @dk, @cat, @ch, @st, @err
+          @id, @pid, @eid, @iid, @dk, @cat, @ch, @st, @urg, @err
         )
       '''),
       parameters: {
@@ -228,6 +273,7 @@ class NotificationStore {
         'cat': category,
         'ch': channel,
         'st': status,
+        'urg': urg,
         'err': errorMessage,
       },
     );
@@ -252,7 +298,7 @@ class NotificationStore {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        SELECT id, event_id, issue_id, category, channel, status, error_message, created_at
+        SELECT id, event_id, issue_id, category, channel, status, error_message, created_at, urgency
         FROM notification_deliveries
         WHERE project_id = @pid
         ORDER BY created_at DESC
@@ -270,6 +316,7 @@ class NotificationStore {
               'status': r[5],
               'errorMessage': r[6],
               'createdAt': (r[7] as DateTime?)?.toUtc().toIso8601String(),
+              'urgency': r[8] ?? kDefaultAlertUrgency,
             })
         .toList();
   }
@@ -283,7 +330,7 @@ class NotificationStore {
         : 'JOIN project_memberships m ON m.project_id = d.project_id AND m.user_id = @uid';
     final rows = await conn.execute(
       Sql.named('''
-        SELECT d.id, d.project_id, p.name, d.event_id, d.issue_id, d.category, d.channel, d.status, d.error_message, d.created_at
+        SELECT d.id, d.project_id, p.name, d.event_id, d.issue_id, d.category, d.channel, d.status, d.error_message, d.created_at, d.urgency
         FROM notification_deliveries d
         JOIN projects p ON p.id = d.project_id
         $scope
@@ -304,6 +351,7 @@ class NotificationStore {
               'status': r[7],
               'errorMessage': r[8],
               'createdAt': (r[9] as DateTime?)?.toUtc().toIso8601String(),
+              'urgency': r[10] ?? kDefaultAlertUrgency,
             })
         .toList();
   }

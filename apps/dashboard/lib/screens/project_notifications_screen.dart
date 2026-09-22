@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../services/api_client.dart';
+import '../services/facets_cache.dart';
 import '../services/project_access_service.dart';
 import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
@@ -53,6 +56,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _isOwner = false;
 
   bool _enabled = false;
+  String _preset = kDefaultNotificationPreset;
+  bool _healthCheckNotify = kDefaultHealthCheckNotify;
   int _dedupMinutes = kDefaultDedupMinutes;
   int _maxAlertsPerHour = kDefaultMaxAlertsPerHour;
   int _groupMinutes = kDefaultGroupMinutes;
@@ -131,12 +136,13 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     return true;
   }
 
-  void _writeCache(Map<String, dynamic> cfg, Map<String, dynamic> facets) {
+  void _writeCache(Map<String, dynamic> cfg, {Map<String, dynamic>? facets}) {
+    final cached = ScreenCache.instance.read<_ProjectNotificationsCache>(_cacheKey);
     ScreenCache.instance.write(
       _cacheKey,
       _ProjectNotificationsCache(
         cfg: cfg,
-        facets: facets,
+        facets: facets ?? cached?.facets ?? const {},
         deliveries: _deliveries,
         summary: _summary,
         isOwner: _isOwner,
@@ -157,18 +163,19 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       );
     });
     try {
-      await ProjectAccessService.instance.load();
+      if (!ProjectAccessService.instance.loaded) {
+        await ProjectAccessService.instance.load();
+      }
+      // Don't wait on facets — that endpoint used to scan 30d of events (~25s).
       final results = await Future.wait([
         _api.fetchProjectNotifications(widget.projectId),
         _api.fetchNotificationDeliveries(widget.projectId),
-        _api.fetchFilterFacets(widget.projectId),
       ]);
       final cfg = results[0] as Map<String, dynamic>;
       final deliveryData = results[1] as Map<String, dynamic>;
-      final facets = results[2] as Map<String, dynamic>;
       final deliveries = (deliveryData['deliveries'] as List).cast<Map<String, dynamic>>();
       final summary = Map<String, dynamic>.from(deliveryData['summary'] as Map? ?? {});
-      _applyConfig(cfg, facets);
+      _applyConfig(cfg);
       if (mounted) {
         setState(() {
           _isOwner = true;
@@ -178,8 +185,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           _loading = false;
           _refreshing = false;
         });
-        _writeCache(cfg, facets);
+        _writeCache(cfg);
       }
+      // Enrich environment chips in the background once rollup facets return.
+      unawaited(_enrichFacets());
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -191,13 +200,46 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     }
   }
 
-  void _applyConfig(Map<String, dynamic> cfg, Map<String, dynamic> facets) {
+  Future<void> _enrichFacets() async {
+    try {
+      final facets = await FacetsCache.get(_api, widget.projectId);
+      if (!mounted) return;
+      final observed = (facets['environments'] as List?)
+              ?.map((e) => e.toString())
+              .where((e) => e.isNotEmpty && _isReleaseEnvLabel(e))
+              .toList() ??
+          const <String>[];
+      if (observed.isEmpty) return;
+      setState(() {
+        _knownEnvs = {..._knownEnvs, ...observed}.toList()..sort();
+        for (final env in _knownEnvs) {
+          _envPrefs.putIfAbsent(
+            env,
+            () => _EnvNotifyPrefs(
+              enabled: _isReleaseEnvLabel(env),
+              categories: kDefaultNotificationCategories.toSet(),
+            ),
+          );
+        }
+      });
+      final cached = ScreenCache.instance.read<_ProjectNotificationsCache>(_cacheKey);
+      if (cached != null) _writeCache(cached.cfg, facets: facets);
+    } catch (_) {
+      // Facets are optional for this screen.
+    }
+  }
+
+  void _applyConfig(Map<String, dynamic> cfg, [Map<String, dynamic>? facets]) {
     _enabled = cfg['enabled'] == true;
+    _preset = kNotificationPresets.contains('${cfg['preset']}') ? '${cfg['preset']}' : kDefaultNotificationPreset;
+    _healthCheckNotify = cfg.containsKey('healthCheckNotify')
+        ? cfg['healthCheckNotify'] == true
+        : kDefaultHealthCheckNotify;
     _dedupMinutes = cfg['dedupMinutes'] as int? ?? kDefaultDedupMinutes;
     _maxAlertsPerHour = cfg['maxAlertsPerHour'] as int? ?? kDefaultMaxAlertsPerHour;
     _groupMinutes = cfg['groupMinutes'] as int? ?? kDefaultGroupMinutes;
 
-    final observed = (facets['environments'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [];
+    final observed = (facets?['environments'] as List?)?.map((e) => e.toString()).where((e) => e.isNotEmpty).toList() ?? [];
     final fromRules = <String>{};
     _envPrefs.clear();
     final rules = cfg['rules'] as List?;
@@ -217,12 +259,20 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         }
       }
     }
-    _knownEnvs = {
-      ...const ['production', 'release', 'prod'],
-      ...observed.where(_isReleaseEnvLabel),
-      ...fromRules.where(_isReleaseEnvLabel),
-    }.toList()
-      ..sort();
+    if (facets != null || _knownEnvs.isEmpty) {
+      _knownEnvs = {
+        ...const ['production', 'release', 'prod'],
+        ...observed.where(_isReleaseEnvLabel),
+        ...fromRules.where(_isReleaseEnvLabel),
+      }.toList()
+        ..sort();
+    } else {
+      _knownEnvs = {
+        ..._knownEnvs,
+        ...fromRules.where(_isReleaseEnvLabel),
+      }.toList()
+        ..sort();
+    }
     for (final env in _knownEnvs) {
       _envPrefs.putIfAbsent(
         env,
@@ -273,6 +323,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   Map<String, dynamic> _buildPatch() {
     final patch = <String, dynamic>{
       'enabled': _enabled,
+      'preset': _preset,
+      'healthCheckNotify': _healthCheckNotify,
       'dedupMinutes': _dedupMinutes,
       'maxAlertsPerHour': _maxAlertsPerHour,
       'groupMinutes': _groupMinutes,
@@ -324,12 +376,77 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     return patch;
   }
 
+  void _markCustom() {
+    if (_preset != 'custom') _preset = 'custom';
+  }
+
+  void _selectPreset(String preset) {
+    setState(() {
+      final current = ProjectNotificationConfig(
+        enabled: _enabled,
+        preset: _preset,
+        healthCheckNotify: _healthCheckNotify,
+        dedupMinutes: _dedupMinutes,
+        maxAlertsPerHour: _maxAlertsPerHour,
+        groupMinutes: _groupMinutes,
+        rules: [
+          for (final env in _knownEnvs)
+            if (_envPrefs[env]?.enabled == true)
+              NotificationRule(
+                id: env,
+                categories: _envPrefs[env]!.categories.toList(),
+                channels: _channels.toList(),
+                environments: [env],
+              ),
+        ],
+        slack: SlackChannelConfig(enabled: _slackOn, webhookUrlEnc: _slackConfigured ? 'x' : null),
+        whatsapp: WhatsappChannelConfig(
+          enabled: _waOn,
+          phoneEnc: _waConfigured ? 'x' : null,
+          apiKeyEnc: _waConfigured ? 'x' : null,
+        ),
+        email: EmailChannelConfig(enabled: _emailOn, smtpUserEnc: _emailConfigured ? 'x' : null, smtpPasswordEnc: _emailConfigured ? 'x' : null),
+        threshold: ThresholdConfig(
+          enabled: _thresholdOn,
+          mode: _thresholdMode,
+          windowMinutes: _thresholdWindow,
+          errorCount: _thresholdErrors,
+          crashCount: _thresholdCrashes,
+          sensitivity: _thresholdSensitivity,
+          channels: _channels.toList(),
+          environments: _thresholdEnvs.toList(),
+        ),
+        digest: DigestConfig(enabled: _digestOn, frequency: _digestFreq, hourUtc: _digestHour),
+      );
+      final next = applyNotificationPreset(current, preset);
+      _preset = next.preset;
+      _healthCheckNotify = next.healthCheckNotify;
+      _dedupMinutes = next.dedupMinutes;
+      _groupMinutes = next.groupMinutes;
+      _thresholdOn = next.threshold.enabled;
+      _thresholdMode = next.threshold.mode;
+      _thresholdWindow = next.threshold.windowMinutes;
+      _thresholdErrors = next.threshold.errorCount;
+      _thresholdCrashes = next.threshold.crashCount;
+      _thresholdSensitivity = next.threshold.sensitivity;
+      _thresholdEnvs = next.threshold.environments.where(_isReleaseEnvLabel).toSet();
+      if (_thresholdEnvs.isEmpty) _thresholdEnvs = {'production'};
+      final cats = next.rules.isNotEmpty
+          ? next.rules.first.categories.toSet()
+          : kDefaultNotificationCategories.toSet();
+      final ch = next.rules.isNotEmpty ? next.rules.first.channels.toSet() : _channels;
+      _channels = ch;
+      for (final env in _knownEnvs) {
+        _envPrefs[env] = _EnvNotifyPrefs(enabled: _isReleaseEnvLabel(env), categories: {...cats});
+      }
+    });
+  }
+
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
       final cfg = await _api.updateProjectNotifications(widget.projectId, _buildPatch());
-      final facets = await _api.fetchFilterFacets(widget.projectId);
-      _applyConfig(cfg, facets);
+      _applyConfig(cfg);
       _slackWebhookCtrl.clear();
       _waPhoneCtrl.clear();
       _waKeyCtrl.clear();
@@ -338,7 +455,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       _smtpFromCtrl.clear();
       if (mounted) {
         setState(() => _saving = false);
-        _writeCache(cfg, facets);
+        _writeCache(cfg);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Alert settings saved')));
       }
     } catch (e) {
@@ -389,7 +506,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       children: [
         PageHeader(
           title: 'Alert notifications',
-          subtitle: 'Slack, WhatsApp, and Gmail — control alerts per environment / flavor',
+          subtitle: 'Turn on alerts, pick how loud, connect a channel. Put the right people on Slack / WhatsApp / email.',
           actions: [
             FilledButton.icon(
               onPressed: _saving ? null : _save,
@@ -401,85 +518,195 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           ],
         ),
         const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Enable alerts', style: TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: const Text('Send notifications when matching events are ingested'),
-                value: _enabled,
-                onChanged: (v) => setState(() => _enabled = v),
-              ),
-              const SizedBox(height: 8),
-              Text('Dedup window ($_dedupMinutes min)', style: const TextStyle(fontWeight: FontWeight.w600)),
-              Slider(
-                value: _dedupMinutes.toDouble(),
-                min: 1,
-                max: 120,
-                divisions: 119,
-                label: '${_dedupMinutes}m',
-                onChanged: (v) => setState(() => _dedupMinutes = v.round()),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _groupMinutes == 0 ? 'Group window: off (send immediately)' : 'Group window: $_groupMinutes min',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              Slider(
-                value: _groupMinutes.toDouble(),
-                min: 0,
-                max: 30,
-                divisions: 30,
-                label: _groupMinutes == 0 ? 'off' : '${_groupMinutes}m',
-                onChanged: (v) => setState(() => _groupMinutes = v.round()),
-              ),
-              const Text(
-                'Roll similar alerts on the same issue into one message per channel.',
-                style: TextStyle(fontSize: 12, color: AppTheme.muted),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _maxAlertsPerHour == 0 ? 'Rate limit: unlimited' : 'Rate limit: $_maxAlertsPerHour alerts/hour',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              Slider(
-                value: _maxAlertsPerHour.toDouble(),
-                min: 0,
-                max: 100,
-                divisions: 100,
-                label: _maxAlertsPerHour == 0 ? 'off' : '$_maxAlertsPerHour/h',
-                onChanged: (v) => setState(() => _maxAlertsPerHour = v.round()),
-              ),
-            ]),
+        _simpleCard(),
+        const SizedBox(height: 16),
+        _channelsCard(),
+        const SizedBox(height: 16),
+        Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: Card(
+            child: ExpansionTile(
+              initiallyExpanded: false,
+              title: const Text('Advanced', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Dedup, routing, spikes, digest — only if you need them'),
+              childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              children: [
+                _advancedNoiseControls(),
+                const SizedBox(height: 16),
+                _routingCard(embedded: true),
+                const SizedBox(height: 16),
+                _thresholdCard(embedded: true),
+                const SizedBox(height: 16),
+                _digestCard(embedded: true),
+              ],
+            ),
           ),
         ),
         const SizedBox(height: 16),
-        _routingCard(),
-        const SizedBox(height: 16),
-        _thresholdCard(),
-        const SizedBox(height: 16),
-        _digestCard(),
-        const SizedBox(height: 16),
         _setupCard(),
-        const SizedBox(height: 16),
-        _channelsCard(),
         if (_deliveries.isNotEmpty) ...[const SizedBox(height: 16), _deliveriesCard()],
       ],
     );
   }
 
-  Widget _thresholdCard() => Card(
+  Widget _simpleCard() => Card(
         child: Padding(
           padding: const EdgeInsets.all(20),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
+              title: const Text('Enable alerts', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Send notifications when matching events are ingested'),
+              value: _enabled,
+              onChanged: (v) => setState(() => _enabled = v),
+            ),
+            const SizedBox(height: 12),
+            const Text('How loud?', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'Emergencies: crashes, health-check failures, and spikes.',
+              style: TextStyle(fontSize: 12, color: AppTheme.muted),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'quiet', label: Text('Quiet')),
+                ButtonSegment(value: 'normal', label: Text('Normal')),
+                ButtonSegment(value: 'urgent', label: Text('Urgent')),
+              ],
+              emptySelectionAllowed: true,
+              selected: {'quiet', 'normal', 'urgent'}.contains(_preset) ? {_preset} : <String>{},
+              onSelectionChanged: (s) {
+                if (s.isEmpty) return;
+                _selectPreset(s.first);
+              },
+            ),
+            if (_preset == 'custom') ...[
+              const SizedBox(height: 8),
+              Text(
+                'Custom — Advanced settings differ from Quiet / Normal / Urgent.',
+                style: TextStyle(fontSize: 12, color: AppTheme.warning.withValues(alpha: 0.95)),
+              ),
+            ],
+            const SizedBox(height: 16),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Health-check alerts'),
+              subtitle: const Text('Notify when a health check fails, times out, or is unhealthy'),
+              value: _healthCheckNotify,
+              onChanged: (v) => setState(() {
+                _healthCheckNotify = v;
+                _markCustom();
+              }),
+            ),
+            const SizedBox(height: 8),
+            const Text('Where?', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'People who should get alerts must be on these channels.',
+              style: TextStyle(fontSize: 12, color: AppTheme.muted),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final ch in kNotificationChannels)
+                  if (_platform[ch] != false)
+                    FilterChip(
+                      label: Text(ch[0].toUpperCase() + ch.substring(1)),
+                      selected: switch (ch) {
+                        'slack' => _slackOn,
+                        'whatsapp' => _waOn,
+                        'email' => _emailOn,
+                        _ => false,
+                      },
+                      onSelected: (on) => setState(() {
+                        switch (ch) {
+                          case 'slack':
+                            _slackOn = on;
+                          case 'whatsapp':
+                            _waOn = on;
+                          case 'email':
+                            _emailOn = on;
+                        }
+                        if (on) {
+                          _channels.add(ch);
+                        } else {
+                          _channels.remove(ch);
+                        }
+                      }),
+                    ),
+              ],
+            ),
+          ]),
+        ),
+      );
+
+  Widget _advancedNoiseControls() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Dedup window ($_dedupMinutes min)', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Slider(
+            value: _dedupMinutes.toDouble(),
+            min: 1,
+            max: 120,
+            divisions: 119,
+            label: '${_dedupMinutes}m',
+            onChanged: (v) => setState(() {
+              _dedupMinutes = v.round();
+              _markCustom();
+            }),
+          ),
+          Text(
+            _groupMinutes == 0 ? 'Group window: off (send immediately)' : 'Group window: $_groupMinutes min',
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          Slider(
+            value: _groupMinutes.toDouble(),
+            min: 0,
+            max: 30,
+            divisions: 30,
+            label: _groupMinutes == 0 ? 'off' : '${_groupMinutes}m',
+            onChanged: (v) => setState(() {
+              _groupMinutes = v.round();
+              _markCustom();
+            }),
+          ),
+          const Text(
+            'Roll similar alerts on the same issue into one message per channel.',
+            style: TextStyle(fontSize: 12, color: AppTheme.muted),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _maxAlertsPerHour == 0 ? 'Rate limit: unlimited' : 'Rate limit: $_maxAlertsPerHour alerts/hour',
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          Slider(
+            value: _maxAlertsPerHour.toDouble(),
+            min: 0,
+            max: 100,
+            divisions: 100,
+            label: _maxAlertsPerHour == 0 ? 'off' : '$_maxAlertsPerHour/h',
+            onChanged: (v) => setState(() {
+              _maxAlertsPerHour = v.round();
+              _markCustom();
+            }),
+          ),
+        ],
+      );
+
+  Widget _thresholdCard({bool embedded = false}) {
+    final body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
               title: const Text('Spike alerts', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               subtitle: const Text('Alert when incidents cross a threshold in a time window'),
               value: _thresholdOn,
-              onChanged: (v) => setState(() => _thresholdOn = v),
+              onChanged: (v) => setState(() {
+                _thresholdOn = v;
+                _markCustom();
+              }),
             ),
             if (_thresholdOn) ...[
               const SizedBox(height: 8),
@@ -489,7 +716,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                   ButtonSegment(value: 'anomaly', label: Text('Anomaly'), icon: Icon(Icons.insights, size: 16)),
                 ],
                 selected: {_thresholdMode},
-                onSelectionChanged: (s) => setState(() => _thresholdMode = s.first),
+                onSelectionChanged: (s) => setState(() {
+                  _thresholdMode = s.first;
+                  _markCustom();
+                }),
               ),
               const SizedBox(height: 8),
               Text(
@@ -506,7 +736,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 max: 120,
                 divisions: 23,
                 label: '${_thresholdWindow}m',
-                onChanged: (v) => setState(() => _thresholdWindow = v.round()),
+                onChanged: (v) => setState(() {
+                  _thresholdWindow = v.round();
+                  _markCustom();
+                }),
               ),
               if (_thresholdMode == 'anomaly') ...[
                 Text('Sensitivity: ${_thresholdSensitivity.toStringAsFixed(0)}σ above baseline',
@@ -517,17 +750,26 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                   max: 6,
                   divisions: 5,
                   label: '${_thresholdSensitivity.toStringAsFixed(0)}σ',
-                  onChanged: (v) => setState(() => _thresholdSensitivity = v),
+                  onChanged: (v) => setState(() {
+                    _thresholdSensitivity = v;
+                    _markCustom();
+                  }),
                 ),
               ],
               Row(children: [
                 Expanded(
                     child: _countField(_thresholdMode == 'anomaly' ? 'Error floor (0=off)' : 'Errors ≥ (0=off)',
-                        _thresholdErrors, (n) => setState(() => _thresholdErrors = n))),
+                        _thresholdErrors, (n) => setState(() {
+                          _thresholdErrors = n;
+                          _markCustom();
+                        }))),
                 const SizedBox(width: 12),
                 Expanded(
                     child: _countField(_thresholdMode == 'anomaly' ? 'Crash floor (0=off)' : 'Crashes ≥ (0=off)',
-                        _thresholdCrashes, (n) => setState(() => _thresholdCrashes = n))),
+                        _thresholdCrashes, (n) => setState(() {
+                          _thresholdCrashes = n;
+                          _markCustom();
+                        }))),
               ]),
               const SizedBox(height: 8),
               const Text('Uses the channels selected in Routing.', style: TextStyle(fontSize: 12, color: AppTheme.muted)),
@@ -554,14 +796,16 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                           _thresholdEnvs.remove(env);
                         }
                         if (_thresholdEnvs.isEmpty) _thresholdEnvs = {'production'};
+                        _markCustom();
                       }),
                     ),
                 ],
               ),
             ],
-          ]),
-        ),
-      );
+          ]);
+    if (embedded) return body;
+    return Card(child: Padding(padding: const EdgeInsets.all(20), child: body));
+  }
 
   Widget _countField(String label, int value, ValueChanged<int> onChanged) => TextFormField(
         initialValue: '$value',
@@ -570,16 +814,17 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         onChanged: (s) => onChanged(int.tryParse(s.trim()) ?? 0),
       );
 
-  Widget _digestCard() => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget _digestCard({bool embedded = false}) {
+    final body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Digest email', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               subtitle: const Text('Scheduled summary of top issues + regressions (email channel)'),
               value: _digestOn,
-              onChanged: (v) => setState(() => _digestOn = v),
+              onChanged: (v) => setState(() {
+                _digestOn = v;
+                _markCustom();
+              }),
             ),
             if (_digestOn) ...[
               const SizedBox(height: 8),
@@ -588,7 +833,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 const SizedBox(width: 16),
                 DropdownButton<String>(
                   value: _digestFreq,
-                  onChanged: (v) => setState(() => _digestFreq = v ?? 'daily'),
+                  onChanged: (v) => setState(() {
+                    _digestFreq = v ?? 'daily';
+                    _markCustom();
+                  }),
                   items: const [
                     DropdownMenuItem(value: 'daily', child: Text('Daily')),
                     DropdownMenuItem(value: 'weekly', child: Text('Weekly (Mon)')),
@@ -603,17 +851,19 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 max: 23,
                 divisions: 23,
                 label: '$_digestHour:00 UTC',
-                onChanged: (v) => setState(() => _digestHour = v.round()),
+                onChanged: (v) => setState(() {
+                  _digestHour = v.round();
+                  _markCustom();
+                }),
               ),
             ],
-          ]),
-        ),
-      );
+          ]);
+    if (embedded) return body;
+    return Card(child: Padding(padding: const EdgeInsets.all(20), child: body));
+  }
 
-  Widget _routingCard() => Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+  Widget _routingCard({bool embedded = false}) {
+    final body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Per-environment routing', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 6),
             const Text(
@@ -639,6 +889,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                               } else if (_channels.length > 1) {
                                 _channels.remove(ch);
                               }
+                              _markCustom();
                             })
                         : null,
                   ),
@@ -652,9 +903,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                   style: TextStyle(color: AppTheme.warning.withValues(alpha: 0.9), fontSize: 13),
                 ),
               ),
-          ]),
-        ),
-      );
+          ]);
+    if (embedded) return body;
+    return Card(child: Padding(padding: const EdgeInsets.all(20), child: body));
+  }
 
   Widget _envSection(String env) {
     final prefs = _envPrefs[env]!;
@@ -673,7 +925,10 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               title: Text(env, style: const TextStyle(fontWeight: FontWeight.w600)),
               subtitle: Text(prefs.enabled ? 'Alerts on for this environment' : 'Muted — no alerts from $env'),
               value: prefs.enabled,
-              onChanged: (v) => setState(() => prefs.enabled = v),
+              onChanged: (v) => setState(() {
+                prefs.enabled = v;
+                _markCustom();
+              }),
             ),
             if (prefs.enabled) ...[
               const SizedBox(height: 4),
@@ -693,6 +948,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                         } else if (prefs.categories.length > 1) {
                           prefs.categories.remove(c);
                         }
+                        _markCustom();
                       }),
                     ),
                 ],
@@ -904,13 +1160,24 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 contentPadding: EdgeInsets.zero,
                 dense: true,
                 title: Text(
-                  '${d['channel']} · ${d['category']} · ${deliveryStatusLabel('${d['status']}', count: d['count'] as int? ?? 1)}',
+                  '${d['channel']} · ${d['category']} · ${deliveryStatusLabel('${d['status']}', count: d['count'] as int? ?? 1)}'
+                  '${deliveryUrgencyLabel(d['urgency']).isNotEmpty ? ' · Emergency' : ''}',
                   style: const TextStyle(fontSize: 13),
                 ),
                 subtitle: Text(
                   '${d['latestAt'] ?? d['createdAt'] ?? ''}${d['errorMessage'] != null ? ' — ${d['errorMessage']}' : ''}',
                   style: const TextStyle(fontSize: 12),
                 ),
+                trailing: deliveryUrgencyLabel(d['urgency']).isEmpty
+                    ? null
+                    : Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: AppTheme.error.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text('Emergency', style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700, fontSize: 11)),
+                      ),
               ),
           ]),
         ),
@@ -923,6 +1190,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         'network_transport' => 'Transport',
         'network_user' => 'Network user',
         'network_auth' => 'Network auth',
+        'health_check' => 'Health check',
+        'uptime' => 'Uptime',
         'share' => 'Manual share',
         'grouped' => 'Grouped',
         _ => c,

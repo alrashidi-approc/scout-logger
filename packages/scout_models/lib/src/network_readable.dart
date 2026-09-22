@@ -1,8 +1,10 @@
 import 'network_fault.dart';
+import 'expected_network.dart';
 
 Map<String, dynamic> networkReadableFrom(
   Map<String, dynamic> network, {
   Map<int, NetworkFaultClass>? faultOverrides,
+  List<ExpectedNetworkResponse>? expectedResponses,
 }) {
   final stored = network['readable'] is Map ? Map<String, dynamic>.from(network['readable'] as Map) : <String, dynamic>{};
   final method = network['method']?.toString() ?? 'REQUEST';
@@ -14,7 +16,16 @@ Map<String, dynamic> networkReadableFrom(
   final error = network['error']?.toString();
   final errorType = network['errorType']?.toString();
   final durationMs = network['durationMs'];
-  final fault = classifyNetworkFault(network, faultOverrides: faultOverrides);
+
+  final expected = matchExpectedNetworkResponse(
+    rules: expectedResponses ?? const [],
+    method: method,
+    url: url,
+    statusCode: statusCode,
+  );
+  final fault = expected != null
+      ? expectedNetworkFaultInfo(note: expected.note)
+      : classifyNetworkFault(network, faultOverrides: faultOverrides);
 
   final outcome = fault.faultClass == NetworkFaultClass.success
       ? 'success'
@@ -73,6 +84,21 @@ Map<String, dynamic> networkReadableFrom(
   };
 
   if (stored.isEmpty) return built;
+  // Expected-response rules must win over any client-supplied readable fault.
+  if (expected != null) {
+    return {
+      ...stored,
+      ...built,
+      'fault': built['fault'],
+      'faultClass': built['faultClass'],
+      'faultKind': built['faultKind'],
+      'faultLabel': built['faultLabel'],
+      'actionHint': built['actionHint'],
+      'alertWorthy': built['alertWorthy'],
+      'issueWorthy': built['issueWorthy'],
+      'operationalError': built['operationalError'],
+    };
+  }
   return {
     ...built,
     ...stored,
@@ -90,8 +116,8 @@ Map<String, dynamic> networkReadableFrom(
 String _shortUrl(String url) {
   final uri = Uri.tryParse(url);
   if (uri == null) return url;
-  final path = uri.path.isEmpty ? '/' : uri.path;
-  return uri.hasQuery ? '$path?${uri.query}' : path;
+  // Drop query strings — they often contain tokens/PII and clutter titles.
+  return uri.path.isEmpty ? '/' : uri.path;
 }
 
 String _fmtMs(int ms) {

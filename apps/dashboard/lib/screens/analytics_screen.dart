@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -105,10 +107,16 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
       );
     });
     try {
-      final routes = await _api.fetchRoutes(widget.projectId, period: _period);
-      final retention = await _api.fetchRetention(widget.projectId);
-      final releases = await _api.fetchReleaseComparison(widget.projectId, period: _period);
-      final sessions = await _api.fetchSessions(widget.projectId, period: _period);
+      final results = await Future.wait([
+        _api.fetchRoutes(widget.projectId, period: _period),
+        _api.fetchRetention(widget.projectId),
+        _api.fetchReleaseComparison(widget.projectId, period: _period),
+        _api.fetchSessions(widget.projectId, period: _period),
+      ]);
+      final routes = results[0] as List<String>;
+      final retention = results[1] as Map<String, dynamic>;
+      final releases = results[2] as List<Map<String, dynamic>>;
+      final sessions = results[3] as List<Map<String, dynamic>>;
       if (mounted) {
         setState(() {
           _routes = routes;
@@ -118,11 +126,10 @@ class _AnalyticsScreenState extends State<AnalyticsScreen> with SingleTickerProv
           _sessions = sessions;
           _hasData = true;
           _loading = false;
-
           _refreshing = false;
         });
         _writeCache();
-        if (_funnelSteps.isNotEmpty) await _runFunnel();
+        if (_funnelSteps.isNotEmpty) unawaited(_runFunnel());
       }
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));

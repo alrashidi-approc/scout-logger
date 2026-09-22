@@ -26,5 +26,6 @@ NotificationJob groupedNotificationJob({
     environment: latest.environment,
     release: latest.release,
     issueId: latest.issueId,
+    urgency: jobs.any((j) => j.isEmergency) ? 'emergency' : latest.urgency,
   );
 }

@@ -17,7 +17,24 @@ class AnalyticsStore {
   Future<List<String>> distinctRoutes(String projectId, {int days = 30, TimeWindow? window}) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days);
+    // Prefer last_route from identity rollups — jsonb_array_elements on events was multi-second.
     final rows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT last_route AS route
+        FROM user_stats
+        WHERE project_id = @pid
+          AND last_route IS NOT NULL AND last_route <> ''
+          AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+        ORDER BY route
+        LIMIT 200
+      '''),
+      parameters: {'pid': projectId, ...timeParams(w)},
+    );
+    final routes = rows.map((r) => r[0] as String).toList();
+    if (routes.isNotEmpty) return routes;
+
+    final fallback = await conn.execute(
       Sql.named('''
         SELECT DISTINCT step->>'route' AS route
         FROM events, jsonb_array_elements(payload->'screenTrail') AS step
@@ -29,9 +46,9 @@ class AnalyticsStore {
         ORDER BY route
         LIMIT 200
       '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
+      parameters: {'pid': projectId, ...timeParams(TimeWindow.lastDays(w.approximateDays.clamp(1, 7)))},
     );
-    return rows.map((r) => r[0] as String).toList();
+    return fallback.map((r) => r[0] as String).toList();
   }
 
   Future<Map<String, dynamic>> funnel(String projectId, List<String> steps, {int days = 30, TimeWindow? window}) async {
@@ -154,46 +171,70 @@ class AnalyticsStore {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days);
     final tp = timeParams(w);
+    // Prefer releases + daily identity tables over full events GROUP BY.
     final rows = await conn.execute(
       Sql.named('''
-        WITH session_release AS (
-          SELECT DISTINCT ON (session_id) session_id, release
-          FROM events
-          WHERE project_id = @pid AND $sqlHideSessionHeartbeat AND session_id IS NOT NULL AND release IS NOT NULL
-          ORDER BY session_id, occurred_at
-        ),
-        session_stats AS (
-          SELECT sr.release, AVG(s.duration_ms)::int AS avg_ms, COUNT(*)::int AS sessions
-          FROM app_sessions s
-          JOIN session_release sr ON sr.session_id = s.id
-          WHERE s.project_id = @pid AND s.ended_at IS NOT NULL
-            AND (@since::timestamptz IS NULL OR s.started_at >= @since::timestamptz)
-            AND (@until::timestamptz IS NULL OR s.started_at < @until::timestamptz)
-          GROUP BY sr.release
-        )
+        SELECT
+          r.release,
+          COALESCE(r.event_count, 0)::int AS events,
+          COALESCE(r.crash_count, 0)::int AS crashes,
+          COALESCE((
+            SELECT COUNT(*)::int FROM user_stats u
+            WHERE u.project_id = r.project_id AND u.release = r.release
+              AND (@since::timestamptz IS NULL OR u.last_seen_at >= @since::timestamptz)
+              AND (@until::timestamptz IS NULL OR u.last_seen_at < @until::timestamptz)
+          ), 0)::int AS users,
+          0::int AS sessions,
+          0::int AS avg_session_ms
+        FROM releases r
+        WHERE r.project_id = @pid
+          AND (@since::timestamptz IS NULL OR r.last_seen_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR r.last_seen_at < @until::timestamptz)
+        ORDER BY events DESC
+        LIMIT 20
+      '''),
+      parameters: {'pid': projectId, ...tp},
+    );
+    if (rows.isNotEmpty) {
+      return rows.map((r) {
+        final events = r[1] as int;
+        final crashes = r[2] as int;
+        return {
+          'release': r[0],
+          'events': events,
+          'crashes': crashes,
+          'errors': crashes, // releases table doesn't split errors; UI mainly uses crashes
+          'users': r[3],
+          'sessions': r[4],
+          'avgSessionMs': r[5],
+          'crashRatePct': events == 0 ? 0.0 : crashes / events * 100,
+        };
+      }).toList();
+    }
+
+    final legacy = await conn.execute(
+      Sql.named('''
         SELECT
           e.release,
           COUNT(*)::int AS events,
           COUNT(*) FILTER (WHERE e.type = 'crash')::int AS crashes,
           COUNT(*) FILTER (WHERE ${sqlIsErrorEvent(alias: 'e')})::int AS errors,
           COUNT(DISTINCT e.user_id) FILTER (WHERE ${identifiedUserSql(alias: 'e')})::int AS users,
-          COALESCE(ss.sessions, 0)::int AS sessions,
-          COALESCE(ss.avg_ms, 0)::int AS avg_session_ms
+          0::int AS sessions,
+          0::int AS avg_session_ms
         FROM events e
-        LEFT JOIN session_stats ss ON ss.release = e.release
         WHERE e.project_id = @pid
           AND $sqlHideSessionHeartbeat
           AND e.release IS NOT NULL
           AND (@since::timestamptz IS NULL OR e.occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR e.occurred_at < @until::timestamptz)
-        GROUP BY e.release, ss.sessions, ss.avg_ms
+        GROUP BY e.release
         ORDER BY events DESC
         LIMIT 20
       '''),
       parameters: {'pid': projectId, ...tp},
     );
-
-    return rows.map((r) {
+    return legacy.map((r) {
       final events = r[1] as int;
       final crashes = r[2] as int;
       return {
@@ -214,45 +255,28 @@ class AnalyticsStore {
     final w = window ?? TimeWindow.lastDays(days);
     final rows = await conn.execute(
       Sql.named('''
-        SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms, s.last_seen_at,
-               end_ev.payload->'summary' AS summary,
-               end_ev.payload->'reason' AS reason,
-               (SELECT release FROM events WHERE project_id = s.project_id AND session_id = s.id AND release IS NOT NULL ORDER BY occurred_at LIMIT 1) AS release,
-               (SELECT install_id FROM events WHERE project_id = s.project_id AND session_id = s.id AND install_id IS NOT NULL ORDER BY occurred_at LIMIT 1) AS install_id
+        SELECT s.id, s.user_id, s.started_at, s.ended_at, s.duration_ms, s.last_seen_at
         FROM app_sessions s
-        LEFT JOIN LATERAL (
-          SELECT payload FROM events
-          WHERE project_id = s.project_id AND session_id = s.id
-            AND type = 'session' AND payload->>'action' = 'end'
-          ORDER BY occurred_at DESC LIMIT 1
-        ) end_ev ON true
         WHERE s.project_id = @pid
           AND (@since::timestamptz IS NULL OR s.started_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR s.started_at < @until::timestamptz)
-        ORDER BY s.started_at DESC
+        ORDER BY COALESCE(s.last_seen_at, s.started_at) DESC
         LIMIT @lim
       '''),
-      parameters: {'pid': projectId, 'lim': limit, ...timeParams(w)},
+      parameters: {'pid': projectId, 'lim': limit.clamp(1, 200), ...timeParams(w)},
     );
-
-    return rows.map((r) {
-      final summary = _jsonField(r[6]);
-      final userId = r[1]?.toString();
-      final installId = r[9]?.toString();
-      return {
-        'id': r[0],
-        'userId': userId,
-        'isGuest': isGuestAppUser(userId: userId, installId: installId),
-        'startedAt': (r[2] as DateTime).toUtc().toIso8601String(),
-        'endedAt': r[3] != null ? (r[3] as DateTime).toUtc().toIso8601String() : null,
-        'lastSeenAt': r[5] != null ? (r[5] as DateTime).toUtc().toIso8601String() : null,
-        'durationMs': r[4],
-        'release': r[8],
-        'reason': _jsonField(r[7])?.toString(),
-        'isActive': r[3] == null,
-        if (summary is Map) 'summary': Map<String, dynamic>.from(summary),
-      };
-    }).toList();
+    return rows
+        .map((r) => {
+              'id': r[0],
+              'userId': r[1],
+              'startedAt': (r[2] as DateTime).toUtc().toIso8601String(),
+              'endedAt': r[3] == null ? null : (r[3] as DateTime).toUtc().toIso8601String(),
+              'durationMs': r[4],
+              'lastSeenAt': r[5] == null ? null : (r[5] as DateTime).toUtc().toIso8601String(),
+              'isActive': r[3] == null,
+              'isGuest': isGuestAppUser(userId: r[1]?.toString()),
+            })
+        .toList();
   }
 
   Future<Map<String, dynamic>?> sessionTimeline(String projectId, String sessionId) async {

@@ -92,7 +92,8 @@ class NotificationService {
     if (jobs.isEmpty) return;
 
     for (final job in jobs) {
-      unawaited(_deliver(
+      // Await so sequential ingest in a batch cannot race past dedup.
+      await _deliver(
         projectId: projectId,
         eventId: eventId,
         issueId: issueId,
@@ -100,7 +101,7 @@ class NotificationService {
         notifications: notifications,
         projectName: projectName,
         regression: regression,
-      ));
+      );
     }
   }
 
@@ -113,8 +114,9 @@ class NotificationService {
     required String projectName,
     bool regression = false,
   }) async {
-    // Regressions always alert and bypass the dedup window.
-    final dup = !regression &&
+    // Emergencies (crash, regression, …) always alert and bypass the dedup window.
+    final bypassNoise = regression || job.isEmergency;
+    final dup = !bypassNoise &&
         await store.recentlyDelivered(
           projectId: projectId,
           dedupKey: job.dedupKey,
@@ -130,12 +132,13 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'skipped_dedup',
+        urgency: job.urgency,
       );
       return;
     }
 
     final cap = notifications.maxAlertsPerHour;
-    if (cap > 0 && await store.sentCountSince(projectId, minutes: 60) >= cap) {
+    if (cap > 0 && !bypassNoise && await store.sentCountSince(projectId, minutes: 60) >= cap) {
       await store.logDelivery(
         projectId: projectId,
         eventId: eventId,
@@ -144,12 +147,17 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'rate_limited',
+        urgency: job.urgency,
       );
       return;
     }
 
     final groupMinutes = notifications.groupMinutes;
-    final canBatch = !regression && job.category != kShareNotifyCategory && groupMinutes > 0;
+    // Network noise: always batch at least briefly unless crash emergency.
+    final effectiveGroup = (!bypassNoise && job.category.startsWith('network') && groupMinutes == 0)
+        ? 2
+        : groupMinutes;
+    final canBatch = !bypassNoise && job.category != kShareNotifyCategory && effectiveGroup > 0;
     if (canBatch) {
       _enqueueBatch(
         projectId: projectId,
@@ -158,9 +166,23 @@ class NotificationService {
         job: job,
         notifications: notifications,
         projectName: projectName,
-        groupMinutes: groupMinutes,
+        groupMinutes: effectiveGroup,
       );
       return;
+    }
+
+    // Claim the slot before the HTTP send so concurrent requests cannot double-page.
+    if (!bypassNoise) {
+      await store.logDelivery(
+        projectId: projectId,
+        eventId: eventId,
+        issueId: issueId,
+        dedupKey: job.dedupKey,
+        category: job.category,
+        channel: job.channel,
+        status: 'pending',
+        urgency: job.urgency,
+      );
     }
 
     await _sendNow(
@@ -204,6 +226,7 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'batched',
+        urgency: job.urgency,
       ));
       return;
     }
@@ -225,17 +248,7 @@ class NotificationService {
     final jobs = <NotificationJob>[];
     for (final item in batch.items) {
       final shareUrl = await _shareEventUrl(item.projectId, item.eventId, item.job.eventUrl);
-      jobs.add(NotificationJob(
-        channel: item.job.channel,
-        category: item.job.category,
-        dedupKey: item.job.dedupKey,
-        title: item.job.title,
-        body: item.job.body,
-        eventUrl: shareUrl,
-        environment: item.job.environment,
-        release: item.job.release,
-        issueId: item.job.issueId,
-      ));
+      jobs.add(item.job.copyWith(eventUrl: shareUrl));
     }
 
     final outbound = groupedNotificationJob(jobs: jobs, groupMinutes: first.notifications.groupMinutes);
@@ -255,14 +268,27 @@ class NotificationService {
           category: item.job.category,
           channel: item.job.channel,
           status: 'skipped_dedup',
+          urgency: item.job.urgency,
         );
       }
       return;
     }
 
     final last = batch.items.last;
+    final releases = batch.items.map((i) => i.job.release).whereType<String>().toSet();
+    var toSend = outbound;
+    if (batch.items.length > 1 || releases.length > 1) {
+      final extra = StringBuffer();
+      if (batch.items.length > 1) {
+        extra.writeln('Seen ${batch.items.length}× in this group window.');
+      }
+      if (releases.length > 1) {
+        extra.writeln('Releases: ${releases.join(', ')}');
+      }
+      toSend = outbound.copyWith(body: '${outbound.body}\n${extra.toString().trim()}');
+    }
     try {
-      await dispatcher.send(job: outbound, config: first.notifications, projectName: first.projectName);
+      await dispatcher.send(job: toSend, config: first.notifications, projectName: first.projectName);
       await store.logDelivery(
         projectId: first.projectId,
         eventId: last.eventId,
@@ -271,6 +297,7 @@ class NotificationService {
         category: outbound.category,
         channel: outbound.channel,
         status: 'sent',
+        urgency: outbound.urgency,
       );
     } catch (e) {
       await store.logDelivery(
@@ -281,6 +308,7 @@ class NotificationService {
         category: outbound.category,
         channel: outbound.channel,
         status: 'failed',
+        urgency: outbound.urgency,
         errorMessage: '$e',
       );
     }
@@ -296,17 +324,7 @@ class NotificationService {
   }) async {
     try {
       final shareUrl = await _shareEventUrl(projectId, eventId, job.eventUrl);
-      final outbound = NotificationJob(
-        channel: job.channel,
-        category: job.category,
-        dedupKey: job.dedupKey,
-        title: job.title,
-        body: job.body,
-        eventUrl: shareUrl,
-        environment: job.environment,
-        release: job.release,
-        issueId: job.issueId,
-      );
+      final outbound = job.copyWith(eventUrl: shareUrl);
       await dispatcher.send(job: outbound, config: notifications, projectName: projectName);
       await store.logDelivery(
         projectId: projectId,
@@ -316,6 +334,7 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'sent',
+        urgency: job.urgency,
       );
     } catch (e) {
       await store.logDelivery(
@@ -326,8 +345,140 @@ class NotificationService {
         category: job.category,
         channel: job.channel,
         status: 'failed',
+        urgency: job.urgency,
         errorMessage: '$e',
       );
+    }
+  }
+
+  Future<void> onUptimeDown({
+    required String projectId,
+    required String projectName,
+    required String url,
+    required String detail,
+    required int? latencyMs,
+    required ProjectNotificationConfig notifications,
+    required PlatformNotificationPolicy platform,
+  }) async {
+    if (!notifications.enabled || !notifications.healthCheckNotify) return;
+
+    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health';
+    final dedupKey = 'uptime-${Uri.encodeComponent(url)}';
+    final title = '🚨 Server unreachable — $projectName';
+    final body = StringBuffer()
+      ..writeln('Project: $projectName')
+      ..writeln('URL: $url')
+      ..writeln('Detail: $detail');
+    if (latencyMs != null) body.writeln('Latency: ${latencyMs}ms');
+    body.writeln('Scout light uptime check (every ${kUptimeMonitorIntervalMinutes}m) — not the full health script.');
+
+    for (final channel in readyNotificationChannels(config: notifications, platform: platform)) {
+      // Soft dedup so a flapping host does not page every tick while still down.
+      if (await store.recentlyDelivered(
+        projectId: projectId,
+        dedupKey: dedupKey,
+        channel: channel,
+        withinMinutes: kUptimeMonitorIntervalMinutes * 2,
+      )) {
+        continue;
+      }
+      final job = NotificationJob(
+        channel: channel,
+        category: 'uptime',
+        dedupKey: dedupKey,
+        title: title,
+        body: body.toString().trim(),
+        eventUrl: eventUrl,
+        urgency: 'emergency',
+      );
+      final eventId = 'uptime-${newId()}';
+      try {
+        await dispatcher.send(job: job, config: notifications, projectName: projectName);
+        await store.logDelivery(
+          projectId: projectId,
+          eventId: eventId,
+          issueId: null,
+          dedupKey: dedupKey,
+          category: job.category,
+          channel: channel,
+          status: 'sent',
+          urgency: 'emergency',
+        );
+      } catch (e) {
+        await store.logDelivery(
+          projectId: projectId,
+          eventId: eventId,
+          issueId: null,
+          dedupKey: dedupKey,
+          category: job.category,
+          channel: channel,
+          status: 'failed',
+          urgency: 'emergency',
+          errorMessage: '$e',
+        );
+      }
+    }
+  }
+
+  Future<void> onHealthCheckFinished({
+    required String projectId,
+    required String runId,
+    required String status,
+    required Map<String, dynamic>? report,
+    required ProjectNotificationConfig notifications,
+    required PlatformNotificationPolicy platform,
+  }) async {
+    if (!notifications.enabled || !notifications.healthCheckNotify) return;
+    if (!healthCheckNeedsAlert(status: status, report: report)) return;
+
+    final projectName = await store.projectName(projectId) ?? projectId;
+    final verdict = report?['verdict']?.toString() ?? status;
+    final summary = report?['summary']?.toString() ?? 'Health check $status';
+    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health';
+    final dedupKey = 'health-check-$runId';
+    final title = '🚨 [$verdict] Health check — $projectName';
+    final body = StringBuffer()
+      ..writeln('Project: $projectName')
+      ..writeln('Status: $status')
+      ..writeln('Verdict: $verdict')
+      ..writeln('Summary: $summary')
+      ..writeln('Run: $runId');
+
+    for (final channel in readyNotificationChannels(config: notifications, platform: platform)) {
+      final job = NotificationJob(
+        channel: channel,
+        category: 'health_check',
+        dedupKey: dedupKey,
+        title: title,
+        body: body.toString().trim(),
+        eventUrl: eventUrl,
+        urgency: 'emergency',
+      );
+      try {
+        await dispatcher.send(job: job, config: notifications, projectName: projectName);
+        await store.logDelivery(
+          projectId: projectId,
+          eventId: runId,
+          issueId: null,
+          dedupKey: dedupKey,
+          category: job.category,
+          channel: channel,
+          status: 'sent',
+          urgency: 'emergency',
+        );
+      } catch (e) {
+        await store.logDelivery(
+          projectId: projectId,
+          eventId: runId,
+          issueId: null,
+          dedupKey: dedupKey,
+          category: job.category,
+          channel: channel,
+          status: 'failed',
+          urgency: 'emergency',
+          errorMessage: '$e',
+        );
+      }
     }
   }
 
@@ -487,4 +638,10 @@ class NotificationService {
 
     return {'sent': sent, 'failed': failed, 'shareUrl': shareUrl};
   }
+}
+
+bool healthCheckNeedsAlert({required String status, required Map<String, dynamic>? report}) {
+  if (status == 'timeout' || status == 'failed') return true;
+  final verdict = report?['verdict']?.toString().toLowerCase();
+  return verdict == 'unhealthy';
 }

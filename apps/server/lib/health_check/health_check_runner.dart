@@ -6,6 +6,7 @@ import 'package:scout_models/scout_models.dart';
 
 import '../config/env_file.dart';
 import '../config/server_config.dart';
+import '../notifications/notification_service.dart';
 import '../store/health_check_store.dart';
 import '../store/scout_store.dart';
 import 'network_probe.dart';
@@ -85,11 +86,12 @@ HealthCheckReport _timeoutReport(HealthCheckReport? partial, {required int limit
 }
 
 class HealthCheckRunner {
-  HealthCheckRunner(this.store, this.scoutStore, this.config);
+  HealthCheckRunner(this.store, this.scoutStore, this.config, {this.notifications});
 
   final HealthCheckStore store;
   final ScoutStore scoutStore;
   final ServerConfig config;
+  final NotificationService? notifications;
 
   Future<void> _publishShareSnapshot(
     String projectId,
@@ -110,6 +112,26 @@ class HealthCheckRunner {
         'report': report is Map ? Map<String, dynamic>.from(report) : report,
       },
     );
+  }
+
+  Future<void> _maybeNotify(String projectId, Map<String, dynamic> run) async {
+    final svc = notifications;
+    if (svc == null) return;
+    try {
+      final cfg = await svc.store.getConfig(projectId);
+      final platform = await svc.platformStore.getNotificationPolicy();
+      final report = run['report'];
+      await svc.onHealthCheckFinished(
+        projectId: projectId,
+        runId: '${run['id']}',
+        status: '${run['status']}',
+        report: report is Map ? Map<String, dynamic>.from(report) : null,
+        notifications: cfg,
+        platform: platform,
+      );
+    } catch (e) {
+      stderr.writeln('health-check notify error: $e');
+    }
   }
 
   Future<Map<String, dynamic>> run(String projectId, {String? triggeredBy}) async {
@@ -200,6 +222,7 @@ class HealthCheckRunner {
         final timedRun = await store.getRun(projectId, runId);
         if (timedRun != null) {
           await _publishShareSnapshot(projectId, timedRun, triggeredBy);
+          await _maybeNotify(projectId, timedRun);
         }
         return timedRun ?? {'id': runId, 'status': 'timeout', 'report': report.toJson()};
       }
@@ -229,8 +252,9 @@ class HealthCheckRunner {
       );
 
       final finishedRun = await store.getRun(projectId, runId);
-      if (finishedRun != null && report != null) {
-        await _publishShareSnapshot(projectId, finishedRun, triggeredBy);
+      if (finishedRun != null) {
+        if (report != null) await _publishShareSnapshot(projectId, finishedRun, triggeredBy);
+        await _maybeNotify(projectId, finishedRun);
       }
       return finishedRun ?? {'id': runId, 'status': status};
     } catch (e) {
@@ -242,6 +266,8 @@ class HealthCheckRunner {
         stderr: '$e',
         durationMs: sw.elapsedMilliseconds,
       );
+      final failedRun = await store.getRun(projectId, runId);
+      if (failedRun != null) await _maybeNotify(projectId, failedRun);
       rethrow;
     } finally {
       try {

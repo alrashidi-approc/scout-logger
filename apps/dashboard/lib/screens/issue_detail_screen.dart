@@ -174,6 +174,31 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
     }
   }
 
+  Future<void> _markAsExpected() async {
+    setState(() => _updating = true);
+    try {
+      final issue = await _api.markIssueAsExpected(widget.projectId, widget.issueId);
+      if (mounted) {
+        setState(() {
+          _issue = issue;
+          _updating = false;
+        });
+        _writeCache();
+        _invalidateIssueLists();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Marked as not an issue — muted and added expected-response rule'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _updating = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
   Future<void> _assign(String? userId) async {
     setState(() => _updating = true);
     try {
@@ -304,6 +329,12 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
               onPressed: _updating ? null : () => _setStatus('ignored'),
               icon: const Icon(Icons.notifications_off_outlined, size: 18),
               label: const Text('Mute'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _updating ? null : _markAsExpected,
+              icon: const Icon(Icons.check_circle_outline, size: 18),
+              label: const Text('Not an issue'),
             ),
           ] else if (!shared && status == 'resolved')
             OutlinedButton.icon(

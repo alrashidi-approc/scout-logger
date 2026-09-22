@@ -83,33 +83,24 @@ class _OverviewScreenState extends State<OverviewScreen> {
     });
     try {
       Map<String, dynamic> data;
+      List<Map<String, dynamic>> recent = const [];
       try {
+        data = await _api.fetchDashboard(widget.projectId, period: _period);
+        recent = jsonListMaps(data['recentIssues']).take(5).toList();
+      } catch (_) {
+        // Legacy servers without /dashboard or recentIssues.
         final results = await Future.wait<Object>([
-          _api.fetchDashboard(widget.projectId, period: _period),
+          _api.fetchOverview(widget.projectId, period: _period),
+          _api.fetchStats(widget.projectId, period: _period),
           _api.fetchIssues(widget.projectId, period: _period),
         ]);
-        data = Map<String, dynamic>.from(results[0] as Map);
-        if (mounted) {
-          setState(() {
-            _d = data;
-            _recentIssues = (results[1] as List).cast<Map<String, dynamic>>().take(5).toList();
-            _hasData = true;
-            _loading = false;
-            _refreshing = false;
-          });
-          _writeCache();
-        }
-        return;
-      } catch (_) {
-        final overview = await _api.fetchOverview(widget.projectId, period: _period);
-        final stats = await _api.fetchStats(widget.projectId, period: _period);
-        data = {...overview, ...stats};
+        data = {...results[0] as Map<String, dynamic>, ...results[1] as Map<String, dynamic>};
+        recent = (results[2] as List).cast<Map<String, dynamic>>().take(5).toList();
       }
-      final issues = await _api.fetchIssues(widget.projectId, period: _period);
       if (mounted) {
         setState(() {
           _d = data;
-          _recentIssues = issues.take(5).toList();
+          _recentIssues = recent;
           _hasData = true;
           _loading = false;
           _refreshing = false;
@@ -121,7 +112,6 @@ class _OverviewScreenState extends State<OverviewScreen> {
       if (mounted) setState(() {
         _error = e;
         _loading = false;
-
         _refreshing = false;
       });
     }

@@ -301,6 +301,24 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['issue']);
   }
 
+  /// Mute + add expected-network rule from a sample event on this issue.
+  Future<Map<String, dynamic>> markIssueAsExpected(
+    String projectId,
+    String issueId, {
+    String? note,
+  }) async {
+    final res = await _client.patch(
+      _uri('/api/projects/$projectId/issues/$issueId'),
+      headers: {..._headers, 'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'markExpected': true,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+      }),
+    );
+    _ok(res);
+    return jsonMap((jsonDecode(res.body) as Map)['issue']);
+  }
+
   Future<Map<String, dynamic>> assignIssue(String projectId, String issueId, String? userId) async {
     final res = await _client.patch(
       _uri('/api/projects/$projectId/issues/$issueId'),
@@ -420,6 +438,8 @@ class ScoutApi {
     final body = jsonDecode(res.body) as Map;
     return {
       'script': jsonMap(body['script']),
+      'uptime': body['uptime'] == null ? null : jsonMap(body['uptime']),
+      'uptimeIntervalMinutes': body['uptimeIntervalMinutes'],
       'latestRun': body['latestRun'] == null ? null : jsonMap(body['latestRun']),
       'share': body['share'] == null ? null : jsonMap(body['share']),
     };
@@ -440,6 +460,22 @@ class ScoutApi {
     );
     _ok(res, projectId: projectId);
     return jsonMap((jsonDecode(res.body) as Map)['script']);
+  }
+
+  Future<Map<String, dynamic>> saveHealthCheckUptime(String projectId, {required bool enabled, required String urlsText}) async {
+    final res = await _client.put(
+      _uri('/api/projects/$projectId/health-check/uptime'),
+      headers: _headers,
+      body: jsonEncode({'enabled': enabled, 'urlsText': urlsText}),
+    );
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['uptime']);
+  }
+
+  Future<Map<String, dynamic>> checkHealthCheckUptime(String projectId) async {
+    final res = await _client.post(_uri('/api/projects/$projectId/health-check/uptime/check'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['uptime']);
   }
 
   Future<Map<String, dynamic>> runHealthCheck(String projectId) async {

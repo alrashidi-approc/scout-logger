@@ -187,3 +187,152 @@ class HealthCheckRun {
         durationMs: (j['durationMs'] as num?)?.toInt(),
       );
 }
+
+/// Light automatic reachability check (not the full health script).
+const kUptimeMonitorIntervalMinutes = 10;
+const kDefaultUptimeMonitorEnabled = false;
+
+bool _isHttpUrl(String raw) {
+  final u = raw.trim();
+  if (u.isEmpty) return false;
+  final uri = Uri.tryParse(u);
+  return uri != null && (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty;
+}
+
+/// One watched server URL + last probe result.
+class UptimeTarget {
+  const UptimeTarget({
+    required this.url,
+    this.lastStatus,
+    this.lastCheckedAt,
+    this.lastLatencyMs,
+    this.lastDetail,
+  });
+
+  final String url;
+  final String? lastStatus;
+  final DateTime? lastCheckedAt;
+  final int? lastLatencyMs;
+  final String? lastDetail;
+
+  bool get isValid => _isHttpUrl(url);
+
+  factory UptimeTarget.fromJson(Map<String, dynamic> json) => UptimeTarget(
+        url: json['url']?.toString().trim() ?? '',
+        lastStatus: json['lastStatus']?.toString(),
+        lastCheckedAt: DateTime.tryParse(json['lastCheckedAt']?.toString() ?? '')?.toUtc(),
+        lastLatencyMs: (json['lastLatencyMs'] as num?)?.toInt(),
+        lastDetail: json['lastDetail']?.toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'url': url,
+        if (lastStatus != null) 'lastStatus': lastStatus,
+        if (lastCheckedAt != null) 'lastCheckedAt': lastCheckedAt!.toUtc().toIso8601String(),
+        if (lastLatencyMs != null) 'lastLatencyMs': lastLatencyMs,
+        if (lastDetail != null) 'lastDetail': lastDetail,
+      };
+
+  UptimeTarget copyWith({
+    String? url,
+    String? lastStatus,
+    DateTime? lastCheckedAt,
+    int? lastLatencyMs,
+    String? lastDetail,
+  }) =>
+      UptimeTarget(
+        url: url ?? this.url,
+        lastStatus: lastStatus ?? this.lastStatus,
+        lastCheckedAt: lastCheckedAt ?? this.lastCheckedAt,
+        lastLatencyMs: lastLatencyMs ?? this.lastLatencyMs,
+        lastDetail: lastDetail ?? this.lastDetail,
+      );
+}
+
+class UptimeMonitorConfig {
+  const UptimeMonitorConfig({
+    this.enabled = kDefaultUptimeMonitorEnabled,
+    this.targets = const [],
+  });
+
+  final bool enabled;
+  final List<UptimeTarget> targets;
+
+  /// Valid http(s) targets only.
+  List<UptimeTarget> get validTargets => targets.where((t) => t.isValid).toList();
+
+  bool get hasUrl => validTargets.isNotEmpty;
+
+  /// Convenience for single-URL UIs / legacy callers.
+  String get url => validTargets.isEmpty ? '' : validTargets.first.url;
+
+  /// Newline-separated URLs for a simple textarea.
+  String get urlsText => targets.map((t) => t.url).where((u) => u.trim().isNotEmpty).join('\n');
+
+  factory UptimeMonitorConfig.fromJson(Map<String, dynamic>? json) {
+    if (json == null || json.isEmpty) return const UptimeMonitorConfig();
+    final enabled = json['enabled'] == true;
+    final rawTargets = json['targets'];
+    if (rawTargets is List && rawTargets.isNotEmpty) {
+      final targets = rawTargets
+          .whereType<Map>()
+          .map((e) => UptimeTarget.fromJson(Map<String, dynamic>.from(e)))
+          .where((t) => t.url.isNotEmpty)
+          .toList();
+      return UptimeMonitorConfig(enabled: enabled, targets: targets);
+    }
+    // Legacy single-url shape.
+    final legacyUrl = json['url']?.toString().trim() ?? '';
+    if (legacyUrl.isEmpty) return UptimeMonitorConfig(enabled: enabled);
+    return UptimeMonitorConfig(
+      enabled: enabled,
+      targets: [
+        UptimeTarget(
+          url: legacyUrl,
+          lastStatus: json['lastStatus']?.toString(),
+          lastCheckedAt: DateTime.tryParse(json['lastCheckedAt']?.toString() ?? '')?.toUtc(),
+          lastLatencyMs: (json['lastLatencyMs'] as num?)?.toInt(),
+          lastDetail: json['lastDetail']?.toString(),
+        ),
+      ],
+    );
+  }
+
+  /// Build from enable flag + newline / comma separated URL text (keeps prior results when URL matches).
+  factory UptimeMonitorConfig.fromUrlsText({
+    required bool enabled,
+    required String text,
+    List<UptimeTarget> previous = const [],
+  }) {
+    final prevByUrl = {for (final t in previous) t.url.trim(): t};
+    final seen = <String>{};
+    final targets = <UptimeTarget>[];
+    for (final line in text.split(RegExp(r'[\n,]+'))) {
+      final u = line.trim();
+      if (u.isEmpty || !seen.add(u)) continue;
+      final prev = prevByUrl[u];
+      targets.add(prev?.copyWith(url: u) ?? UptimeTarget(url: u));
+    }
+    return UptimeMonitorConfig(enabled: enabled, targets: targets);
+  }
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'targets': targets.map((t) => t.toJson()).toList(),
+      };
+
+  UptimeMonitorConfig copyWith({
+    bool? enabled,
+    List<UptimeTarget>? targets,
+  }) =>
+      UptimeMonitorConfig(
+        enabled: enabled ?? this.enabled,
+        targets: targets ?? this.targets,
+      );
+}
+
+/// True when we should page: first failure, or transition from ok → down.
+bool uptimeShouldAlert({required String? previousStatus, required String newStatus}) {
+  if (newStatus != 'down') return false;
+  return previousStatus != 'down';
+}

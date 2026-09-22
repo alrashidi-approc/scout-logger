@@ -1,0 +1,27 @@
+---
+description: Server health script contract and auth-chain rules
+globs: "**/health_check*/**/*.{dart,md}"
+alwaysApply: false
+---
+
+# Health-check conventions
+
+## Contract
+
+- Incremental stdout: `SCOUT_REPORT:{json}` + `stdout.flush()` after each emit.
+- Human logs on **stderr** only.
+- Each check: `name`, `status`, `url`, `latencyMs`, `detail` (`HTTP {code}` / `TimeoutException after 10s` / `skipped: …`).
+- Per-check timeout **10s**; global deadline **~280s** (Scout run limit 300s).
+- Config = Dart constants in the script (not server `.env`).
+
+## Auth chains
+
+Do **not** mix prerequisites across backends. Example: `eprocess.*` depends on `eprocess.login` only — never on citizen `auth.login`.
+
+## Prompts
+
+Dashboard copy sources: `apps/dashboard/lib/utils/health_check_prompts.dart`. Keep in sync with `docs/MOBILE-SERVER-HEALTH*.md`.
+
+## Runner
+
+Production uses `/opt/dart/bin/dart` (bundled SDK). Network probe attaches `networkProbe` to the stored report.

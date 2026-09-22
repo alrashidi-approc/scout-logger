@@ -5,6 +5,7 @@ import 'package:scout_models/scout_models.dart';
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
 import '../services/auth_service.dart';
+import '../services/project_access_service.dart';
 import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
@@ -37,6 +38,7 @@ class _ProjectSettingsCache {
     required this.ignoreCodes,
     required this.networkLogScope,
     required this.faultEdits,
+    required this.expectedResponses,
     required this.retentionEnabled,
     required this.routineDays,
     required this.errorDays,
@@ -54,6 +56,7 @@ class _ProjectSettingsCache {
   final Set<int> ignoreCodes;
   final String networkLogScope;
   final Map<int, String> faultEdits;
+  final List<ExpectedNetworkResponse> expectedResponses;
   final bool retentionEnabled;
   final int routineDays;
   final int errorDays;
@@ -81,7 +84,12 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   Set<int> _ignoreCodes = {};
   String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
   Map<int, String> _faultEdits = {};
+  List<ExpectedNetworkResponse> _expectedResponses = [];
   final _newFaultCodeCtrl = TextEditingController();
+  final _expectedMethodCtrl = TextEditingController(text: 'POST');
+  final _expectedPathCtrl = TextEditingController();
+  final _expectedCodesCtrl = TextEditingController(text: '404');
+  final _expectedNoteCtrl = TextEditingController();
   bool _retentionEnabled = true;
   int _routineDays = 30;
   int _errorDays = 90;
@@ -98,6 +106,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   void dispose() {
     _ignoreCodesCtrl.dispose();
     _newFaultCodeCtrl.dispose();
+    _expectedMethodCtrl.dispose();
+    _expectedPathCtrl.dispose();
+    _expectedCodesCtrl.dispose();
+    _expectedNoteCtrl.dispose();
     _routineDaysCtrl.dispose();
     _errorDaysCtrl.dispose();
     _memberEmailCtrl.dispose();
@@ -127,6 +139,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
     _networkLogScope = cached.networkLogScope;
     _faultEdits = cached.faultEdits;
+    _expectedResponses = List<ExpectedNetworkResponse>.from(cached.expectedResponses);
     _retentionEnabled = cached.retentionEnabled;
     _routineDays = cached.routineDays;
     _errorDays = cached.errorDays;
@@ -155,6 +168,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         ignoreCodes: _ignoreCodes,
         networkLogScope: _networkLogScope,
         faultEdits: _faultEdits,
+        expectedResponses: List<ExpectedNetworkResponse>.from(_expectedResponses),
         retentionEnabled: _retentionEnabled,
         routineDays: _routineDays,
         errorDays: _errorDays,
@@ -175,22 +189,19 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       );
     });
     try {
+      if (!ProjectAccessService.instance.loaded) {
+        await ProjectAccessService.instance.load();
+      }
       final results = await Future.wait([
         _api.fetchProjectSettings(widget.projectId),
-        _api.fetchProjects(),
         _api.fetchSdkHealth(widget.projectId),
       ]);
       final settings = results[0] as Map<String, dynamic>;
-      final health = results[2] as Map<String, dynamic>;
-      final projects = results[1] as List<Map<String, dynamic>>;
-      String? role;
-      for (final p in projects) {
-        if (p['id'] == widget.projectId) {
-          role = p['role'] as String?;
-          break;
-        }
-      }
-      if (AuthService.instance.isAdmin) role = 'owner';
+      final health = results[1] as Map<String, dynamic>;
+      String? role = AuthService.instance.isAdmin
+          ? 'owner'
+          : ProjectAccessService.instance.role(widget.projectId);
+      if (role == 'admin') role = 'owner';
       final remote = ProjectRemoteConfig(
         configVersion: settings['configVersion'] as int? ?? 1,
         updatedAt: settings['updatedAt'] as String? ?? '',
@@ -219,6 +230,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
           _faultEdits = _buildFaultEdits(sdk.networkFaultByStatusCode ?? const {});
+          _expectedResponses = List<ExpectedNetworkResponse>.from(sdk.expectedNetworkRules);
           _retentionEnabled = retention.enabled;
           _routineDays = retention.routineDays;
           _errorDays = retention.errorDays;
@@ -258,6 +270,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'networkIgnoreStatusCodes': normalizeStatusCodes(_ignoreCodes.toList()),
           'networkLogScope': normalizeNetworkLogScope(_networkLogScope),
           'networkFaultByStatusCode': _faultOverridesToSave(),
+          'expectedNetworkResponses': _expectedResponses.map((e) => e.toJson()).toList(),
         },
         'retention': {
           'enabled': _retentionEnabled,
@@ -316,6 +329,31 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     setState(() {
       _faultEdits[code] = defaultNetworkFaultClassName(code);
       _newFaultCodeCtrl.clear();
+    });
+  }
+
+  void _addExpectedResponse() {
+    final path = _expectedPathCtrl.text.trim();
+    if (path.isEmpty) return;
+    final method = _expectedMethodCtrl.text.trim().isEmpty ? '*' : _expectedMethodCtrl.text.trim().toUpperCase();
+    final codes = <int>[];
+    for (final part in _expectedCodesCtrl.text.split(RegExp(r'[,\s]+'))) {
+      final n = int.tryParse(part.trim());
+      if (n != null && n >= 100 && n <= 599) codes.add(n);
+    }
+    final rule = ExpectedNetworkResponse(
+      method: method,
+      path: path,
+      statusCodes: codes,
+      note: _expectedNoteCtrl.text.trim(),
+    );
+    if (!rule.isValid) return;
+    setState(() {
+      _expectedResponses = upsertExpectedNetworkResponse(_expectedResponses, rule);
+      _expectedPathCtrl.clear();
+      _expectedNoteCtrl.clear();
+      _expectedCodesCtrl.text = '404';
+      _expectedMethodCtrl.text = 'POST';
     });
   }
 
@@ -665,6 +703,99 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     onPressed: () => setState(() => _faultEdits = _buildFaultEdits(const {})),
                     child: const Text('Reset defaults'),
                   ),
+                ],
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Expected network responses', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'Treat matching method + route + status as normal business outcomes — no issue, no alert. Example: POST empCardImageM → 404 when the employee has no image.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              if (_expectedResponses.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: Text('No rules yet.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+                ),
+              for (var i = 0; i < _expectedResponses.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${_expectedResponses[i].method} ${_expectedResponses[i].path}',
+                              style: const TextStyle(fontWeight: FontWeight.w600, fontFamily: 'monospace', fontSize: 13),
+                            ),
+                            Text(
+                              _expectedResponses[i].statusCodes.isEmpty
+                                  ? 'Any status'
+                                  : 'HTTP ${_expectedResponses[i].statusCodes.join(', ')}'
+                                      '${_expectedResponses[i].note.isNotEmpty ? ' — ${_expectedResponses[i].note}' : ''}',
+                              style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Remove',
+                        onPressed: () => setState(() => _expectedResponses = [
+                              for (var j = 0; j < _expectedResponses.length; j++)
+                                if (j != i) _expectedResponses[j],
+                            ]),
+                        icon: const Icon(Icons.close, size: 18),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 88,
+                    child: TextField(
+                      controller: _expectedMethodCtrl,
+                      decoration: const InputDecoration(labelText: 'Method', hintText: 'POST', isDense: true),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 280,
+                    child: TextField(
+                      controller: _expectedPathCtrl,
+                      decoration: const InputDecoration(labelText: 'Path', hintText: '/api/…', isDense: true),
+                      onSubmitted: (_) => _addExpectedResponse(),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 100,
+                    child: TextField(
+                      controller: _expectedCodesCtrl,
+                      decoration: const InputDecoration(labelText: 'Codes', hintText: '404', isDense: true),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 200,
+                    child: TextField(
+                      controller: _expectedNoteCtrl,
+                      decoration: const InputDecoration(labelText: 'Note', isDense: true),
+                    ),
+                  ),
+                  OutlinedButton(onPressed: _addExpectedResponse, child: const Text('Add rule')),
                 ],
               ),
             ]),

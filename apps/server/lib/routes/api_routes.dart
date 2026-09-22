@@ -18,6 +18,7 @@ import '../notifications/notification_router.dart';
 import '../reports/report_service.dart';
 import '../store/health_check_store.dart';
 import '../health_check/health_check_runner.dart';
+import '../health_check/uptime_monitor.dart';
 import '../util/dates.dart';
 import '../util/dashboard_links.dart';
 import 'admin_routes.dart';
@@ -60,7 +61,16 @@ Handler apiRoutes(
   final router = Router();
   final reportService = ReportService(store, analytics, notifications: notificationStore);
   final healthCheckStore = HealthCheckStore(store.db);
-  final healthCheckRunner = HealthCheckRunner(healthCheckStore, store, config);
+  final healthCheckRunner = HealthCheckRunner(healthCheckStore, store, config, notifications: notifications);
+  final uptimeRunner = (notifications != null && notificationStore != null)
+      ? UptimeMonitorScheduler(
+          healthStore: healthCheckStore,
+          notificationStore: notificationStore,
+          platformStore: notifications.platformStore,
+          notifications: notifications,
+          config: config,
+        )
+      : null;
 
   router.get('/health', (_) => Response.ok('{"ok":true,"service":"scout-logger"}', headers: {'Content-Type': 'application/json'}));
   router.get('/auth/me', meRoute(auth: authStore, config: config));
@@ -195,19 +205,35 @@ Handler apiRoutes(
       final q = request.url.queryParameters;
       final w = _window(q);
       try {
-        // Parallel — was sequential and stacked 20s+ event scans on insights.
-        final parts = await Future.wait([
+        // Parallel where useful. Skip sdkHealth on multi-day (returns empty anyway).
+        // Include lite recentIssues so the client skips a second heavy /issues scan.
+        final futures = <Future<Object>>[
           store.projectOverview(id, window: w, includeTrend: false),
           analytics.projectStats(id, window: w),
           analytics.dashboardInsights(id, window: w),
-          store.sdkHealth(id, window: w),
-        ]);
+          store.listIssues(id, window: w, limit: 5, lite: true),
+        ];
+        final needSdkHealth = !preferIdentityRollups(w);
+        if (needSdkHealth) {
+          futures.add(store.sdkHealth(id, window: w));
+        }
+        final parts = await Future.wait(futures);
         final overview = parts[0] as Map<String, dynamic>;
         final stats = parts[1] as Map<String, dynamic>;
         final insights = parts[2] as Map<String, dynamic>;
-        final health = parts[3] as Map<String, dynamic>;
+        final recentIssues = parts[3] as List<Map<String, dynamic>>;
+        final health = needSdkHealth ? parts[4] as Map<String, dynamic> : const <String, dynamic>{};
         return Response.ok(
-          jsonEncode({'ok': true, 'dashboard': {...overview, ...stats, ...insights, 'sdkHealth': health}}),
+          jsonEncode({
+            'ok': true,
+            'dashboard': {
+              ...overview,
+              ...stats,
+              ...insights,
+              'sdkHealth': health,
+              'recentIssues': recentIssues,
+            },
+          }),
           headers: {'Content-Type': 'application/json'},
         );
       } on ArgumentError {
@@ -319,15 +345,25 @@ Handler apiRoutes(
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
       final q = request.url.queryParameters;
+      final environment = q['environment'];
+      final appVersion = q['appVersion'] ?? q['app_version'];
+      final deviceName = q['device'] ?? q['deviceName'];
+      final search = q['q'];
+      final hasFacets = (environment != null && environment.isNotEmpty) ||
+          (appVersion != null && appVersion.isNotEmpty) ||
+          (deviceName != null && deviceName.isNotEmpty);
+      final lite = q['lite'] == '1' || q['lite'] == 'true' || ((search == null || search.isEmpty) && !hasFacets);
       final issues = await store.listIssues(
         id,
         type: q['type'],
         status: q['status'],
-        q: q['q'],
-        environment: q['environment'],
-        appVersion: q['appVersion'] ?? q['app_version'],
-        deviceName: q['device'] ?? q['deviceName'],
+        q: search,
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
+        limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 200) ?? 100,
         window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        lite: lite,
       );
       return Response.ok(jsonEncode({'ok': true, 'issues': issues}), headers: {'Content-Type': 'application/json'});
     });
@@ -350,6 +386,15 @@ Handler apiRoutes(
       final body = await request.readAsString();
       final json = jsonDecode(body) as Map<String, dynamic>;
       Map<String, dynamic>? issue;
+      if (json['markExpected'] == true) {
+        issue = await store.markIssueAsExpected(
+          id,
+          issueId,
+          note: json['note']?.toString(),
+        );
+        if (issue == null) return jsonErr('Issue not found', status: 404);
+        return Response.ok(jsonEncode({'ok': true, 'issue': issue}), headers: {'Content-Type': 'application/json'});
+      }
       if (json.containsKey('assigneeUserId')) {
         final uid = json['assigneeUserId']?.toString();
         issue = await store.assignIssue(id, issueId, uid != null && uid.isNotEmpty ? uid : null);
@@ -642,6 +687,8 @@ Handler apiRoutes(
         jsonEncode({
           'ok': true,
           'script': script,
+          'uptime': (await healthCheckStore.getUptime(id)).toJson(),
+          'uptimeIntervalMinutes': kUptimeMonitorIntervalMinutes,
           'latestRun': runs.isEmpty ? null : runs.first,
           if (share != null) 'share': share,
         }),
@@ -664,6 +711,55 @@ Handler apiRoutes(
           updatedBy: auth?.userId,
         );
         return Response.ok(jsonEncode({'ok': true, 'script': saved}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr('$e', status: 400);
+      }
+    });
+  });
+
+  router.put('/projects/<id>/health-check/uptime', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      try {
+        final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
+        final current = await healthCheckStore.getUptime(id);
+        final enabled = body.containsKey('enabled') ? body['enabled'] == true : current.enabled;
+        late final UptimeMonitorConfig next;
+        if (body['urls'] is List) {
+          final text = (body['urls'] as List).map((e) => e.toString()).join('\n');
+          next = UptimeMonitorConfig.fromUrlsText(enabled: enabled, text: text, previous: current.targets);
+        } else if (body.containsKey('urlsText') || body.containsKey('url')) {
+          final text = body['urlsText']?.toString() ?? body['url']?.toString() ?? current.urlsText;
+          next = UptimeMonitorConfig.fromUrlsText(enabled: enabled, text: text, previous: current.targets);
+        } else {
+          next = current.copyWith(enabled: enabled);
+        }
+        final saved = await healthCheckStore.saveUptime(id, next);
+        return Response.ok(jsonEncode({'ok': true, 'uptime': saved.toJson()}), headers: {'Content-Type': 'application/json'});
+      } on ArgumentError catch (e) {
+        return jsonErr('$e', status: 400);
+      }
+    });
+  });
+
+  router.post('/projects/<id>/health-check/uptime/check', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore, write: true);
+      if (guard != null) return guard;
+      if (uptimeRunner == null) return jsonErr('Notifications not configured', status: 503);
+      try {
+        final uptime = await healthCheckStore.getUptime(id);
+        if (!uptime.enabled || !uptime.hasUrl) {
+          return jsonErr('Enable uptime monitoring and set at least one URL first', status: 400);
+        }
+        final name = await notificationStore?.projectName(id) ?? id;
+        final result = await uptimeRunner.checkProject(
+          projectId: id,
+          projectName: name,
+          uptime: uptime,
+        );
+        return Response.ok(jsonEncode({'ok': true, 'uptime': result.toJson()}), headers: {'Content-Type': 'application/json'});
       } on ArgumentError catch (e) {
         return jsonErr('$e', status: 400);
       }

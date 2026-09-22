@@ -3,7 +3,7 @@ List<Map<String, dynamic>> groupNotificationDeliveries(List<Map<String, dynamic>
   final groups = <String, Map<String, dynamic>>{};
   for (final d in rows) {
     final issueKey = d['issueId']?.toString() ?? d['category']?.toString() ?? '';
-    final key = '${d['projectId']}|${d['channel']}|$issueKey|${d['status']}';
+    final key = '${d['projectId']}|${d['channel']}|$issueKey|${d['status']}|${d['urgency'] ?? 'normal'}';
     final existing = groups[key];
     if (existing == null) {
       groups[key] = {
@@ -19,6 +19,7 @@ List<Map<String, dynamic>> groupNotificationDeliveries(List<Map<String, dynamic>
     if (at.compareTo(latest) > 0) {
       existing['latestAt'] = at;
       if (d['errorMessage'] != null) existing['errorMessage'] = d['errorMessage'];
+      existing['urgency'] = d['urgency'] ?? existing['urgency'];
     }
   }
   final out = groups.values.toList();
@@ -37,4 +38,9 @@ String deliveryStatusLabel(String status, {int count = 1}) {
     _ => status,
   };
   return count > 1 ? '$base ×$count' : base;
+}
+
+String deliveryUrgencyLabel(Object? urgency) {
+  final u = urgency?.toString().toLowerCase() ?? '';
+  return u == 'emergency' ? 'Emergency' : '';
 }

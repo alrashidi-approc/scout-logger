@@ -1,5 +1,6 @@
 import 'taxonomy.dart';
 import 'network_fault.dart';
+import 'expected_network.dart';
 
 /// Remote SDK knobs editable from the dashboard and fetched by mobile clients.
 class ProjectSdkConfig {
@@ -12,6 +13,7 @@ class ProjectSdkConfig {
     this.networkIgnoreStatusCodes,
     this.networkLogScope,
     this.networkFaultByStatusCode,
+    this.expectedNetworkResponses,
   });
 
   static const defaultEnabledLevels = ['error', 'info', 'warning', 'success'];
@@ -25,6 +27,7 @@ class ProjectSdkConfig {
   final List<int>? networkIgnoreStatusCodes;
   final String? networkLogScope;
   final Map<int, String>? networkFaultByStatusCode;
+  final List<ExpectedNetworkResponse>? expectedNetworkResponses;
 
   factory ProjectSdkConfig.fromJson(Map<String, dynamic>? json) {
     if (json == null || json.isEmpty) return const ProjectSdkConfig();
@@ -40,6 +43,7 @@ class ProjectSdkConfig {
           ? normalizeNetworkLogScope(json['networkLogScope'])
           : null,
       networkFaultByStatusCode: normalizeNetworkFaultByStatusCode(json['networkFaultByStatusCode']),
+      expectedNetworkResponses: normalizeExpectedNetworkResponses(json['expectedNetworkResponses']),
     );
   }
 
@@ -53,6 +57,7 @@ class ProjectSdkConfig {
         networkIgnoreStatusCodes: normalizeStatusCodes(networkIgnoreStatusCodes),
         networkLogScope: normalizeNetworkLogScope(networkLogScope),
         networkFaultByStatusCode: normalizeNetworkFaultByStatusCode(networkFaultByStatusCode),
+        expectedNetworkResponses: normalizeExpectedNetworkResponses(expectedNetworkResponses),
       );
 
   ProjectSdkConfig mergePatch(Map<String, dynamic> patch) {
@@ -79,6 +84,9 @@ class ProjectSdkConfig {
       networkFaultByStatusCode: m.containsKey('networkFaultByStatusCode')
           ? normalizeNetworkFaultByStatusCode(m['networkFaultByStatusCode'])
           : networkFaultByStatusCode,
+      expectedNetworkResponses: m.containsKey('expectedNetworkResponses')
+          ? normalizeExpectedNetworkResponses(m['expectedNetworkResponses'])
+          : expectedNetworkResponses,
     );
   }
 
@@ -94,12 +102,17 @@ class ProjectSdkConfig {
           'networkFaultByStatusCode': {
             for (final e in normalizeNetworkFaultByStatusCode(networkFaultByStatusCode).entries) '${e.key}': e.value,
           },
+        if (expectedNetworkResponses != null && expectedNetworkResponses!.isNotEmpty)
+          'expectedNetworkResponses': expectedNetworkResponses!.map((e) => e.toJson()).toList(),
       };
 
   Map<String, dynamic> toClientJson() => resolved().toJson();
 
   Map<int, NetworkFaultClass> get networkFaultOverrides =>
       parseNetworkFaultOverrides(normalizeNetworkFaultByStatusCode(networkFaultByStatusCode));
+
+  List<ExpectedNetworkResponse> get expectedNetworkRules =>
+      normalizeExpectedNetworkResponses(expectedNetworkResponses);
 }
 
 class ProjectRemoteConfig {

@@ -28,12 +28,19 @@ class ReportService {
     final to = DateTime.tryParse(window.until ?? '')?.toUtc() ?? DateTime.now().toUtc();
     final hours = (window.approximateDays * 24).clamp(1, 24 * 90);
 
-    final stats = await analytics.projectStats(projectId, window: window);
-    final digest = await scout.digestData(projectId, hours: hours, limit: 50);
-    final releases = type == ReportType.release ? await analytics.releaseComparison(projectId, window: window) : const <Map<String, dynamic>>[];
-    final deliverySummary = audience == ReportAudience.operations && notifications != null
-        ? await notifications!.deliverySummary(projectId, hours: hours)
-        : const <String, int>{};
+    final statsFut = analytics.projectStats(projectId, window: window);
+    final digestFut = scout.digestData(projectId, hours: hours, limit: 50);
+    final releasesFut = type == ReportType.release
+        ? analytics.releaseComparison(projectId, window: window)
+        : Future<List<Map<String, dynamic>>>.value(const []);
+    final deliveryFut = audience == ReportAudience.operations && notifications != null
+        ? notifications!.deliverySummary(projectId, hours: hours)
+        : Future<Map<String, int>>.value(const {});
+
+    final stats = await statsFut;
+    final digest = await digestFut;
+    final releases = await releasesFut;
+    final deliverySummary = await deliveryFut;
 
     final verdict = _verdict(stats, digest);
     final highlights = _highlights(stats, digest, releases, audience, deliverySummary);

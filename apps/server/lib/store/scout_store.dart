@@ -59,10 +59,15 @@ Map<String, dynamic> _payloadWithNetworkReadable(
   Map<String, dynamic> payload,
   String type, {
   Map<int, NetworkFaultClass>? faultOverrides,
+  List<ExpectedNetworkResponse>? expectedResponses,
 }) {
   if (type != 'network' || payload['network'] is! Map) return payload;
   final network = Map<String, dynamic>.from(payload['network'] as Map);
-  network['readable'] = networkReadableFrom(network, faultOverrides: faultOverrides);
+  network['readable'] = networkReadableFrom(
+    network,
+    faultOverrides: faultOverrides,
+    expectedResponses: expectedResponses,
+  );
   return {...payload, 'network': network};
 }
 
@@ -450,6 +455,125 @@ class ScoutStore {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(30);
     final time = timeParams(w);
+    final env = environment?.trim();
+    final ver = appVersion?.trim();
+    final device = deviceName?.trim();
+    final envVal = (env != null && env.isNotEmpty) ? env : null;
+    final verVal = (ver != null && ver.isNotEmpty) ? ver : null;
+    final deviceVal = (device != null && device.isNotEmpty) ? device : null;
+
+    // Prefer identity rollups — DISTINCT on events for 30d was 20s+ on busy projects.
+    final envRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT environment FROM (
+          SELECT NULLIF(TRIM(environment), '') AS environment
+          FROM user_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@ver::text IS NULL OR app_version = @ver::text)
+            AND (@device::text IS NULL OR device_name = @device::text)
+          UNION
+          SELECT NULLIF(TRIM(environment), '')
+          FROM device_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@ver::text IS NULL OR app_version = @ver::text)
+            AND (@device::text IS NULL OR device_name = @device::text)
+          UNION
+          SELECT NULLIF(TRIM(environment), '')
+          FROM releases
+          WHERE project_id = @pid
+        ) t
+        WHERE environment IS NOT NULL AND environment <> ''
+        ORDER BY 1
+      '''),
+      parameters: {'pid': projectId, 'ver': verVal, 'device': deviceVal, ...time},
+    );
+    final verRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT app_version FROM (
+          SELECT NULLIF(TRIM(app_version), '') AS app_version
+          FROM user_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@env::text IS NULL OR environment = @env::text)
+            AND (@device::text IS NULL OR device_name = @device::text)
+          UNION
+          SELECT NULLIF(TRIM(app_version), '')
+          FROM device_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@env::text IS NULL OR environment = @env::text)
+            AND (@device::text IS NULL OR device_name = @device::text)
+        ) t
+        WHERE app_version IS NOT NULL AND app_version <> ''
+        ORDER BY 1 DESC
+        LIMIT 50
+      '''),
+      parameters: {'pid': projectId, 'env': envVal, 'device': deviceVal, ...time},
+    );
+    final deviceRows = await conn.execute(
+      Sql.named('''
+        SELECT DISTINCT device_name FROM (
+          SELECT NULLIF(TRIM(device_name), '') AS device_name
+          FROM device_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@env::text IS NULL OR environment = @env::text)
+            AND (@ver::text IS NULL OR app_version = @ver::text)
+          UNION
+          SELECT NULLIF(TRIM(device_name), '')
+          FROM user_stats
+          WHERE project_id = @pid
+            AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
+            AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)
+            AND (@env::text IS NULL OR environment = @env::text)
+            AND (@ver::text IS NULL OR app_version = @ver::text)
+        ) t
+        WHERE device_name IS NOT NULL AND device_name <> ''
+        ORDER BY 1
+        LIMIT 50
+      '''),
+      parameters: {'pid': projectId, 'env': envVal, 'ver': verVal, ...time},
+    );
+
+    final environments = envRows.map((r) => r[0] as String).toList();
+    final appVersions = verRows.map((r) => r[0] as String).toList();
+    final deviceNames = deviceRows.map((r) => r[0] as String).toList();
+
+    // Cold projects without rollups yet: one cheap events fallback (short window).
+    if (environments.isEmpty && appVersions.isEmpty && deviceNames.isEmpty) {
+      return _eventFilterFacetsFromEvents(
+        conn,
+        projectId,
+        window: TimeWindow.lastDays(w.approximateDays.clamp(1, 7)),
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
+      );
+    }
+
+    return {
+      'environments': environments,
+      'appVersions': appVersions,
+      'deviceNames': deviceNames,
+    };
+  }
+
+  Future<Map<String, List<String>>> _eventFilterFacetsFromEvents(
+    Connection conn,
+    String projectId, {
+    required TimeWindow window,
+    String? environment,
+    String? appVersion,
+    String? deviceName,
+  }) async {
+    final time = timeParams(window);
     final timeScope = '''
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)''';
@@ -461,6 +585,7 @@ class ScoutStore {
           $timeScope
           ${sqlEventFacetFilters(applyEnvironment: false)}
         ORDER BY 1
+        LIMIT 30
       '''),
       parameters: eventFacetParameters(
         projectId: projectId,
@@ -531,6 +656,7 @@ class ScoutStore {
     final conn = await db.connect();
     await closeStaleSessions(projectId: projectId, conn: conn);
     final faultOverrides = await _networkFaultOverrides(conn, projectId);
+    final expectedResponses = await _expectedNetworkResponses(conn, projectId);
     ProjectNotificationConfig? notifConfig;
     PlatformNotificationPolicy? platformPolicy;
     final notifications = _notifications;
@@ -548,6 +674,7 @@ class ScoutStore {
         event: event,
         enrichment: enrichment,
         faultOverrides: faultOverrides,
+        expectedResponses: expectedResponses,
         notifConfig: notifConfig,
         platformPolicy: platformPolicy,
       );
@@ -557,16 +684,25 @@ class ScoutStore {
   }
 
   Future<Map<int, NetworkFaultClass>> _networkFaultOverrides(Connection conn, String projectId) async {
+    final sdk = await _projectSdkConfig(conn, projectId);
+    return sdk.networkFaultOverrides;
+  }
+
+  Future<List<ExpectedNetworkResponse>> _expectedNetworkResponses(Connection conn, String projectId) async {
+    final sdk = await _projectSdkConfig(conn, projectId);
+    return sdk.expectedNetworkRules;
+  }
+
+  Future<ProjectSdkConfig> _projectSdkConfig(Connection conn, String projectId) async {
     final rows = await conn.execute(
       Sql.named('SELECT settings FROM projects WHERE id = @id'),
       parameters: {'id': projectId},
     );
-    if (rows.isEmpty) return const {};
+    if (rows.isEmpty) return const ProjectSdkConfig();
     final raw = rows.first[0];
     final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     final sdkJson = settings['sdk'];
-    final sdk = ProjectSdkConfig.fromJson(sdkJson is Map ? Map<String, dynamic>.from(sdkJson) : null);
-    return sdk.networkFaultOverrides;
+    return ProjectSdkConfig.fromJson(sdkJson is Map ? Map<String, dynamic>.from(sdkJson) : null);
   }
 
   Future<void> _ingestOne(
@@ -576,10 +712,16 @@ class ScoutStore {
     required IngestEvent event,
     required Map<String, dynamic> enrichment,
     Map<int, NetworkFaultClass>? faultOverrides,
+    List<ExpectedNetworkResponse>? expectedResponses,
     ProjectNotificationConfig? notifConfig,
     PlatformNotificationPolicy? platformPolicy,
   }) async {
-    final payload = _payloadWithNetworkReadable(event.payload, event.type, faultOverrides: faultOverrides);
+    final payload = _payloadWithNetworkReadable(
+      event.payload,
+      event.type,
+      faultOverrides: faultOverrides,
+      expectedResponses: expectedResponses,
+    );
     final occurredAt = DateTime.tryParse(event.timestamp)?.toUtc() ?? DateTime.now().toUtc();
     final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : <String, dynamic>{};
     final device = payload['device'] is Map ? Map<String, dynamic>.from(payload['device'] as Map) : <String, dynamic>{};
@@ -869,16 +1011,61 @@ class ScoutStore {
     String? deviceName,
     int? days,
     TimeWindow? window,
+    /// Issues-table only (no per-row event scans). For overview / light lists.
+    bool lite = false,
   }) async {
     final conn = await db.connect();
     final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
-    final facetScope = sqlIssueEventScope();
     final facetActive = hasEventFacetFilters(environment: environment, appVersion: appVersion, deviceName: deviceName);
     final issueTimeClause = facetActive
         ? ''
         : '''
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)''';
+
+    if (lite && !facetActive && (q == null || q.isEmpty)) {
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT id, fingerprint, type, title, status, event_count, affected_users,
+                 first_seen_at, last_seen_at, top_country
+          FROM issues WHERE project_id = @pid
+            AND (@type::text IS NULL OR type = @type::text)
+            AND (@status::text IS NULL OR status = @status::text)
+            $issueTimeClause
+          ORDER BY last_seen_at DESC LIMIT @lim
+        '''),
+        parameters: {
+          'pid': projectId,
+          'lim': limit,
+          'type': type,
+          'status': status,
+          ...timeParams(w),
+        },
+      );
+      return rows.map((r) {
+        final lastSeen = r[8] as DateTime;
+        final sev = computeIssueSeverity(
+          eventCount: (r[5] as int?) ?? 0,
+          affectedUsers: (r[6] as int?) ?? 0,
+          hoursSinceLastSeen: DateTime.now().toUtc().difference(lastSeen.toUtc()).inHours,
+          isCrash: r[2] == 'crash',
+        );
+        return {
+          'id': r[0],
+          'fingerprint': r[1],
+          'type': r[2],
+          'title': r[3],
+          'status': r[4],
+          'eventCount': r[5],
+          'affectedUsers': (r[6] as int?) ?? 0,
+          'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
+          'lastSeenAt': lastSeen.toUtc().toIso8601String(),
+          'topCountry': r[9],
+          'severity': sev.severity,
+        };
+      }).toList();
+    }
+
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, fingerprint, type, title, status, event_count, affected_users,
@@ -1119,6 +1306,91 @@ class ScoutStore {
     return getIssue(projectId, issueId);
   }
 
+  /// Mute the issue and add an expected-network rule from a sample event (network issues).
+  Future<Map<String, dynamic>?> markIssueAsExpected(
+    String projectId,
+    String issueId, {
+    String? note,
+  }) async {
+    final issue = await getIssue(projectId, issueId);
+    if (issue == null) return null;
+
+    final conn = await db.connect();
+    final eventRows = await conn.execute(
+      Sql.named('''
+        SELECT payload
+        FROM events
+        WHERE project_id = @pid AND issue_id = @iid AND type = 'network'
+        ORDER BY occurred_at DESC
+        LIMIT 1
+      '''),
+      parameters: {'pid': projectId, 'iid': issueId},
+    );
+
+    if (eventRows.isNotEmpty && eventRows.first[0] is Map) {
+      final payload = Map<String, dynamic>.from(eventRows.first[0] as Map);
+      final network = payload['network'] is Map ? Map<String, dynamic>.from(payload['network'] as Map) : payload;
+      final method = (network['method']?.toString() ?? 'GET').toUpperCase();
+      final url = network['url']?.toString() ?? network['path']?.toString() ?? '';
+      final statusCode = int.tryParse('${network['statusCode'] ?? ''}');
+      final path = normalizeExpectedNetworkPath(url);
+      if (path.isNotEmpty) {
+        final rule = ExpectedNetworkResponse(
+          method: method,
+          path: path,
+          statusCodes: statusCode != null ? [statusCode] : const [],
+          note: note?.trim().isNotEmpty == true
+              ? note!.trim()
+              : 'Marked as not an issue from Scout',
+        );
+        await _appendExpectedNetworkRule(conn, projectId, rule);
+      }
+    }
+
+    return updateIssueStatus(projectId, issueId, 'ignored');
+  }
+
+  Future<void> _appendExpectedNetworkRule(
+    Connection conn,
+    String projectId,
+    ExpectedNetworkResponse rule,
+  ) async {
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id FOR UPDATE'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) return;
+    final raw = rows.first[0];
+    final current = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final prev = ProjectRemoteConfig.fromSettings(current);
+    final nextRules = upsertExpectedNetworkResponse(prev.sdk.expectedNetworkRules, rule);
+    final merged = ProjectSdkConfig(
+      enabledLevels: prev.sdk.enabledLevels,
+      enableFlutterHooks: prev.sdk.enableFlutterHooks,
+      trackNavigation: prev.sdk.trackNavigation,
+      networkCaptureBodies: prev.sdk.networkCaptureBodies,
+      networkSlowThresholdMs: prev.sdk.networkSlowThresholdMs,
+      networkIgnoreStatusCodes: prev.sdk.networkIgnoreStatusCodes,
+      networkLogScope: prev.sdk.networkLogScope,
+      networkFaultByStatusCode: prev.sdk.networkFaultByStatusCode,
+      expectedNetworkResponses: nextRules,
+    );
+    final next = ProjectRemoteConfig(
+      configVersion: prev.configVersion + 1,
+      updatedAt: DateTime.now().toUtc().toIso8601String(),
+      sdk: merged,
+    );
+    // Merge only remote-config keys — keep healthCheck / notifications intact.
+    await conn.execute(
+      Sql.named('''
+        UPDATE projects
+        SET settings = COALESCE(settings, '{}'::jsonb) || @patch::jsonb
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'patch': jsonEncode(next.toSettingsJson())},
+    );
+  }
+
   /// Error + crash event counts in the last [minutes] (for spike detection).
   Future<({int errors, int crashes})> incidentCounts(
     String projectId, {
@@ -1196,26 +1468,15 @@ class ScoutStore {
     int limit = 10,
   }) async {
     final conn = await db.connect();
+    // Issues table only — joining events for digests was multi-second on busy projects.
     final top = await conn.execute(
       Sql.named('''
-        SELECT i.id, i.title, i.type, COUNT(e.id)::int AS c,
-          (SELECT v.app_ver FROM (
-              SELECT ${sqlAppVersionExpr(alias: 'e2')} AS app_ver,
-                     COUNT(*)::int AS vc
-              FROM events e2
-              WHERE e2.project_id = @pid AND e2.issue_id = i.id AND ${sqlIsErrorEvent(alias: 'e2')}
-                AND e2.occurred_at >= now() - (@hrs::text || ' hours')::interval
-              GROUP BY 1
-            ) v
-            WHERE v.app_ver IS NOT NULL AND v.app_ver <> ''
-            ORDER BY v.vc DESC LIMIT 1
-          ) AS top_version
-        FROM issues i
-        JOIN events e ON e.issue_id = i.id AND e.project_id = @pid AND ${sqlIsErrorEvent(alias: 'e')}
-          AND e.occurred_at >= now() - (@hrs::text || ' hours')::interval
-        WHERE i.project_id = @pid
-        GROUP BY i.id, i.title, i.type
-        ORDER BY c DESC LIMIT @lim
+        SELECT id, title, type, event_count, NULL::text AS top_version
+        FROM issues
+        WHERE project_id = @pid
+          AND last_seen_at >= now() - (@hrs::text || ' hours')::interval
+        ORDER BY event_count DESC
+        LIMIT @lim
       '''),
       parameters: {'pid': projectId, 'hrs': hours, 'lim': limit},
     );
@@ -1681,11 +1942,6 @@ class ScoutStore {
     };
 
     if (grouped) {
-      final total = (await conn.execute(
-        Sql.named('SELECT COUNT(*)::int FROM (SELECT 1 $filters GROUP BY ($groupKeyExpr)) g'),
-        parameters: params,
-      ))
-          .first[0] as int;
       final rows = await conn.execute(
         Sql.named('''
           SELECT
@@ -1702,11 +1958,13 @@ class ScoutStore {
           $filters
           GROUP BY ($groupKeyExpr)
           ORDER BY last_seen_at DESC
-          LIMIT @lim OFFSET @off
+          LIMIT @lim
         '''),
-        parameters: {...params, 'lim': lim, 'off': off},
+        parameters: {...params, 'lim': lim + 1},
       );
-      final groups = rows.map((r) {
+      final hasMore = rows.length > lim;
+      final pageRows = hasMore ? rows.sublist(0, lim) : rows;
+      final groups = pageRows.map((r) {
         final key = r[0] as String? ?? '';
         final title = r[5]?.toString() ?? key;
         return {
@@ -1726,14 +1984,14 @@ class ScoutStore {
         'view': 'grouped',
         'events': const <Map<String, dynamic>>[],
         'groups': groups,
-        'total': total,
+        'total': off + groups.length + (hasMore ? 1 : 0),
         'limit': lim,
         'offset': off,
-        'hasMore': off + groups.length < total,
+        'hasMore': hasMore,
       };
     }
 
-    final total = (await conn.execute(Sql.named('SELECT COUNT(*)::int $filters'), parameters: params)).first[0] as int;
+    // Skip COUNT(*) over 30d of events — that alone was multi-second. Use limit+1.
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
@@ -1748,9 +2006,11 @@ class ScoutStore {
         $filters
         ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
-      parameters: {...params, 'lim': lim, 'off': off},
+      parameters: {...params, 'lim': lim + 1, 'off': off},
     );
-    final events = rows
+    final hasMore = rows.length > lim;
+    final pageRows = hasMore ? rows.sublist(0, lim) : rows;
+    final events = pageRows
         .map((r) {
           final ver = r[10] as String?;
           final build = r[17]?.toString();
@@ -1780,16 +2040,16 @@ class ScoutStore {
       'view': groupKey != null && groupKey.isNotEmpty ? 'all' : normalizedView,
       'events': events,
       'groups': const <Map<String, dynamic>>[],
-      'total': total,
+      'total': off + events.length + (hasMore ? 1 : 0),
       'limit': lim,
       'offset': off,
-      'hasMore': off + events.length < total,
+      'hasMore': hasMore,
     };
   }
 
   Future<Map<String, dynamic>> projectOverview(String projectId, {int days = 1, TimeWindow? window, bool includeTrend = true}) async {
     final conn = await db.connect();
-    await closeStaleSessions(projectId: projectId, conn: conn);
+    // Stale-session cleanup runs on ingest — skip on dashboard reads (was adding latency).
     final project = await fetchProjectById(projectId);
     if (project == null) throw ArgumentError('Project not found');
 
@@ -2218,13 +2478,19 @@ class ScoutStore {
         sdk: merged,
       );
     }
-    final settings = {
+    // Top-level jsonb merge — never replace the whole document (that wiped
+    // notifications webhooks and healthCheck uptime URLs on settings save / post-deploy).
+    final settingsPatch = {
       ...next.toSettingsJson(),
       'retention': retention.toJson(),
     };
     await conn.execute(
-      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
-      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
+      Sql.named('''
+        UPDATE projects
+        SET settings = COALESCE(settings, '{}'::jsonb) || @patch::jsonb
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'patch': jsonEncode(settingsPatch)},
     );
     return {
       ...next.toClientResponse(),
@@ -2553,10 +2819,17 @@ class ScoutStore {
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
     };
     healthCheck['share'] = share;
-    settings['healthCheck'] = healthCheck;
     await conn.execute(
-      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
-      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
+      Sql.named('''
+        UPDATE projects SET settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{healthCheck}',
+          @hc::jsonb,
+          true
+        )
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'hc': jsonEncode(healthCheck)},
     );
     return share;
   }

@@ -105,20 +105,30 @@ class HealthCheckScreen extends StatefulWidget {
 class _HealthCheckScreenState extends State<HealthCheckScreen> {
   final _api = ScoutApi();
   final _scriptCtrl = TextEditingController();
+  final _uptimeUrlCtrl = TextEditingController();
   bool _loading = true;
   bool _saving = false;
+  bool _savingUptime = false;
+  bool _checkingUptime = false;
   bool _running = false;
   Object? _error;
   Map<String, dynamic>? _latestRun;
   List<Map<String, dynamic>> _runs = [];
   String? _scriptUpdatedAt;
   Map<String, dynamic>? _share;
+  bool _uptimeEnabled = false;
+  Map<String, dynamic>? _uptime;
+  int _uptimeIntervalMinutes = kUptimeMonitorIntervalMinutes;
 
   @override
   void dispose() {
     _scriptCtrl.dispose();
+    _uptimeUrlCtrl.dispose();
     super.dispose();
   }
+
+  String _urlsTextFromUptime(Map<String, dynamic>? uptime) =>
+      UptimeMonitorConfig.fromJson(uptime).urlsText;
 
   @override
   void initState() {
@@ -143,6 +153,11 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         _latestRun = data['latestRun'] == null ? null : jsonMap(data['latestRun']);
         _share = data['share'] == null ? null : jsonMap(data['share']);
         _runs = runs;
+        final uptime = data['uptime'] == null ? null : jsonMap(data['uptime']);
+        _uptime = uptime;
+        _uptimeEnabled = uptime?['enabled'] == true;
+        _uptimeUrlCtrl.text = _urlsTextFromUptime(uptime);
+        _uptimeIntervalMinutes = (data['uptimeIntervalMinutes'] as num?)?.toInt() ?? kUptimeMonitorIntervalMinutes;
         _loading = false;
       });
     } catch (e, st) {
@@ -152,6 +167,54 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         _error = e;
         _loading = false;
       });
+    }
+  }
+
+  Future<void> _saveUptime() async {
+    setState(() => _savingUptime = true);
+    try {
+      final saved = await _api.saveHealthCheckUptime(
+        widget.projectId,
+        enabled: _uptimeEnabled,
+        urlsText: _uptimeUrlCtrl.text,
+      );
+      if (!mounted) return;
+      setState(() {
+        _uptime = saved;
+        _uptimeEnabled = saved['enabled'] == true;
+        _uptimeUrlCtrl.text = _urlsTextFromUptime(saved);
+        _savingUptime = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Uptime monitor saved')));
+    } catch (e, st) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      if (!mounted) return;
+      setState(() => _savingUptime = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+    }
+  }
+
+  Future<void> _checkUptimeNow() async {
+    setState(() => _checkingUptime = true);
+    try {
+      await _api.saveHealthCheckUptime(
+        widget.projectId,
+        enabled: _uptimeEnabled,
+        urlsText: _uptimeUrlCtrl.text,
+      );
+      final result = await _api.checkHealthCheckUptime(widget.projectId);
+      if (!mounted) return;
+      setState(() {
+        _uptime = result;
+        _checkingUptime = false;
+      });
+      final status = result['lastStatus']?.toString() ?? 'unknown';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(status == 'ok' ? 'Server reachable' : 'Server unreachable — emergency alert if newly down')));
+    } catch (e, st) {
+      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      if (!mounted) return;
+      setState(() => _checkingUptime = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -205,7 +268,7 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         children: [
           PageHeader(
             title: 'Server health',
-            subtitle: 'Copy a prompt into your app repo → generate script → paste below → save & run.',
+            subtitle: 'Light uptime ping every $_uptimeIntervalMinutes min, plus optional full script checks.',
             actions: [
               FilledButton.icon(
                 onPressed: (_saving || _running) ? null : _save,
@@ -218,6 +281,18 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
                 label: const Text('Run check'),
               ),
             ],
+          ),
+          const SizedBox(height: 20),
+          _UptimeCard(
+            enabled: _uptimeEnabled,
+            urlCtrl: _uptimeUrlCtrl,
+            uptime: _uptime,
+            intervalMinutes: _uptimeIntervalMinutes,
+            saving: _savingUptime,
+            checking: _checkingUptime,
+            onEnabled: (v) => setState(() => _uptimeEnabled = v),
+            onSave: _saveUptime,
+            onCheckNow: _checkUptimeNow,
           ),
           if (_running) ...[
             const SizedBox(height: 20),
@@ -288,6 +363,154 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
             const SizedBox(height: 8),
             ..._runs.map((r) => _HistoryTile(run: r, selected: r['id'] == _latestRun?['id'], onTap: () => setState(() => _latestRun = r))),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UptimeCard extends StatelessWidget {
+  const _UptimeCard({
+    required this.enabled,
+    required this.urlCtrl,
+    required this.uptime,
+    required this.intervalMinutes,
+    required this.saving,
+    required this.checking,
+    required this.onEnabled,
+    required this.onSave,
+    required this.onCheckNow,
+  });
+
+  final bool enabled;
+  final TextEditingController urlCtrl;
+  final Map<String, dynamic>? uptime;
+  final int intervalMinutes;
+  final bool saving;
+  final bool checking;
+  final ValueChanged<bool> onEnabled;
+  final VoidCallback onSave;
+  final VoidCallback onCheckNow;
+
+  @override
+  Widget build(BuildContext context) {
+    final targets = <Map<String, dynamic>>[];
+    final rawTargets = uptime?['targets'];
+    if (rawTargets is List) {
+      for (final t in rawTargets) {
+        if (t is Map) targets.add(Map<String, dynamic>.from(t));
+      }
+    } else if (uptime?['url'] != null) {
+      targets.add(Map<String, dynamic>.from(uptime!));
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Server URL uptime', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const SizedBox(height: 4),
+            Text(
+              'Light ping every $intervalMinutes minutes from Scout (DNS + HTTP). '
+              'Add one URL per line if the app uses multiple servers. Down → emergency alert.',
+              style: const TextStyle(color: AppTheme.muted, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Watch these URLs automatically'),
+              value: enabled,
+              onChanged: onEnabled,
+            ),
+            TextField(
+              controller: urlCtrl,
+              minLines: 2,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                labelText: 'Server URLs',
+                hintText: 'https://api.example.com/health\nhttps://auth.example.com/health',
+                alignLabelWithHint: true,
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.url,
+              autocorrect: false,
+            ),
+            if (targets.any((t) => t['lastStatus'] != null)) ...[
+              const SizedBox(height: 12),
+              for (final t in targets)
+                if (t['lastStatus'] != null) ...[
+                  _UptimeStatusRow(target: t),
+                  const SizedBox(height: 8),
+                ],
+            ] else
+              const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: saving ? null : onSave,
+                  icon: saving
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.save_outlined, size: 18),
+                  label: const Text('Save uptime'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: (checking || !enabled) ? null : onCheckNow,
+                  icon: checking
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.network_check, size: 18),
+                  label: const Text('Check now'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _UptimeStatusRow extends StatelessWidget {
+  const _UptimeStatusRow({required this.target});
+
+  final Map<String, dynamic> target;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = target['lastStatus']?.toString() ?? '';
+    final ok = status == 'ok';
+    final down = status == 'down';
+    final color = ok ? AppTheme.success : down ? AppTheme.error : AppTheme.muted;
+    final url = target['url']?.toString() ?? '';
+    final detail = target['lastDetail']?.toString();
+    final checkedAt = target['lastCheckedAt']?.toString();
+    final latency = target['lastLatencyMs'];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${down ? 'DOWN' : ok ? 'OK' : status.toUpperCase()} · $url',
+            style: TextStyle(fontWeight: FontWeight.w700, color: color, fontSize: 13),
+          ),
+          if (detail != null) Text(detail, style: const TextStyle(fontSize: 12)),
+          if (checkedAt != null || latency != null)
+            Text(
+              [
+                if (checkedAt != null) 'Last check: $checkedAt',
+                if (latency != null) '${latency}ms',
+              ].join(' · '),
+              style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+            ),
         ],
       ),
     );

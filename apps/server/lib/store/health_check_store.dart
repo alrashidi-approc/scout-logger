@@ -14,6 +14,22 @@ class HealthCheckStore {
   final ScoutDb db;
 
   Future<Map<String, dynamic>?> getScript(String projectId) async {
+    final hc = await _healthCheckSettings(projectId);
+    if (hc == null) return null;
+    return {
+      if (hc['script'] != null) 'script': hc['script'],
+      if (hc['updatedAt'] != null) 'updatedAt': hc['updatedAt'],
+      if (hc['updatedBy'] != null) 'updatedBy': hc['updatedBy'],
+    };
+  }
+
+  Future<UptimeMonitorConfig> getUptime(String projectId) async {
+    final hc = await _healthCheckSettings(projectId);
+    final raw = hc?['uptime'];
+    return UptimeMonitorConfig.fromJson(raw is Map ? Map<String, dynamic>.from(raw) : null);
+  }
+
+  Future<Map<String, dynamic>?> _healthCheckSettings(String projectId) async {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named("SELECT settings->'healthCheck' FROM projects WHERE id = @id"),
@@ -43,18 +59,92 @@ class HealthCheckStore {
     if (rows.isEmpty) throw ArgumentError('Project not found');
 
     final current = rows.first[0] is Map ? Map<String, dynamic>.from(rows.first[0] as Map) : <String, dynamic>{};
+    final existing = current['healthCheck'] is Map
+        ? Map<String, dynamic>.from(current['healthCheck'] as Map)
+        : <String, dynamic>{};
     final healthCheck = {
+      ...existing,
       'script': script,
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
       if (updatedBy != null) 'updatedBy': updatedBy,
     };
-    final settings = {...current, 'healthCheck': healthCheck};
-
+    // jsonb_set only the healthCheck object — never rewrite whole settings.
     await conn.execute(
-      Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
-      parameters: {'id': projectId, 'settings': jsonEncode(settings)},
+      Sql.named('''
+        UPDATE projects SET settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{healthCheck}',
+          @hc::jsonb,
+          true
+        )
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'hc': jsonEncode(healthCheck)},
     );
-    return healthCheck;
+    return {
+      'script': script,
+      'updatedAt': healthCheck['updatedAt'],
+      if (updatedBy != null) 'updatedBy': updatedBy,
+    };
+  }
+
+  Future<UptimeMonitorConfig> saveUptime(String projectId, UptimeMonitorConfig config) async {
+    if (config.enabled && !config.hasUrl) {
+      throw ArgumentError('Enter at least one valid http(s) URL to enable uptime monitoring');
+    }
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id FOR UPDATE'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Project not found');
+
+    final current = rows.first[0] is Map ? Map<String, dynamic>.from(rows.first[0] as Map) : <String, dynamic>{};
+    final existing = current['healthCheck'] is Map
+        ? Map<String, dynamic>.from(current['healthCheck'] as Map)
+        : <String, dynamic>{};
+    final cleaned = config.copyWith(
+      targets: [
+        for (final t in config.targets)
+          if (t.url.trim().isNotEmpty) t.copyWith(url: t.url.trim()),
+      ],
+    );
+    existing['uptime'] = cleaned.toJson();
+    // Patch healthCheck only so Project Settings / notification saves can't race-wipe URLs.
+    await conn.execute(
+      Sql.named('''
+        UPDATE projects SET settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{healthCheck}',
+          @hc::jsonb,
+          true
+        )
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'hc': jsonEncode(existing)},
+    );
+    return cleaned;
+  }
+
+  /// Projects with uptime monitoring enabled and a URL configured.
+  Future<List<({String id, String name, UptimeMonitorConfig uptime})>> allEnabledUptime() async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, name, settings->'healthCheck'->'uptime'
+        FROM projects
+        WHERE settings->'healthCheck'->'uptime'->>'enabled' = 'true'
+      '''),
+    );
+    final out = <({String id, String name, UptimeMonitorConfig uptime})>[];
+    for (final r in rows) {
+      final uptime = UptimeMonitorConfig.fromJson(
+        r[2] is Map ? Map<String, dynamic>.from(r[2] as Map) : null,
+      );
+      if (!uptime.enabled || !uptime.hasUrl) continue;
+      out.add((id: r[0] as String, name: r[1] as String? ?? r[0] as String, uptime: uptime));
+    }
+    return out;
   }
 
   Future<String> createRun({required String projectId, String? triggeredBy}) async {

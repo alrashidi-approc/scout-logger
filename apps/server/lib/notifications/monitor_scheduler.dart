@@ -121,6 +121,7 @@ class MonitorScheduler {
         title: '📈 $name: $metric spike',
         body: 'Project: $name\nEnvironment: $envLabel\n$summary',
         eventUrl: eventUrl,
+        urgency: 'emergency',
       );
       await _fanOut(projectId, name, cfg, platform, t.channels, job, dedupMinutes: t.windowMinutes);
     }
@@ -220,6 +221,7 @@ class MonitorScheduler {
             eventUrl: job.eventUrl,
             environment: job.environment,
             release: job.release,
+            urgency: job.urgency,
           ),
           config: cfg,
           projectName: name,
@@ -232,6 +234,7 @@ class MonitorScheduler {
           category: job.category,
           channel: channel,
           status: 'sent',
+          urgency: job.urgency,
         );
       } catch (e) {
         await store.logDelivery(
@@ -242,6 +245,7 @@ class MonitorScheduler {
           category: job.category,
           channel: channel,
           status: 'failed',
+          urgency: job.urgency,
           errorMessage: '$e',
         );
       }

@@ -1,0 +1,29 @@
+---
+description: Scout Logger monorepo layout and safe change boundaries
+alwaysApply: true
+---
+
+# Scout architecture
+
+## Layout
+
+| Path | Role |
+|------|------|
+| `apps/server` | Ingest API, health-check runner, Postgres |
+| `apps/dashboard` | Flutter Web UI |
+| `packages/scout_models` | Shared types (events, health reports) |
+| `scripts/` | Deploy, local `./dev`, Dart SDK fetch |
+| `docs/agents/` | How we work, tracker, glossary |
+
+SDK lives in **scout_logger_plus** (separate repo) — do not treat `packages/scout_logger_plus/` as this tree’s source of truth.
+
+## Safe defaults
+
+- Prefer extending existing types/routes/screens over new layers.
+- Shared JSON shapes → `scout_models`, then server + dashboard.
+- Deploy: `./deploy` (bundles Linux Dart SDK for health scripts).
+- Local stack: `./dev` / `scripts/dev-local.sh`.
+
+## Health checks (reminder)
+
+Scripts run **on the Scout server**, not the user’s phone. Timeouts often mean network/geo, not a broken API. See `docs/MOBILE-SERVER-HEALTH.md`.

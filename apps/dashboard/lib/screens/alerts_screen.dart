@@ -100,7 +100,7 @@ class _AlertsScreenState extends State<AlertsScreen> {
         children: [
           PageHeader(
             title: 'Alerts',
-            subtitle: 'Notification deliveries across all your projects — last 24 hours',
+            subtitle: 'Deliveries across your projects — emergencies are crashes, health-check failures, and spikes',
             actions: [
               IconButton(onPressed: _load, icon: const Icon(Icons.refresh), tooltip: 'Refresh'),
             ],
@@ -181,6 +181,7 @@ class _AlertTile extends StatelessWidget {
     final count = delivery['count'] as int? ?? 1;
     final color = _statusColor(status);
     final error = delivery['errorMessage'];
+    final urgency = deliveryUrgencyLabel(delivery['urgency']);
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: color.withValues(alpha: 0.12),
@@ -191,11 +192,26 @@ class _AlertTile extends StatelessWidget {
         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
       ),
       subtitle: Text(
-        '$channel · ${deliveryStatusLabel(status, count: count)}${error != null ? ' — $error' : ''}\n${delivery['latestAt'] ?? delivery['createdAt'] ?? ''}',
+        '$channel · ${deliveryStatusLabel(status, count: count)}${urgency.isNotEmpty ? ' · $urgency' : ''}${error != null ? ' — $error' : ''}\n${delivery['latestAt'] ?? delivery['createdAt'] ?? ''}',
         style: const TextStyle(fontSize: 12),
       ),
       isThreeLine: true,
-      trailing: projectId == null ? null : const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (urgency.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppTheme.error.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text('Emergency', style: TextStyle(color: AppTheme.error, fontWeight: FontWeight.w700, fontSize: 11)),
+            ),
+          if (projectId != null) const Icon(Icons.chevron_right, size: 18, color: AppTheme.muted),
+        ],
+      ),
       onTap: projectId == null ? null : () => context.go('/p/$projectId/notifications'),
     );
   }

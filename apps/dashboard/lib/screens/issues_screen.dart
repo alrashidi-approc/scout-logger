@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
+import '../services/facets_cache.dart';
 import '../services/screen_cache.dart';
 import '../widgets/event_card.dart';
 import '../widgets/route_link.dart';
@@ -180,7 +181,8 @@ class _IssuesScreenState extends State<IssuesScreen> {
 
   Future<void> _loadFacets() async {
     try {
-      final facets = await _api.fetchFilterFacets(
+      final facets = await FacetsCache.get(
+        _api,
         widget.projectId,
         period: _period,
         environment: _environment,

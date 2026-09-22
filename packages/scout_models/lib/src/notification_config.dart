@@ -10,13 +10,29 @@ const kNotificationCategories = {
 
 const kNotificationChannels = {'slack', 'whatsapp', 'email'};
 
+/// Named loudness modes — map onto rules / dedup / spikes via [applyNotificationPreset].
+const kNotificationPresets = {'quiet', 'normal', 'urgent', 'custom'};
+const kDefaultNotificationPreset = 'normal';
+
 const kDefaultNotificationCategories = ['crash', 'error', 'network_critical', 'network_transport'];
+const kQuietNotificationCategories = ['crash', 'network_critical'];
+const kUrgentNotificationCategories = [
+  'crash',
+  'error',
+  'network_critical',
+  'network_transport',
+  'network_auth',
+];
 const kDefaultNotificationEnvironments = ['production'];
 const kDefaultDedupMinutes = 15;
 const kDefaultMaxAlertsPerHour = 0; // 0 = unlimited
 const kDefaultGroupMinutes = 5; // 0 = send immediately (no batching)
+const kDefaultHealthCheckNotify = true;
 
 const kDefaultNotificationChannels = ['slack', 'whatsapp', 'email'];
+
+const kAlertUrgencies = {'normal', 'emergency'};
+const kDefaultAlertUrgency = 'normal';
 
 class PlatformNotificationPolicy {
   const PlatformNotificationPolicy({
@@ -280,6 +296,8 @@ class DigestConfig {
 class ProjectNotificationConfig {
   const ProjectNotificationConfig({
     this.enabled = false,
+    this.preset = kDefaultNotificationPreset,
+    this.healthCheckNotify = kDefaultHealthCheckNotify,
     this.dedupMinutes = kDefaultDedupMinutes,
     this.maxAlertsPerHour = kDefaultMaxAlertsPerHour,
     this.groupMinutes = kDefaultGroupMinutes,
@@ -292,6 +310,12 @@ class ProjectNotificationConfig {
   });
 
   final bool enabled;
+
+  /// quiet | normal | urgent | custom — See [applyNotificationPreset].
+  final String preset;
+
+  /// Notify when a health-check run fails, times out, or reports unhealthy.
+  final bool healthCheckNotify;
   final int dedupMinutes;
 
   /// Max alerts sent per project per rolling hour. 0 disables the cap.
@@ -315,6 +339,10 @@ class ProjectNotificationConfig {
         : [const NotificationRule(id: 'default')];
     return ProjectNotificationConfig(
       enabled: json['enabled'] == true,
+      preset: _normPreset(json['preset']),
+      healthCheckNotify: json.containsKey('healthCheckNotify')
+          ? json['healthCheckNotify'] == true
+          : kDefaultHealthCheckNotify,
       dedupMinutes: _clampDedup(json['dedupMinutes']),
       maxAlertsPerHour: _clampRate(json['maxAlertsPerHour']),
       groupMinutes: _clampGroup(json['groupMinutes']),
@@ -329,6 +357,8 @@ class ProjectNotificationConfig {
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
+        'preset': preset,
+        'healthCheckNotify': healthCheckNotify,
         'dedupMinutes': dedupMinutes,
         'maxAlertsPerHour': maxAlertsPerHour,
         'groupMinutes': groupMinutes,
@@ -351,6 +381,8 @@ class ProjectNotificationConfig {
   }) =>
       {
         'enabled': enabled,
+        'preset': preset,
+        'healthCheckNotify': healthCheckNotify,
         'dedupMinutes': dedupMinutes,
         'maxAlertsPerHour': maxAlertsPerHour,
         'groupMinutes': groupMinutes,
@@ -364,12 +396,122 @@ class ProjectNotificationConfig {
         'threshold': threshold.toJson(),
         'digest': digest.toJson(),
       };
+
+  ProjectNotificationConfig copyWith({
+    bool? enabled,
+    String? preset,
+    bool? healthCheckNotify,
+    int? dedupMinutes,
+    int? maxAlertsPerHour,
+    int? groupMinutes,
+    List<NotificationRule>? rules,
+    SlackChannelConfig? slack,
+    WhatsappChannelConfig? whatsapp,
+    EmailChannelConfig? email,
+    ThresholdConfig? threshold,
+    DigestConfig? digest,
+  }) =>
+      ProjectNotificationConfig(
+        enabled: enabled ?? this.enabled,
+        preset: preset ?? this.preset,
+        healthCheckNotify: healthCheckNotify ?? this.healthCheckNotify,
+        dedupMinutes: dedupMinutes ?? this.dedupMinutes,
+        maxAlertsPerHour: maxAlertsPerHour ?? this.maxAlertsPerHour,
+        groupMinutes: groupMinutes ?? this.groupMinutes,
+        rules: rules ?? this.rules,
+        slack: slack ?? this.slack,
+        whatsapp: whatsapp ?? this.whatsapp,
+        email: email ?? this.email,
+        threshold: threshold ?? this.threshold,
+        digest: digest ?? this.digest,
+      );
+}
+
+/// Applies Quiet / Normal / Urgent onto [base], preserving channels, digest, and enabled.
+/// Unknown / custom returns [base] with preset forced to custom.
+ProjectNotificationConfig applyNotificationPreset(ProjectNotificationConfig base, String preset) {
+  final p = preset.trim().toLowerCase();
+  if (p == 'custom' || !kNotificationPresets.contains(p)) {
+    return base.copyWith(preset: 'custom');
+  }
+
+  final channels = base.rules.isNotEmpty ? base.rules.first.channels : kDefaultNotificationChannels;
+  List<String> categories;
+  int dedup;
+  int group;
+  ThresholdConfig threshold;
+  switch (p) {
+    case 'quiet':
+      categories = List<String>.from(kQuietNotificationCategories);
+      dedup = 30;
+      group = 10;
+      threshold = ThresholdConfig(
+        enabled: false,
+        mode: base.threshold.mode,
+        windowMinutes: base.threshold.windowMinutes,
+        errorCount: base.threshold.errorCount,
+        crashCount: base.threshold.crashCount,
+        sensitivity: base.threshold.sensitivity,
+        channels: channels,
+        environments: kDefaultNotificationEnvironments,
+      );
+    case 'urgent':
+      categories = List<String>.from(kUrgentNotificationCategories);
+      dedup = 5;
+      group = 0;
+      threshold = ThresholdConfig(
+        enabled: true,
+        mode: 'count',
+        windowMinutes: 15,
+        errorCount: base.threshold.errorCount > 0 ? base.threshold.errorCount : 20,
+        crashCount: base.threshold.crashCount > 0 ? base.threshold.crashCount : 3,
+        sensitivity: base.threshold.sensitivity,
+        channels: channels,
+        environments: kDefaultNotificationEnvironments,
+      );
+    default: // normal
+      categories = List<String>.from(kDefaultNotificationCategories);
+      dedup = kDefaultDedupMinutes;
+      group = kDefaultGroupMinutes;
+      threshold = ThresholdConfig(
+        enabled: base.threshold.enabled,
+        mode: base.threshold.mode,
+        windowMinutes: base.threshold.windowMinutes,
+        errorCount: base.threshold.errorCount,
+        crashCount: base.threshold.crashCount,
+        sensitivity: base.threshold.sensitivity,
+        channels: channels,
+        environments: kDefaultNotificationEnvironments,
+      );
+  }
+
+  return base.copyWith(
+    preset: p,
+    healthCheckNotify: true,
+    dedupMinutes: dedup,
+    groupMinutes: group,
+    rules: [
+      NotificationRule(
+        id: 'default',
+        enabled: true,
+        categories: categories,
+        channels: channels,
+        environments: kDefaultNotificationEnvironments,
+      ),
+    ],
+    threshold: threshold,
+  );
 }
 
 List<String> _normList(List<dynamic>? raw, Set<String> allowed, List<String> fallback) {
   if (raw == null || raw.isEmpty) return List<String>.from(fallback);
   final picked = raw.map((e) => e.toString()).where(allowed.contains).toSet().toList();
   return picked.isEmpty ? List<String>.from(fallback) : picked;
+}
+
+String _normPreset(dynamic raw) {
+  final p = raw?.toString().trim().toLowerCase() ?? '';
+  return kNotificationPresets.contains(p) ? p : kDefaultNotificationPreset;
 }
 
 List<String> _normEnvs(List<dynamic>? raw) {

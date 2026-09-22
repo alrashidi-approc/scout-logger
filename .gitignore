@@ -12,6 +12,7 @@ apps/server/server
 *.iml
 .idea/
 .vscode/
+.scratch/
 
 # Flutter SDK — separate repo: https://github.com/YOUR_ORG/scout_logger_plus
 packages/scout_logger_plus/

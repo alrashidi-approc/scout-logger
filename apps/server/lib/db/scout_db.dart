@@ -52,14 +52,18 @@ class DbConfig {
 }
 
 class ScoutDb {
-  ScoutDb(this.config);
+  ScoutDb(this.config, {int poolSize = 6}) : _poolSize = poolSize.clamp(2, 16);
 
   final DbConfig config;
-  Connection? _conn;
+  final int _poolSize;
+  late final List<Future<Connection>?> _slots = List.filled(_poolSize, null);
+  int _rr = 0;
 
-  Future<Connection> connect() async {
-    _conn ??= await _open();
-    return _conn!;
+  /// Round-robin among a small pool so parallel API handlers don't serialize
+  /// on one Postgres session (was causing 20–50s "Queued" waits in the browser).
+  Future<Connection> connect() {
+    final i = _rr++ % _poolSize;
+    return _slots[i] ??= _open();
   }
 
   Future<Connection> _open() async {
@@ -76,8 +80,15 @@ class ScoutDb {
   }
 
   Future<void> close() async {
-    await _conn?.close();
-    _conn = null;
+    for (var i = 0; i < _slots.length; i++) {
+      final fut = _slots[i];
+      _slots[i] = null;
+      if (fut != null) {
+        try {
+          await (await fut).close();
+        } catch (_) {}
+      }
+    }
   }
 
   Future<void> ping() async {

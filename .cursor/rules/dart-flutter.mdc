@@ -1,0 +1,15 @@
+---
+description: Dart/Flutter idioms for this monorepo
+globs: "**/*.dart"
+alwaysApply: false
+---
+
+# Dart / Flutter
+
+- Prefer collection `if`/`for`, `??` / `??=`, tear-offs.
+- No new helpers/wrappers unless they remove real duplication.
+- Dashboard: follow existing `AppTheme`, screen/widget patterns; avoid one-off card systems.
+- Server: keep routes thin; stores own SQL; runners stay side-effect focused.
+- Tests: put next to feature under `test/`; run focused files before full suite.
+
+Health-check scripts pasted into the dashboard are **standalone** (`dart:io` / `dart:convert` only — no package imports).
