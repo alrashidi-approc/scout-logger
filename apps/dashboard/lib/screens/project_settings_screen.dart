@@ -107,7 +107,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   String _newMemberRole = assignableProjectRoles.first;
   bool _addingMember = false;
   Map<String, dynamic> _sdkHealth = {};
-  bool _wafVisible = false;
+  bool _wafVisible = true;
   Set<int> _wafStatusCodes = WafRejectConfig.defaultStatusCodes.toSet();
   Set<String> _wafContentTypes = WafRejectConfig.defaultContentTypes.toSet();
   Set<String> _wafEnvironments = {};

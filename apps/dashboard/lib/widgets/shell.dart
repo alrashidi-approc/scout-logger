@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:scout_models/scout_models.dart';
 import 'package:url_launcher/link.dart';
 
 import '../services/dashboard_scope.dart';
@@ -27,7 +28,7 @@ class _DashboardShellState extends State<DashboardShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _pageBucket = PageStorageBucket();
   String? _projectName;
-  bool _wafVisible = false;
+  bool _wafVisible = true;
   String? _lastPath;
 
   List<(IconData, IconData, String, String)> _navItems() => [
@@ -84,18 +85,18 @@ class _DashboardShellState extends State<DashboardShell> {
           break;
         }
       }
-      final waf = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
+      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
       if (mounted) {
         setState(() {
           _projectName = name ?? id;
-          _wafVisible = waf?['visible'] == true;
+          _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!;
         });
       }
     } catch (_) {
       if (mounted) {
         setState(() {
           _projectName = id;
-          _wafVisible = false;
+          _wafVisible = true;
         });
       }
     }
@@ -106,8 +107,8 @@ class _DashboardShellState extends State<DashboardShell> {
     if (id == null) return;
     try {
       final settings = await _api.fetchProjectSettings(id);
-      final waf = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
-      if (mounted) setState(() => _wafVisible = waf?['visible'] == true);
+      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
+      if (mounted) setState(() => _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!);
     } catch (_) {}
   }
 

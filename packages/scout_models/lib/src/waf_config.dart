@@ -16,7 +16,7 @@ class WafRejectConfig {
     this.appVersions,
   });
 
-  static const defaultVisible = false;
+  static const defaultVisible = true;
   static const defaultStatusCodes = [200, 403, 406];
   static const defaultContentTypes = ['text/html'];
 

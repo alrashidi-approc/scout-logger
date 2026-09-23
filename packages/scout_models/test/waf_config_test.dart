@@ -8,7 +8,7 @@ void main() {
 
   test('WafRejectConfig defaults and merge', () {
     final resolved = const WafRejectConfig().resolved();
-    expect(resolved.visible, false);
+    expect(resolved.visible, true);
     expect(resolved.statusCodes, WafRejectConfig.defaultStatusCodes);
     expect(resolved.contentTypes, WafRejectConfig.defaultContentTypes);
     expect(resolved.environments, isEmpty);
