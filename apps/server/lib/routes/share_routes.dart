@@ -112,6 +112,50 @@ Handler shareRoutes(ScoutStore store) {
         );
       }
 
+      if (type == 'waf') {
+        final raw = meta['payload'];
+        final payload = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : raw is String
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+                : <String, dynamic>{};
+        final filters = payload['filters'] is Map
+            ? Map<String, dynamic>.from(payload['filters'] as Map)
+            : <String, dynamic>{};
+        final fq = <String, String>{
+          for (final e in filters.entries)
+            if (e.value != null && '${e.value}'.trim().isNotEmpty) e.key: '${e.value}'.trim(),
+        };
+        final window = TimeWindow.fromQuery(fq, defaultDays: 7);
+        final page = await store.listEvents(
+          pid,
+          type: 'waf',
+          q: fq['q'],
+          environment: fq['environment'],
+          appVersion: fq['appVersion'],
+          window: window,
+          limit: 50,
+          view: 'all',
+        );
+        final events = [
+          for (final e in (page['events'] as List? ?? const []))
+            if (e is Map) Map<String, dynamic>.from(e)..remove('scoutUrl') else e,
+        ];
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'type': 'waf',
+            'projectName': projectName,
+            'filters': filters,
+            'events': events,
+            'total': page['total'],
+            'waf': page['waf'],
+            'expiresAt': meta['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       final rid = meta['resourceId'] as String;
 
       if (type == 'event') {

@@ -72,6 +72,18 @@ void main() {
         isTrue,
       );
     });
+    test('expected faultKind is not an error', () {
+      expect(
+        isErrorEvent('network', {
+          'level': 'error',
+          'network': {
+            'statusCode': 404,
+            'readable': {'operationalError': false, 'faultKind': 'expected'},
+          },
+        }),
+        isFalse,
+      );
+    });
   });
 
   group('isSuccessEvent', () {
@@ -217,6 +229,35 @@ void main() {
       expect(
         extractWafRequestId('<html>blocked</html>', headerRay: 'a3b6a16f8a37e1e8-MRS'),
         'a3b6a16f8a37e1e8-MRS',
+      );
+    });
+  });
+
+  group('sqlIsWafRejectEvent', () {
+    test('uses text status IN and short body peek', () {
+      final sql = sqlIsWafRejectEvent(statusCodes: const [200, 403], contentTypes: const ['text/html']);
+      expect(sql, contains("IN ('200', '403')"));
+      expect(sql, contains('LEFT('));
+      expect(sql, isNot(contains('::int')));
+    });
+
+    test('isWafRejectEvent matches text/html content type', () {
+      expect(
+        isWafRejectEvent(
+          'network',
+          {
+            'network': {
+              'statusCode': 200,
+              'response': {
+                'headers': {'content-type': 'text/html; charset=utf-8'},
+                'body': '<html>Request Rejected</html>',
+              },
+            },
+          },
+          statusCodes: const [200],
+          contentTypes: const ['text/html'],
+        ),
+        isTrue,
       );
     });
   });

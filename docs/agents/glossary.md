@@ -17,7 +17,7 @@ Domain terms for specs, tickets, and ADRs. Keep entries short.
 | **scout_logger_plus** | Flutter SDK (separate repo) |
 | **Share snapshot** | Public read-only link for a health-check (or other) report |
 | **WAF learning** | Optional OpenAPI/observations block attached to a health report |
-| **WAF rejects** | Dashboard page listing network events that look like edge/WAF HTML blocks (`text/html` instead of JSON); filters + PDF export from project `settings.waf` |
+| **Expected network response** | Project rule (method + path + status) that marks matching network calls as non-errors — excluded from Issues, Errors filter, error rate, reports, and alerts |
 | **Alert** | Outbound notification for a signal that matched project notification policy |
 | **Signal** | Something that may become an alert: ingested event, issue regression, spike, health-check failure |
 | **Alert preset** | Quiet / Normal / Urgent — named mapping onto notification config (rules, dedup, spikes, health notify) |

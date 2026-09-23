@@ -12,6 +12,7 @@ import '../theme/app_theme.dart';
 import '../widgets/shared_health_check_view.dart';
 import '../widgets/page_placeholder.dart';
 import '../widgets/shared_report_view.dart';
+import '../widgets/shared_waf_rejects_view.dart';
 import 'package:scout_models/scout_models.dart';
 
 final _shareTokenRe = RegExp(r'^[a-zA-Z0-9_-]{20,128}$');
@@ -33,6 +34,10 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
   Map<String, dynamic>? _alertData;
   Report? _report;
   Map<String, dynamic>? _healthCheckSnapshot;
+  List<Map<String, dynamic>> _wafEvents = [];
+  Map<String, dynamic>? _wafFilters;
+  Map<String, dynamic>? _wafConfig;
+  int? _wafTotal;
   String? _projectName;
   String? _expiresAt;
   bool _loading = true;
@@ -88,6 +93,17 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
           _expiresAt = res['expiresAt'] as String?;
           _loading = false;
         });
+      } else if (type == 'waf') {
+        setState(() {
+          _type = type;
+          _projectName = res['projectName'] as String?;
+          _wafEvents = jsonListMaps(res['events']);
+          _wafFilters = res['filters'] is Map ? Map<String, dynamic>.from(res['filters'] as Map) : null;
+          _wafConfig = res['waf'] is Map ? Map<String, dynamic>.from(res['waf'] as Map) : null;
+          _wafTotal = res['total'] as int?;
+          _expiresAt = res['expiresAt'] as String?;
+          _loading = false;
+        });
       } else {
         setState(() {
           _type = type;
@@ -112,10 +128,14 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
     applyShareSeo(
       title: _type == 'alert'
           ? (_alertData?['title'] as String? ?? 'Scout alert')
-          : shareSeoTitle(type: _type, issue: _issue, event: _event),
+          : _type == 'waf'
+              ? 'WAF rejects — ${_projectName ?? 'Scout'}'
+              : shareSeoTitle(type: _type, issue: _issue, event: _event),
       description: _type == 'alert'
           ? (_alertData?['summary'] as String? ?? 'Read-only Scout alert')
-          : shareSeoDescription(type: _type, issue: _issue, event: _event),
+          : _type == 'waf'
+              ? 'Read-only Scout WAF rejects list'
+              : shareSeoDescription(type: _type, issue: _issue, event: _event),
       url: _shareUrl,
     );
   }
@@ -165,6 +185,26 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
               child: SharedHealthCheckView(
                 projectName: _projectName ?? 'Project',
                 snapshot: _healthCheckSnapshot!,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_type == 'waf') {
+      return Material(
+        color: AppTheme.bg,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SharedBanner(shareUrl: _shareUrl, expiresAt: _expiresAt, onCopy: () => _copyLink(context)),
+            Expanded(
+              child: SharedWafRejectsView(
+                projectName: _projectName ?? 'Project',
+                events: _wafEvents,
+                total: _wafTotal,
+                filters: _wafFilters,
+                waf: _wafConfig,
               ),
             ),
           ],

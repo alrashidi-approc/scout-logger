@@ -41,4 +41,11 @@ void main() {
       'http://46.62.217.25:8081/scout/dashboard/p/proj1/events?hours=1&type=crash&environment=production',
     );
   });
+
+  test('dashboardEventUrl links to event detail', () {
+    expect(
+      dashboardEventUrl(_cfg(), 'proj1', 'evt_abc'),
+      'http://46.62.217.25:8081/scout/dashboard/p/proj1/events/evt_abc',
+    );
+  });
 }

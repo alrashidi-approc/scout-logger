@@ -4,6 +4,10 @@ import 'package:scout_models/scout_models.dart';
 String dashboardBaseUrl(ServerConfig config) =>
     '${config.publicUrl}${config.dashboardUrlPath}';
 
+/// Deep link to a single event in the dashboard.
+String dashboardEventUrl(ServerConfig config, String projectId, String eventId) =>
+    '${dashboardBaseUrl(config)}/p/$projectId/events/$eventId';
+
 /// Deep link for threshold / spike alerts — opens filtered events for the alert window.
 String dashboardShareUrl(ServerConfig config, String token) =>
     '${dashboardBaseUrl(config)}/share/$token';

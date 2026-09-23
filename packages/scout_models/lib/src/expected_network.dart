@@ -103,7 +103,7 @@ ExpectedNetworkResponse? matchExpectedNetworkResponse({
   final m = (method ?? '*').trim().toUpperCase();
   for (final rule in rules) {
     final rulePath = normalizeExpectedNetworkPath(rule.path);
-    if (rulePath.isEmpty || rulePath != route) continue;
+    if (rulePath.isEmpty || !_expectedPathsMatch(route, rulePath)) continue;
     if (rule.method != '*' && rule.method != m) continue;
     if (rule.statusCodes.isNotEmpty) {
       if (statusCode == null || !rule.statusCodes.contains(statusCode)) continue;
@@ -111,6 +111,15 @@ ExpectedNetworkResponse? matchExpectedNetworkResponse({
     return rule;
   }
   return null;
+}
+
+/// Exact path, or rule path as a trailing path suffix (paste short / full).
+bool _expectedPathsMatch(String route, String rulePath) {
+  if (route == rulePath) return true;
+  final rule = rulePath.startsWith('/') ? rulePath : '/$rulePath';
+  if (route == rule) return true;
+  // e.g. /app/services/empCard matches rule /services/empCard
+  return route.length > rule.length && route.endsWith(rule);
 }
 
 /// Fault forced when an expected-response rule matches.

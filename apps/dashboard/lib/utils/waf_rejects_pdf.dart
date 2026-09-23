@@ -20,6 +20,7 @@ class WafPdfOccurrence {
     required this.occurredAt,
     required this.curl,
     this.statusCode,
+    this.scoutUrl,
   });
 
   final String? requestId;
@@ -27,6 +28,7 @@ class WafPdfOccurrence {
   final DateTime occurredAt;
   final String curl;
   final String? statusCode;
+  final String? scoutUrl;
 }
 
 class WafPdfUrlGroup {
@@ -51,6 +53,7 @@ List<WafPdfUrlGroup> groupWafExportEvents(List<Map<String, dynamic>> events) {
       occurredAt: at,
       curl: e['curl']?.toString() ?? '',
       statusCode: e['statusCode']?.toString(),
+      scoutUrl: e['scoutUrl']?.toString(),
     );
     (byUrl[url] ??= []).add(occ);
   }
@@ -201,14 +204,14 @@ pw.Widget _groupHeader(WafPdfUrlGroup g) {
 
 pw.Widget _occurrenceTable(List<WafPdfOccurrence> rows) {
   final fmt = DateFormat('MMM d, yyyy HH:mm:ss');
-  pw.Widget cell(String text, {bool header = false}) => pw.Padding(
+  pw.Widget cell(String text, {bool header = false, PdfColor? color}) => pw.Padding(
         padding: const pw.EdgeInsets.all(4),
         child: pw.Text(
           text,
           style: pw.TextStyle(
             fontSize: header ? 8 : 7,
             fontWeight: header ? pw.FontWeight.bold : pw.FontWeight.normal,
-            color: _sidebar,
+            color: color ?? _sidebar,
           ),
         ),
       );
@@ -216,18 +219,20 @@ pw.Widget _occurrenceTable(List<WafPdfOccurrence> rows) {
   return pw.Table(
     border: pw.TableBorder.all(color: _border, width: 0.5),
     columnWidths: {
-      0: const pw.FlexColumnWidth(1.4),
-      1: const pw.FlexColumnWidth(2.6),
-      2: const pw.FlexColumnWidth(1.6),
-      3: const pw.FlexColumnWidth(4.4),
+      0: const pw.FlexColumnWidth(1.2),
+      1: const pw.FlexColumnWidth(1.2),
+      2: const pw.FlexColumnWidth(1.4),
+      3: const pw.FlexColumnWidth(2.8),
+      4: const pw.FlexColumnWidth(3.4),
     },
     children: [
       pw.TableRow(
         decoration: const pw.BoxDecoration(color: _panel),
         children: [
           cell('Request ID', header: true),
-          cell('URL', header: true),
           cell('Date & time', header: true),
+          cell('Scout event', header: true),
+          cell('API URL', header: true),
           cell('cURL', header: true),
         ],
       ),
@@ -235,8 +240,20 @@ pw.Widget _occurrenceTable(List<WafPdfOccurrence> rows) {
         pw.TableRow(
           children: [
             cell(r.requestId?.isNotEmpty == true ? r.requestId! : '—'),
-            cell(r.url),
             cell(fmt.format(r.occurredAt)),
+            pw.Padding(
+              padding: const pw.EdgeInsets.all(4),
+              child: r.scoutUrl != null && r.scoutUrl!.isNotEmpty
+                  ? pw.UrlLink(
+                      destination: r.scoutUrl!,
+                      child: pw.Text(
+                        r.scoutUrl!,
+                        style: const pw.TextStyle(fontSize: 6.5, color: _primary),
+                      ),
+                    )
+                  : pw.Text('—', style: const pw.TextStyle(fontSize: 7, color: _sidebar)),
+            ),
+            cell(r.url),
             cell(r.curl.isEmpty ? '—' : r.curl),
           ],
         ),

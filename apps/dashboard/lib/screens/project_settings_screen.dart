@@ -370,7 +370,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
               content: Text(
-                  'Settings saved — apps pick this up on next launch or resume')),
+                  'Settings saved — expected network rules reapplied to recent events; apps pick SDK config up on next launch')),
         );
       }
     } catch (e) {
@@ -1038,7 +1038,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
               const Text('Expected network responses', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
               const Text(
-                'Treat matching method + route + status as normal business outcomes — no issue, no alert. Example: POST empCardImageM → 404 when the employee has no image.',
+                'Treat matching method + route + status as normal business outcomes — not errors, '
+                'not issues, and not counted in error rate / reports / alerts. '
+                'Example: POST empCardImageM → 404 when the employee has no image. '
+                'Saving reapplies rules to recent events.',
                 style: TextStyle(color: AppTheme.muted, fontSize: 13),
               ),
               const SizedBox(height: 16),

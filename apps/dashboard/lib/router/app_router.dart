@@ -328,7 +328,7 @@ GoRouter createRouter() {
                 s,
                 WafRejectsScreen(
                   projectId: s.pathParameters['projectId']!,
-                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
+                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(7),
                   initialQuery: q['q'],
                   initialEnvironment: q['environment'],
                   initialAppVersion: q['appVersion'],

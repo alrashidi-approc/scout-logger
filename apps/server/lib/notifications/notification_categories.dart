@@ -13,7 +13,16 @@ Set<String> notificationCategoriesFor({
   if (network is! Map) return cats;
   final n = Map<String, dynamic>.from(network);
   final readable = n['readable'];
+  if (readable is Map) {
+    if (readable['operationalError'] == false ||
+        readable['issueWorthy'] == false ||
+        readable['faultKind'] == 'expected' ||
+        readable['alertWorthy'] == false) {
+      return cats; // expected / non-incident network — not an alert category
+    }
+  }
   final fault = NetworkFaultInfo.fromJson(readable is Map ? readable['fault'] : null) ?? classifyNetworkFault(n);
+  if (!fault.operationalError || !fault.alertWorthy || fault.kind == 'expected') return cats;
 
   if (fault.kind == 'transport') cats.add('network_transport');
   switch (fault.faultClass) {

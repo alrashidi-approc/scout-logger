@@ -284,6 +284,7 @@ class ScoutApi {
       'limit': pag['limit'] as int? ?? limit,
       'offset': pag['offset'] as int? ?? offset,
       'hasMore': pag['hasMore'] == true,
+      if (body['waf'] is Map) 'waf': Map<String, dynamic>.from(body['waf'] as Map),
     };
   }
 
@@ -360,13 +361,19 @@ class ScoutApi {
   Future<Map<String, dynamic>> createShareLink(
     String projectId, {
     required String type,
-    required String resourceId,
+    String? resourceId,
+    Map<String, dynamic>? filters,
     int expiresInDays = 30,
   }) async {
     final res = await _client.post(
       _uri('/api/projects/$projectId/share'),
       headers: _headers,
-      body: jsonEncode({'type': type, 'resourceId': resourceId, 'expiresInDays': expiresInDays}),
+      body: jsonEncode({
+        'type': type,
+        if (resourceId != null) 'resourceId': resourceId,
+        if (filters != null) 'filters': filters,
+        'expiresInDays': expiresInDays,
+      }),
     );
     _ok(res);
     return Map<String, dynamic>.from(jsonDecode(res.body) as Map);

@@ -39,6 +39,22 @@ void main() {
       expect(hit, isNotNull);
     });
 
+    test('matches trailing path segment of a longer URL', () {
+      final hit = matchExpectedNetworkResponse(
+        rules: [
+          const ExpectedNetworkResponse(
+            method: 'POST',
+            path: '/resources/empCardImageM',
+            statusCodes: [404],
+          ),
+        ],
+        method: 'POST',
+        url: 'https://api.example.com/EPAMobileAppServices/resources/empCardImageM',
+        statusCode: 404,
+      );
+      expect(hit, isNotNull);
+    });
+
     test('non-matching path stays unmatched', () {
       final hit = matchExpectedNetworkResponse(
         rules: [empCardRule],

@@ -138,6 +138,7 @@ String sqlIsErrorEvent({String alias = ''}) {
     ${p}type = 'network'
     AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
     AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
+    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'faultKind', ''), '') <> 'expected'
     AND (
       NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
       OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
@@ -284,6 +285,7 @@ bool isErrorEvent(String type, Map<String, dynamic> payload) {
   if (network is! Map) return eff == 'error' || eff == 'warning';
   final readable = network['readable'];
   if (readable is Map && readable['operationalError'] == false) return false;
+  if (readable is Map && readable['faultKind'] == 'expected') return false;
   final err = network['error'];
   if (err != null && err.toString().isNotEmpty) return true;
   final codeStr = network['statusCode']?.toString() ?? '';
@@ -334,12 +336,13 @@ COALESCE(
 )''';
 }
 
-String _sqlIntList(List<int> codes) => codes.join(', ');
-
 String _sqlTextList(List<String> values) =>
     values.map((v) => "'${v.replaceAll("'", "''")}'").join(', ');
 
 /// Network events that look like WAF / edge HTML block pages.
+///
+/// Tuned for list scans: text status match (no cast/regex), short body peek
+/// for the HTML fallback. Content-Type is checked before touching the body.
 String sqlIsWafRejectEvent({
   String alias = '',
   required List<int> statusCodes,
@@ -349,13 +352,13 @@ String sqlIsWafRejectEvent({
   final p = alias.isEmpty ? '' : '$alias.';
   final ct = sqlNetworkContentType(alias: alias);
   final body = sqlNetworkResponseBody(alias: alias);
-  final codes = _sqlIntList(statusCodes);
+  // Text IN is cheaper than ::int cast + digit regex on every network row.
+  final codes = _sqlTextList(statusCodes.map((c) => '$c').toList());
   final types = _sqlTextList(contentTypes.map((e) => e.toLowerCase()).toList());
   return '''
 (
   ${p}type = 'network'
-  AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
-  AND (${p}payload->'network'->>'statusCode')::int IN ($codes)
+  AND (${p}payload->'network'->>'statusCode') IN ($codes)
   AND (
     (
       $ct <> ''
@@ -363,7 +366,7 @@ String sqlIsWafRejectEvent({
     )
     OR (
       $ct = ''
-      AND $body ~* '(<html|request rejected|cf-ray|attention required|access denied)'
+      AND LEFT($body, 1024) ~* '(<html|request rejected|cf-ray|attention required|access denied)'
     )
   )
 )''';
@@ -409,8 +412,9 @@ bool isWafRejectEvent(
   final types = contentTypes.map((e) => e.toLowerCase()).toList();
   if (ct.isNotEmpty) return types.contains(ct);
   final body = '${response['body'] ?? network['responseBody'] ?? ''}';
+  final peek = body.length > 1024 ? body.substring(0, 1024) : body;
   return RegExp(r'(<html|request rejected|cf-ray|attention required|access denied)', caseSensitive: false)
-      .hasMatch(body);
+      .hasMatch(peek);
 }
 
 /// Pull support / ray / request id from WAF HTML body or CF-Ray header.

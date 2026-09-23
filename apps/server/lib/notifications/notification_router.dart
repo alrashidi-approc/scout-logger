@@ -96,8 +96,15 @@ bool _networkAlertWorthy(Map<String, dynamic> payload) {
   if (network is! Map) return true;
   final n = Map<String, dynamic>.from(network);
   final readable = n['readable'];
+  if (readable is Map) {
+    if (readable['operationalError'] == false ||
+        readable['alertWorthy'] == false ||
+        readable['faultKind'] == 'expected') {
+      return false;
+    }
+  }
   final fault = NetworkFaultInfo.fromJson(readable is Map ? readable['fault'] : null) ?? classifyNetworkFault(n);
-  return fault.alertWorthy;
+  return fault.alertWorthy && fault.operationalError && fault.kind != 'expected';
 }
 
 List<NotificationJob> routeNotifications({

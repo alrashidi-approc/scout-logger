@@ -460,12 +460,27 @@ Handler apiRoutes(
         view: q['view'] ?? 'all',
         groupKey: q['group'] ?? q['groupKey'],
       );
+      final kind = q['type'] ?? q['kind'];
+      var events = page['events'];
+      if (kind == 'waf' && events is List) {
+        events = [
+          for (final e in events)
+            if (e is Map)
+              {
+                ...Map<String, dynamic>.from(e),
+                'scoutUrl': dashboardEventUrl(config, id, '${e['id']}'),
+              }
+            else
+              e,
+        ];
+      }
       return Response.ok(
         jsonEncode({
           'ok': true,
           'view': page['view'],
-          'events': page['events'],
+          'events': events,
           'groups': page['groups'],
+          if (page['waf'] != null) 'waf': page['waf'],
           'pagination': {
             'total': page['total'],
             'limit': page['limit'],
@@ -491,7 +506,20 @@ Handler apiRoutes(
         window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
         limit: int.tryParse(q['limit'] ?? '') ?? 500,
       );
-      return Response.ok(jsonEncode({'ok': true, ...data}), headers: {'Content-Type': 'application/json'});
+      final events = [
+        for (final e in (data['events'] as List? ?? const []))
+          if (e is Map)
+            {
+              ...Map<String, dynamic>.from(e),
+              'scoutUrl': dashboardEventUrl(config, id, '${e['id']}'),
+            }
+          else
+            e,
+      ];
+      return Response.ok(
+        jsonEncode({'ok': true, ...data, 'events': events}),
+        headers: {'Content-Type': 'application/json'},
+      );
     });
   });
 
@@ -512,13 +540,41 @@ Handler apiRoutes(
       final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
       final type = body['type']?.toString();
       final resourceId = body['resourceId']?.toString();
-      if (type == null || type.isEmpty || resourceId == null || resourceId.isEmpty) {
-        return jsonErr('type and resourceId required');
+      if (type == null || type.isEmpty) {
+        return jsonErr('type required');
       }
-      if (!{'event', 'issue'}.contains(type)) return jsonErr('type must be event or issue');
       final rawDays = body['expiresInDays'];
       final expiresInDays = rawDays is num ? rawDays.toInt() : int.tryParse('$rawDays') ?? 30;
       final auth = authFrom(request)!;
+
+      if (type == 'waf') {
+        final filters = body['filters'] is Map
+            ? Map<String, dynamic>.from(body['filters'] as Map)
+            : <String, dynamic>{};
+        final share = await store.createWafShareToken(
+          projectId: id,
+          filters: filters,
+          createdBy: auth.userId,
+          expiresInDays: expiresInDays,
+        );
+        final token = share['token'] as String;
+        final path = '${config.dashboardUrlPath}/share/$token';
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'token': token,
+            'url': '${config.publicUrl}$path',
+            'path': '/share/$token',
+            'expiresAt': share['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (resourceId == null || resourceId.isEmpty) {
+        return jsonErr('type and resourceId required');
+      }
+      if (!{'event', 'issue'}.contains(type)) return jsonErr('type must be event, issue, or waf');
       final share = await store.createShareToken(
         projectId: id,
         resourceType: type,

@@ -4,11 +4,14 @@ import 'package:printing/printing.dart';
 
 import '../services/api_client.dart';
 import '../services/dashboard_log_service.dart';
+import '../services/facets_cache.dart';
 import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
+import '../utils/clipboard.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
+import '../utils/share_link.dart';
 import '../utils/waf_rejects_pdf.dart';
 import '../widgets/event_card.dart';
 import '../widgets/filter_bar.dart';
@@ -20,7 +23,7 @@ class WafRejectsScreen extends StatefulWidget {
   const WafRejectsScreen({
     super.key,
     required this.projectId,
-    this.initialPeriod = const PeriodFilter.days(30),
+    this.initialPeriod = const PeriodFilter.days(7),
     this.initialQuery,
     this.initialEnvironment,
     this.initialAppVersion,
@@ -77,7 +80,8 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
     _environment = widget.initialEnvironment;
     _appVersion = widget.initialAppVersion;
     _scroll.addListener(_onScroll);
-    if (!_restore()) _load();
+    final restored = _restore();
+    _load(silent: restored);
   }
 
   @override
@@ -122,11 +126,13 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
     }
   }
 
-  Future<void> _load({bool more = false}) async {
+  Future<void> _load({bool more = false, bool silent = false}) async {
     if (more && (_loading || _refreshing || !_hasMore)) return;
     setState(() {
       _error = null;
       if (more) {
+        _refreshing = true;
+      } else if (silent && _hasData) {
         _refreshing = true;
       } else {
         beginScreenLoad(
@@ -141,7 +147,7 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
       }
     });
     try {
-      final pageF = _api.fetchEvents(
+      final page = await _api.fetchEvents(
         widget.projectId,
         type: 'waf',
         period: _period,
@@ -152,22 +158,8 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
         offset: more ? _offset + _pageSize : 0,
         view: 'all',
       );
-      final settingsF = more ? null : _api.fetchProjectSettings(widget.projectId);
-      final facetsF = more
-          ? null
-          : _api.fetchFilterFacets(
-              widget.projectId,
-              period: _period,
-              environment: _environment,
-              appVersion: _appVersion,
-            );
-      final page = await pageF;
-      final events = jsonListMaps(page['events']);
-      Map<String, dynamic>? settings;
-      Map<String, dynamic>? facets;
-      if (settingsF != null) settings = await settingsF;
-      if (facetsF != null) facets = await facetsF;
       if (!mounted) return;
+      final events = jsonListMaps(page['events']);
       setState(() {
         if (more) {
           _events = [..._events, ...events];
@@ -175,12 +167,8 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
         } else {
           _events = events;
           _offset = page['offset'] as int? ?? 0;
-          if (settings != null) {
-            _waf = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
-          }
-          if (facets != null) {
-            _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
-            _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
+          if (page['waf'] is Map) {
+            _waf = Map<String, dynamic>.from(page['waf'] as Map);
           }
         }
         _total = page['total'] as int? ?? _events.length;
@@ -190,6 +178,7 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
         _refreshing = false;
       });
       _writeCache();
+      if (!more) _loadFacets();
     } catch (e) {
       DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
@@ -200,6 +189,24 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
         });
       }
     }
+  }
+
+  Future<void> _loadFacets() async {
+    try {
+      final facets = await FacetsCache.get(
+        _api,
+        widget.projectId,
+        period: _period,
+        environment: _environment,
+        appVersion: _appVersion,
+      );
+      if (!mounted) return;
+      setState(() {
+        _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
+        _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
+      });
+      _writeCache();
+    } catch (_) {}
   }
 
   void _apply({
@@ -285,6 +292,21 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
               title: 'WAF rejects',
               subtitle: _subtitle,
               actions: [
+                OutlinedButton.icon(
+                  onPressed: () => copyShareLink(
+                    context,
+                    projectId: widget.projectId,
+                    type: 'waf',
+                    filters: {
+                      ..._period.toQuery(),
+                      if (_search.isNotEmpty) 'q': _search,
+                      if (_environment != null) 'environment': _environment!,
+                      if (_appVersion != null) 'appVersion': _appVersion!,
+                    },
+                  ),
+                  icon: const Icon(Icons.link, size: 18),
+                  label: const Text('Share link'),
+                ),
                 FilledButton.icon(
                   onPressed: _exporting ? null : _exportPdf,
                   icon: _exporting
@@ -340,11 +362,38 @@ class _WafRejectsScreenState extends State<WafRejectsScreen> {
                 ),
               )
             else
-              for (final e in _events)
+              for (final e in _events) ...[
                 EventCard(
                   event: e,
                   onTap: () => context.go('/p/${widget.projectId}/events/${e['id']}'),
                 ),
+                if ((e['scoutUrl'] as String?)?.isNotEmpty == true)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.link, size: 14, color: AppTheme.muted),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: SelectableText(
+                            e['scoutUrl'] as String,
+                            style: const TextStyle(fontSize: 11, color: AppTheme.muted, fontFamily: 'monospace'),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Copy Scout URL',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => copyWithFeedback(
+                            context,
+                            e['scoutUrl'] as String,
+                            message: 'Scout URL copied',
+                          ),
+                          icon: const Icon(Icons.copy, size: 16),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             if (_hasMore)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16),

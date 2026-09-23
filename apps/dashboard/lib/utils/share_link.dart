@@ -24,7 +24,8 @@ Future<void> copyShareLink(
   BuildContext context, {
   required String projectId,
   required String type,
-  required String resourceId,
+  String? resourceId,
+  Map<String, dynamic>? filters,
 }) async {
   final days = await pickShareExpiry(context);
   if (days == null || !context.mounted) return;
@@ -34,6 +35,7 @@ Future<void> copyShareLink(
       projectId,
       type: type,
       resourceId: resourceId,
+      filters: filters,
       expiresInDays: days,
     );
     await copyToClipboard(res['url'] as String);

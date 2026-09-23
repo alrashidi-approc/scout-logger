@@ -25,8 +25,12 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   final network = payload['network'];
   if (network is Map) {
     final n = Map<String, dynamic>.from(network);
-    final fault = NetworkFaultInfo.fromJson(_asMap(n['readable'])['fault']) ?? classifyNetworkFault(n);
-    if (!fault.issueWorthy) return false;
+    final readable = _asMap(n['readable']);
+    if (readable['operationalError'] == false || readable['issueWorthy'] == false || readable['faultKind'] == 'expected') {
+      return false;
+    }
+    final fault = NetworkFaultInfo.fromJson(readable['fault']) ?? classifyNetworkFault(n);
+    if (!fault.issueWorthy || !fault.operationalError) return false;
     final err = network['error'];
     if (err != null && err.toString().isNotEmpty) return true;
     final code = int.tryParse('${network['statusCode'] ?? ''}');
@@ -1344,6 +1348,7 @@ class ScoutStore {
               : 'Marked as not an issue from Scout',
         );
         await _appendExpectedNetworkRule(conn, projectId, rule);
+        await reclassifyExpectedNetworkEvents(projectId, conn: conn);
       }
     }
 
@@ -1606,6 +1611,17 @@ class ScoutStore {
     );
     if (rows.isEmpty) return null;
     final event = _eventRowFull(rows.first);
+    if (event['type'] == 'network' && event['payload'] is Map) {
+      final rules = await _expectedNetworkResponses(conn, projectId);
+      if (rules.isNotEmpty) {
+        final payload = Map<String, dynamic>.from(event['payload'] as Map);
+        event['payload'] = _payloadWithNetworkReadable(
+          payload,
+          'network',
+          expectedResponses: rules,
+        );
+      }
+    }
     final issueId = event['issueId'] as String?;
     if (issueId != null) {
       final issue = await getIssue(projectId, issueId);
@@ -1900,6 +1916,7 @@ class ScoutStore {
     List<String> wafTypes = const [];
     List<String> wafEnvs = const [];
     List<String> wafVers = const [];
+    Map<String, dynamic>? wafClient;
     if (isWaf) {
       final settingsRows = await conn.execute(
         Sql.named('SELECT settings FROM projects WHERE id = @id'),
@@ -1910,6 +1927,7 @@ class ScoutStore {
       final waf = WafRejectConfig.fromJson(
         settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null,
       ).resolved();
+      wafClient = waf.toJson();
       wafCodes = List<int>.from(waf.statusCodes ?? const []);
       wafTypes = List<String>.from(waf.contentTypes ?? const []);
       wafEnvs = List<String>.from(waf.environments ?? const []);
@@ -2012,6 +2030,7 @@ class ScoutStore {
         'limit': lim,
         'offset': off,
         'hasMore': hasMore,
+        if (wafClient != null) 'waf': wafClient,
       };
     }
 
@@ -2026,7 +2045,9 @@ class ScoutStore {
                payload->'network'->>'statusCode' AS status_code,
                payload->>'category' AS category,
                payload->>'level' AS level,
-               payload->'device'->>'buildNumber' AS build_number
+               payload->'device'->>'buildNumber' AS build_number,
+               payload->'network'->'readable'->>'faultKind' AS fault_kind,
+               payload->'network'->'readable'->>'operationalError' AS operational_error
         $filters
         ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
@@ -2038,6 +2059,8 @@ class ScoutStore {
         .map((r) {
           final ver = r[10] as String?;
           final build = r[17]?.toString();
+          final faultKind = r[18]?.toString();
+          final opErr = r[19]?.toString();
           return {
               'id': r[0],
               'type': r[1],
@@ -2057,6 +2080,8 @@ class ScoutStore {
               'statusCode': r[14]?.toString(),
               'category': r[15],
               'level': r[16],
+              if (faultKind != null && faultKind.isNotEmpty) 'faultKind': faultKind,
+              if (opErr != null && opErr.isNotEmpty) 'operationalError': opErr != 'false',
             };
         })
         .toList();
@@ -2068,6 +2093,7 @@ class ScoutStore {
       'limit': lim,
       'offset': off,
       'hasMore': hasMore,
+      if (wafClient != null) 'waf': wafClient,
     };
   }
 
@@ -2124,7 +2150,6 @@ class ScoutStore {
       ...timeParams(w),
     };
 
-    final total = (await conn.execute(Sql.named('SELECT COUNT(*)::int $filters'), parameters: params)).first[0] as int;
     final rows = await conn.execute(
       Sql.named('''
         SELECT id, occurred_at,
@@ -2146,10 +2171,12 @@ class ScoutStore {
         ORDER BY occurred_at DESC
         LIMIT @lim
       '''),
-      parameters: {...params, 'lim': lim},
+      parameters: {...params, 'lim': lim + 1},
     );
+    final hasMore = rows.length > lim;
+    final pageRows = hasMore ? rows.sublist(0, lim) : rows;
 
-    final events = rows.map((r) {
+    final events = pageRows.map((r) {
       final body = r[5]?.toString() ?? '';
       final headerRay = r[6]?.toString() ?? '';
       return {
@@ -2168,8 +2195,9 @@ class ScoutStore {
       'projectName': project['name'] ?? projectId,
       'from': w.since,
       'to': w.until,
-      'total': total,
+      'total': events.length + (hasMore ? 1 : 0),
       'exported': events.length,
+      'hasMore': hasMore,
       'events': events,
       'waf': waf.toJson(),
     };
@@ -2644,11 +2672,236 @@ class ScoutStore {
       '''),
       parameters: {'id': projectId, 'patch': jsonEncode(settingsPatch)},
     );
+
+    if (patch.containsKey('sdk') &&
+        patch['sdk'] is Map &&
+        (patch['sdk'] as Map).containsKey('expectedNetworkResponses')) {
+      // Re-stamp recent matching network events so Errors/Issues drop them.
+      await reclassifyExpectedNetworkEvents(projectId, conn: conn);
+    }
+
     return {
       ...next.toClientResponse(),
       'retention': retention.toClientJson(),
       'waf': waf.resolved().toJson(),
     };
+  }
+
+  /// Apply expected-network rules across events, issues, and error rollups
+  /// (overview / reports / error rate use daily_stats).
+  Future<int> reclassifyExpectedNetworkEvents(
+    String projectId, {
+    Connection? conn,
+    int lookbackDays = 90,
+    int limit = 5000,
+  }) async {
+    final c = conn ?? await db.connect();
+    final rules = await _expectedNetworkResponses(c, projectId);
+    if (rules.isEmpty) return 0;
+
+    final since = DateTime.now().toUtc().subtract(Duration(days: lookbackDays));
+    final rows = await c.execute(
+      Sql.named('''
+        SELECT id, issue_id, payload, occurred_at
+        FROM events
+        WHERE project_id = @pid
+          AND type = 'network'
+          AND occurred_at >= @since
+        ORDER BY occurred_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'since': since, 'lim': limit},
+    );
+
+    final issueIds = <String>{};
+    var updated = 0;
+    for (final row in rows) {
+      final id = row[0] as String;
+      final issueId = row[1] as String?;
+      final raw = row[2];
+      if (raw is! Map) continue;
+      final payload = Map<String, dynamic>.from(raw);
+      final network = payload['network'];
+      if (network is! Map) continue;
+      final n = Map<String, dynamic>.from(network);
+      final hit = matchExpectedNetworkResponse(
+        rules: rules,
+        method: n['method']?.toString(),
+        url: n['url']?.toString() ?? n['path']?.toString(),
+        statusCode: int.tryParse('${n['statusCode'] ?? ''}'),
+      );
+      if (hit == null) continue;
+
+      final readable = n['readable'];
+      final already =
+          readable is Map && (readable['faultKind'] == 'expected' || readable['operationalError'] == false);
+      if (!already) {
+        final nextPayload = _payloadWithNetworkReadable(
+          payload,
+          'network',
+          expectedResponses: rules,
+        );
+        await c.execute(
+          Sql.named('''
+            UPDATE events
+            SET payload = @payload::jsonb,
+                issue_id = NULL
+            WHERE id = @id AND project_id = @pid
+          '''),
+          parameters: {
+            'id': id,
+            'pid': projectId,
+            'payload': jsonEncode(nextPayload),
+          },
+        );
+        updated++;
+      } else if (issueId != null) {
+        await c.execute(
+          Sql.named('UPDATE events SET issue_id = NULL WHERE id = @id AND project_id = @pid'),
+          parameters: {'id': id, 'pid': projectId},
+        );
+      }
+      if (issueId != null && issueId.isNotEmpty) issueIds.add(issueId);
+    }
+
+    // Open network issues whose latest sample matches a rule.
+    final openIssues = await c.execute(
+      Sql.named('''
+        SELECT i.id
+        FROM issues i
+        WHERE i.project_id = @pid AND i.type = 'network' AND i.status = 'open'
+        LIMIT 500
+      '''),
+      parameters: {'pid': projectId},
+    );
+    for (final row in openIssues) {
+      final iid = row[0] as String;
+      final sample = await c.execute(
+        Sql.named('''
+          SELECT payload FROM events
+          WHERE project_id = @pid AND issue_id = @iid AND type = 'network'
+          ORDER BY occurred_at DESC LIMIT 1
+        '''),
+        parameters: {'pid': projectId, 'iid': iid},
+      );
+      if (sample.isEmpty || sample.first[0] is! Map) continue;
+      final payload = Map<String, dynamic>.from(sample.first[0] as Map);
+      final network = payload['network'];
+      if (network is! Map) continue;
+      final n = Map<String, dynamic>.from(network);
+      final hit = matchExpectedNetworkResponse(
+        rules: rules,
+        method: n['method']?.toString(),
+        url: n['url']?.toString() ?? n['path']?.toString(),
+        statusCode: int.tryParse('${n['statusCode'] ?? ''}'),
+      );
+      if (hit != null) issueIds.add(iid);
+    }
+
+    for (final iid in issueIds) {
+      await c.execute(
+        Sql.named('''
+          UPDATE issues SET
+            status = 'ignored',
+            resolved_at = COALESCE(resolved_at, now())
+          WHERE project_id = @pid AND id = @id AND status = 'open'
+        '''),
+        parameters: {'pid': projectId, 'id': iid},
+      );
+    }
+
+    await _rebuildErrorRollups(c, projectId, since: since);
+    return updated;
+  }
+
+  /// Recount error metrics used by overview / reports / stats after reclassify.
+  Future<void> _rebuildErrorRollups(
+    Connection conn,
+    String projectId, {
+    required DateTime since,
+  }) async {
+    await conn.execute(
+      Sql.named('''
+        WITH agg AS (
+          SELECT
+            ((occurred_at AT TIME ZONE 'UTC')::date) AS day,
+            COALESCE(country, '') AS country,
+            COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int AS errors,
+            COUNT(*) FILTER (WHERE type = 'crash')::int AS crashes,
+            COUNT(*) FILTER (WHERE type = 'network' AND ${sqlIsErrorEvent()})::int AS network_error,
+            COUNT(*) FILTER (WHERE type = 'network' AND ${sqlIsSuccessEvent()})::int AS network_success
+          FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND occurred_at >= @since
+          GROUP BY 1, 2
+        )
+        UPDATE daily_stats ds SET
+          errors = agg.errors,
+          crashes = agg.crashes,
+          network_error = agg.network_error,
+          network_success = agg.network_success
+        FROM agg
+        WHERE ds.project_id = @pid
+          AND ds.date = agg.day
+          AND ds.country = agg.country
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    await conn.execute(
+      Sql.named('''
+        WITH agg AS (
+          SELECT
+            user_id,
+            ((occurred_at AT TIME ZONE 'UTC')::date) AS day,
+            COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int AS error_count,
+            COUNT(*) FILTER (WHERE type = 'crash')::int AS crash_count
+          FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND occurred_at >= @since
+            AND user_id IS NOT NULL
+            AND user_id <> ''
+          GROUP BY 1, 2
+        )
+        UPDATE user_daily_stats u SET
+          error_count = agg.error_count,
+          crash_count = agg.crash_count
+        FROM agg
+        WHERE u.project_id = @pid
+          AND u.user_id = agg.user_id
+          AND u.date = agg.day
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
+
+    await conn.execute(
+      Sql.named('''
+        WITH agg AS (
+          SELECT
+            install_id,
+            ((occurred_at AT TIME ZONE 'UTC')::date) AS day,
+            COUNT(*) FILTER (WHERE ${sqlIsErrorEvent()})::int AS error_count,
+            COUNT(*) FILTER (WHERE type = 'crash')::int AS crash_count
+          FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND occurred_at >= @since
+            AND install_id IS NOT NULL
+            AND install_id <> ''
+          GROUP BY 1, 2
+        )
+        UPDATE device_daily_stats d SET
+          error_count = agg.error_count,
+          crash_count = agg.crash_count
+        FROM agg
+        WHERE d.project_id = @pid
+          AND d.install_id = agg.install_id
+          AND d.date = agg.day
+      '''),
+      parameters: {'pid': projectId, 'since': since},
+    );
   }
 
   /// Delete expired raw events for every project. Rollups and issue counts are kept.
@@ -2890,6 +3143,33 @@ class ScoutStore {
         'exp': expiresAt,
         'uid': createdBy,
         'payload': jsonEncode(payload),
+      },
+    );
+    return {'token': token, 'expiresAt': expiresAt.toIso8601String()};
+  }
+
+  /// Read-only WAF rejects page — filters live in [payload], resolved on open.
+  Future<Map<String, dynamic>> createWafShareToken({
+    required String projectId,
+    required Map<String, dynamic> filters,
+    String? createdBy,
+    int expiresInDays = 30,
+  }) async {
+    final token = newToken();
+    final expiresAt = DateTime.now().toUtc().add(Duration(days: expiresInDays.clamp(1, 365)));
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, created_by, payload)
+        VALUES (@id, @pid, 'waf', @pid, @hash, @exp, @uid, @payload::jsonb)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'hash': hashToken(token),
+        'exp': expiresAt,
+        'uid': createdBy,
+        'payload': jsonEncode({'filters': filters}),
       },
     );
     return {'token': token, 'expiresAt': expiresAt.toIso8601String()};

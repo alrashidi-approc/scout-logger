@@ -35,8 +35,9 @@ class EventCard extends StatelessWidget {
         : null;
     final env = event['environment']?.toString() ?? '—';
     final guest = event['isGuest'] == true || isGuestEvent(event);
-    final isCriticalNet = networkFault?.faultClass == NetworkFaultClass.critical;
-    final errorFocus = effectiveLevel == 'error' || type == 'crash' || isCriticalNet;
+    final expectedNet = event['faultKind']?.toString() == 'expected' || event['operationalError'] == false;
+    final isCriticalNet = !expectedNet && networkFault?.faultClass == NetworkFaultClass.critical;
+    final errorFocus = !expectedNet && (effectiveLevel == 'error' || type == 'crash' || isCriticalNet);
     final compact = MediaQuery.sizeOf(context).width < 720;
 
     final endpointLabel = url.isEmpty ? null : (status.isNotEmpty ? '$status · ${_shortLabel(url)}' : _shortLabel(url));
