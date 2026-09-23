@@ -1,0 +1,12 @@
+.env
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+example/.env
+example/pubspec.lock
+*.iml
+.idea/
+.vscode/

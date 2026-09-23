@@ -70,6 +70,8 @@ if [[ ! -f "${ROOT}/apps/dashboard/build/web/index.html" ]]; then
   exit 1
 fi
 
+bash "${ROOT}/scripts/prepare-ca-certs.sh"
+
 if [[ "${SKIP_SERVER_BUILD:-0}" != "1" ]]; then
   if ! command -v dart >/dev/null 2>&1; then
     echo "Dart not found. Install Flutter/Dart or set SKIP_SERVER_BUILD=1 (builds on VPS — slow)"

@@ -40,6 +40,13 @@ class _ProjectSettingsCache {
     required this.retentionEnabled,
     required this.routineDays,
     required this.errorDays,
+    required this.wafVisible,
+    required this.wafStatusCodes,
+    required this.wafContentTypes,
+    required this.wafEnvironments,
+    required this.wafAppVersions,
+    required this.facetEnvironments,
+    required this.facetAppVersions,
   });
 
   final String? role;
@@ -57,6 +64,13 @@ class _ProjectSettingsCache {
   final bool retentionEnabled;
   final int routineDays;
   final int errorDays;
+  final bool wafVisible;
+  final Set<int> wafStatusCodes;
+  final Set<String> wafContentTypes;
+  final Set<String> wafEnvironments;
+  final Set<String> wafAppVersions;
+  final List<String> facetEnvironments;
+  final List<String> facetAppVersions;
 }
 
 class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
@@ -78,6 +92,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   final _ignoreCodesCtrl = TextEditingController();
   final _memberEmailCtrl = TextEditingController();
   final _memberPasswordCtrl = TextEditingController();
+  final _wafCodesCtrl = TextEditingController();
+  final _wafTypesCtrl = TextEditingController();
   Set<int> _ignoreCodes = {};
   String _networkLogScope = ProjectSdkConfig.defaultNetworkLogScope;
   Map<int, String> _faultEdits = {};
@@ -91,8 +107,16 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   String _newMemberRole = assignableProjectRoles.first;
   bool _addingMember = false;
   Map<String, dynamic> _sdkHealth = {};
+  bool _wafVisible = false;
+  Set<int> _wafStatusCodes = WafRejectConfig.defaultStatusCodes.toSet();
+  Set<String> _wafContentTypes = WafRejectConfig.defaultContentTypes.toSet();
+  Set<String> _wafEnvironments = {};
+  Set<String> _wafAppVersions = {};
+  List<String> _facetEnvironments = [];
+  List<String> _facetAppVersions = [];
 
-  String get _cacheKey => screenCacheKey('project-settings', projectId: widget.projectId);
+  String get _cacheKey =>
+      screenCacheKey('project-settings', projectId: widget.projectId);
 
   @override
   void dispose() {
@@ -102,6 +126,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _errorDaysCtrl.dispose();
     _memberEmailCtrl.dispose();
     _memberPasswordCtrl.dispose();
+    _wafCodesCtrl.dispose();
+    _wafTypesCtrl.dispose();
     super.dispose();
   }
 
@@ -132,6 +158,15 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _errorDays = cached.errorDays;
     _routineDaysCtrl.text = '$_routineDays';
     _errorDaysCtrl.text = _errorDays == 0 ? '0' : '$_errorDays';
+    _wafVisible = cached.wafVisible;
+    _wafStatusCodes = cached.wafStatusCodes;
+    _wafCodesCtrl.text = _wafStatusCodes.join(', ');
+    _wafContentTypes = cached.wafContentTypes;
+    _wafTypesCtrl.text = _wafContentTypes.join(', ');
+    _wafEnvironments = cached.wafEnvironments;
+    _wafAppVersions = cached.wafAppVersions;
+    _facetEnvironments = cached.facetEnvironments;
+    _facetAppVersions = cached.facetAppVersions;
     _hasData = true;
     _loading = false;
     _refreshing = false;
@@ -158,6 +193,13 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         retentionEnabled: _retentionEnabled,
         routineDays: _routineDays,
         errorDays: _errorDays,
+        wafVisible: _wafVisible,
+        wafStatusCodes: _wafStatusCodes,
+        wafContentTypes: _wafContentTypes,
+        wafEnvironments: _wafEnvironments,
+        wafAppVersions: _wafAppVersions,
+        facetEnvironments: _facetEnvironments,
+        facetAppVersions: _facetAppVersions,
       ),
     );
   }
@@ -179,10 +221,13 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         _api.fetchProjectSettings(widget.projectId),
         _api.fetchProjects(),
         _api.fetchSdkHealth(widget.projectId),
+        _api.fetchFilterFacets(widget.projectId,
+            period: const PeriodFilter.days(90)),
       ]);
       final settings = results[0] as Map<String, dynamic>;
       final health = results[2] as Map<String, dynamic>;
       final projects = results[1] as List<Map<String, dynamic>>;
+      final facets = results[3] as Map<String, dynamic>;
       String? role;
       for (final p in projects) {
         if (p['id'] == widget.projectId) {
@@ -194,12 +239,21 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       final remote = ProjectRemoteConfig(
         configVersion: settings['configVersion'] as int? ?? 1,
         updatedAt: settings['updatedAt'] as String? ?? '',
-        sdk: ProjectSdkConfig.fromJson(settings['sdk'] is Map ? Map<String, dynamic>.from(settings['sdk'] as Map) : null),
+        sdk: ProjectSdkConfig.fromJson(settings['sdk'] is Map
+            ? Map<String, dynamic>.from(settings['sdk'] as Map)
+            : null),
       );
       final sdk = remote.sdk.resolved();
       final retention = ProjectRetentionConfig.fromJson(
-        settings['retention'] is Map ? Map<String, dynamic>.from(settings['retention'] as Map) : null,
+        settings['retention'] is Map
+            ? Map<String, dynamic>.from(settings['retention'] as Map)
+            : null,
       );
+      final waf = WafRejectConfig.fromJson(
+        settings['waf'] is Map
+            ? Map<String, dynamic>.from(settings['waf'] as Map)
+            : null,
+      ).resolved();
       List<Map<String, dynamic>> members = [];
       final canManage = role == 'owner' || AuthService.instance.isAdmin;
       if (canManage) {
@@ -218,12 +272,29 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _ignoreCodes = sdk.networkIgnoreStatusCodes!.toSet();
           _ignoreCodesCtrl.text = _ignoreCodes.join(', ');
           _networkLogScope = sdk.networkLogScope!;
-          _faultEdits = _buildFaultEdits(sdk.networkFaultByStatusCode ?? const {});
+          _faultEdits =
+              _buildFaultEdits(sdk.networkFaultByStatusCode ?? const {});
           _retentionEnabled = retention.enabled;
           _routineDays = retention.routineDays;
           _errorDays = retention.errorDays;
           _routineDaysCtrl.text = '${retention.routineDays}';
-          _errorDaysCtrl.text = retention.errorDays == 0 ? '0' : '${retention.errorDays}';
+          _errorDaysCtrl.text =
+              retention.errorDays == 0 ? '0' : '${retention.errorDays}';
+          _wafVisible = waf.visible!;
+          _wafStatusCodes = waf.statusCodes!.toSet();
+          _wafCodesCtrl.text = _wafStatusCodes.join(', ');
+          _wafContentTypes = waf.contentTypes!.toSet();
+          _wafTypesCtrl.text = _wafContentTypes.join(', ');
+          _wafEnvironments = waf.environments!.toSet();
+          _wafAppVersions = waf.appVersions!.toSet();
+          _facetEnvironments = (facets['environments'] as List?)
+                  ?.map((e) => e.toString())
+                  .toList() ??
+              [];
+          _facetAppVersions = (facets['appVersions'] as List?)
+                  ?.map((e) => e.toString())
+                  .toList() ??
+              [];
           _sdkHealth = health;
           _hasData = true;
           _loading = false;
@@ -233,7 +304,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         _writeCache();
       }
     } catch (e) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
+      DashboardLogService.record(
+          projectId: widget.projectId, message: formatLoadError(e));
       if (mounted) {
         setState(() {
           _error = e;
@@ -255,42 +327,59 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'trackNavigation': _trackNavigation,
           'networkCaptureBodies': _networkBodies,
           'networkSlowThresholdMs': _slowThresholdMs,
-          'networkIgnoreStatusCodes': normalizeStatusCodes(_ignoreCodes.toList()),
+          'networkIgnoreStatusCodes':
+              normalizeStatusCodes(_ignoreCodes.toList()),
           'networkLogScope': normalizeNetworkLogScope(_networkLogScope),
           'networkFaultByStatusCode': _faultOverridesToSave(),
         },
         'retention': {
           'enabled': _retentionEnabled,
-          'routineDays': clampRetentionDays(int.tryParse(_routineDaysCtrl.text.trim()), defaultValue: _routineDays, max: ProjectRetentionConfig.maxRoutineDays),
+          'routineDays': clampRetentionDays(
+              int.tryParse(_routineDaysCtrl.text.trim()),
+              defaultValue: _routineDays,
+              max: ProjectRetentionConfig.maxRoutineDays),
           'errorDays': clampErrorDays(int.tryParse(_errorDaysCtrl.text.trim())),
+        },
+        'waf': {
+          'visible': _wafVisible,
+          'statusCodes': normalizeStatusCodes(_wafStatusCodes.toList()),
+          'contentTypes': normalizeContentTypes(_wafContentTypes.toList()),
+          'environments': normalizeStringList(_wafEnvironments.toList()),
+          'appVersions': normalizeStringList(_wafAppVersions.toList()),
         },
       });
       if (mounted) {
         setState(() {
-          _configVersion = settings['configVersion'] as int? ?? _configVersion + 1;
+          _configVersion =
+              settings['configVersion'] as int? ?? _configVersion + 1;
           _saving = false;
         });
         _writeCache();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Settings saved — apps pick this up on next launch or resume')),
+          const SnackBar(
+              content: Text(
+                  'Settings saved — apps pick this up on next launch or resume')),
         );
       }
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
 
   bool get _canDelete => _role == 'owner' || AuthService.instance.isAdmin;
 
-  bool get _canManageMembers => _role == 'owner' || AuthService.instance.isAdmin;
+  bool get _canManageMembers =>
+      _role == 'owner' || AuthService.instance.isAdmin;
 
   Map<int, String> _buildFaultEdits(Map<int, String> stored) {
     final codes = {...kPresetNetworkFaultCodes, ...stored.keys};
     return {
-      for (final code in codes) code: stored[code] ?? defaultNetworkFaultClassName(code),
+      for (final code in codes)
+        code: stored[code] ?? defaultNetworkFaultClassName(code),
     };
   }
 
@@ -339,19 +428,22 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _addingMember = false;
         });
         _writeCache();
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added ${member['email']}')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Added ${member['email']}')));
       }
     } catch (e) {
       if (mounted) {
         setState(() => _addingMember = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
       }
     }
   }
 
   Future<void> _updateMemberRole(String userId, String role) async {
     try {
-      final member = await _api.updateProjectMemberRole(widget.projectId, userId, role);
+      final member =
+          await _api.updateProjectMemberRole(widget.projectId, userId, role);
       if (!mounted) return;
       setState(() {
         final i = _members.indexWhere((m) => m['userId'] == userId);
@@ -359,7 +451,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       });
       _writeCache();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -370,20 +464,28 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         title: const Text('Remove team member?'),
         content: Text('${member['email']} will lose access to this project.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Remove')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove')),
         ],
       ),
     );
     if (ok != true || !mounted) return;
     try {
-      await _api.removeProjectMember(widget.projectId, member['userId'] as String);
+      await _api.removeProjectMember(
+          widget.projectId, member['userId'] as String);
       if (mounted) {
-        setState(() => _members.removeWhere((m) => m['userId'] == member['userId']));
+        setState(
+            () => _members.removeWhere((m) => m['userId'] == member['userId']));
         _writeCache();
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -393,7 +495,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       context: context,
       firstDate: DateTime(2020),
       lastDate: now,
-      initialDateRange: DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
+      initialDateRange:
+          DateTimeRange(start: now.subtract(const Duration(days: 6)), end: now),
       helpText: 'Delete data in range (UTC)',
     );
     if (range == null || !mounted) return;
@@ -414,7 +517,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'Data outside this range is kept. This cannot be undone.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
@@ -427,18 +532,23 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     setState(() => _purging = true);
     try {
       final res = await _api.purgeProjectData(widget.projectId, period: period);
-      final deleted = res['deleted'] is Map ? Map<String, dynamic>.from(res['deleted'] as Map) : <String, dynamic>{};
+      final deleted = res['deleted'] is Map
+          ? Map<String, dynamic>.from(res['deleted'] as Map)
+          : <String, dynamic>{};
       final events = deleted['deletedEvents'] ?? 0;
       if (mounted) {
         setState(() => _purging = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted $events events and related data for ${period.label()}')),
+          SnackBar(
+              content: Text(
+                  'Deleted $events events and related data for ${period.label()}')),
         );
       }
     } catch (e) {
       if (mounted) {
         setState(() => _purging = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
       }
     }
   }
@@ -453,7 +563,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'Mobile apps using this DSN will stop reporting. This cannot be undone.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: AppTheme.error),
             onPressed: () => Navigator.pop(ctx, true),
@@ -470,7 +582,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _deleting = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
   }
@@ -479,7 +592,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   Widget build(BuildContext context) {
     return AsyncScreenBody(
       loading: _loading,
-            refreshing: _refreshing,
+      refreshing: _refreshing,
       error: _error,
       onRetry: _load,
       placeholderLayout: PlaceholderLayout.settings,
@@ -489,7 +602,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
 
   Widget _buildContent(BuildContext context) {
     return ListView(
-      padding: pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
+      padding:
+          pageInsets(context, top: pagePad(context), bottom: pagePad(context)),
       children: [
         PageHeader(
           title: 'Project settings',
@@ -498,7 +612,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             FilledButton.icon(
               onPressed: _saving ? null : _save,
               icon: _saving
-                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
                   : const Icon(Icons.save_outlined, size: 18),
               label: const Text('Save'),
             ),
@@ -512,7 +630,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Team access', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                  const Text('Team access',
+                      style:
+                          TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                   const SizedBox(height: 6),
                   const Text(
                     'Invite dashboard users with email and password. Existing accounts are linked without changing their password.',
@@ -522,7 +642,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                   TextField(
                     controller: _memberEmailCtrl,
                     keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'Email', hintText: 'qa@company.com'),
+                    decoration: const InputDecoration(
+                        labelText: 'Email', hintText: 'qa@company.com'),
                   ),
                   const SizedBox(height: 12),
                   TextField(
@@ -539,9 +660,13 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     decoration: const InputDecoration(labelText: 'Role'),
                     items: [
                       for (final role in assignableProjectRoles)
-                        DropdownMenuItem(value: role, child: Text(projectRoleLabel(role))),
+                        DropdownMenuItem(
+                            value: role, child: Text(projectRoleLabel(role))),
                     ],
-                    onChanged: _addingMember ? null : (v) => setState(() => _newMemberRole = v ?? _newMemberRole),
+                    onChanged: _addingMember
+                        ? null
+                        : (v) => setState(
+                            () => _newMemberRole = v ?? _newMemberRole),
                   ),
                   const SizedBox(height: 16),
                   Align(
@@ -549,7 +674,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     child: FilledButton.icon(
                       onPressed: _addingMember ? null : _addMember,
                       icon: _addingMember
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
                           : const Icon(Icons.person_add_outlined, size: 18),
                       label: const Text('Add member'),
                     ),
@@ -564,30 +693,45 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                         leading: CircleAvatar(
                           backgroundColor: AppTheme.primarySoft,
                           child: Text(
-                            ((member['email'] as String?) ?? '?')[0].toUpperCase(),
-                            style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700),
+                            ((member['email'] as String?) ?? '?')[0]
+                                .toUpperCase(),
+                            style: const TextStyle(
+                                color: AppTheme.primary,
+                                fontWeight: FontWeight.w700),
                           ),
                         ),
-                        title: Text(member['email'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: Text(projectRoleLabel(member['role'] as String? ?? '')),
+                        title: Text(member['email'] as String? ?? '',
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                            projectRoleLabel(member['role'] as String? ?? '')),
                         trailing: member['role'] == 'owner'
                             ? const Chip(label: Text('Owner'))
                             : Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   DropdownButton<String>(
-                                    value: assignableProjectRoles.contains(member['role']) ? member['role'] as String : assignableProjectRoles.first,
+                                    value: assignableProjectRoles
+                                            .contains(member['role'])
+                                        ? member['role'] as String
+                                        : assignableProjectRoles.first,
                                     underline: const SizedBox.shrink(),
                                     items: [
                                       for (final role in assignableProjectRoles)
-                                        DropdownMenuItem(value: role, child: Text(projectRoleLabel(role))),
+                                        DropdownMenuItem(
+                                            value: role,
+                                            child:
+                                                Text(projectRoleLabel(role))),
                                     ],
                                     onChanged: (role) {
-                                      if (role != null) _updateMemberRole(member['userId'] as String, role);
+                                      if (role != null)
+                                        _updateMemberRole(
+                                            member['userId'] as String, role);
                                     },
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.delete_outline, color: AppTheme.error),
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: AppTheme.error),
                                     tooltip: 'Remove',
                                     onPressed: () => _removeMember(member),
                                   ),
@@ -608,8 +752,173 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Network error categories', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('WAF rejects',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'Detect edge / WAF block pages (HTML body with status like 200 when APIs should return JSON). '
+                'Shown under WAF rejects in the sidebar when enabled.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Show WAF rejects page'),
+                subtitle: const Text(
+                    'Adds a sidebar item for matching network events'),
+                value: _wafVisible,
+                onChanged: (v) => setState(() => _wafVisible = v),
+              ),
+              const SizedBox(height: 8),
+              const Text('Status codes',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Only responses with these HTTP codes are considered. Comma-separated.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _wafCodesCtrl,
+                decoration: const InputDecoration(hintText: '200, 403, 406'),
+                keyboardType: TextInputType.number,
+                onChanged: (v) => setState(() {
+                  _wafStatusCodes = normalizeStatusCodes(v
+                          .split(RegExp(r'[,\s]+'))
+                          .where((s) => s.isNotEmpty)
+                          .toList())
+                      .toSet();
+                }),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final code in const [200, 403, 406, 501])
+                    ActionChip(
+                      label: Text('$code'),
+                      onPressed: () => setState(() {
+                        _wafStatusCodes.add(code);
+                        _wafCodesCtrl.text =
+                            normalizeStatusCodes(_wafStatusCodes.toList())
+                                .join(', ');
+                      }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('Response content types',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Match when Content-Type is one of these (e.g. text/html instead of application/json).',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _wafTypesCtrl,
+                decoration: const InputDecoration(hintText: 'text/html'),
+                onChanged: (v) => setState(() {
+                  _wafContentTypes = normalizeContentTypes(v
+                          .split(RegExp(r'[,\s]+'))
+                          .where((s) => s.isNotEmpty)
+                          .toList())
+                      .toSet();
+                }),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final t in const [
+                    'text/html',
+                    'text/plain',
+                    'application/xhtml+xml'
+                  ])
+                    ActionChip(
+                      label: Text(t),
+                      onPressed: () => setState(() {
+                        _wafContentTypes.add(t);
+                        _wafTypesCtrl.text =
+                            normalizeContentTypes(_wafContentTypes.toList())
+                                .join(', ');
+                      }),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('Environments',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Limit the WAF list to these environments. Leave none selected for all.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final env in _facetEnvironments)
+                    FilterChip(
+                      label: Text(env),
+                      selected: _wafEnvironments.contains(env),
+                      onSelected: (on) => setState(() {
+                        if (on) {
+                          _wafEnvironments.add(env);
+                        } else {
+                          _wafEnvironments.remove(env);
+                        }
+                      }),
+                    ),
+                  if (_facetEnvironments.isEmpty)
+                    const Text('No environments in recent events',
+                        style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('App versions',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              const Text(
+                'Limit the WAF list to these app versions. Leave none selected for all.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final ver in _facetAppVersions)
+                    FilterChip(
+                      label: Text(ver),
+                      selected: _wafAppVersions.contains(ver),
+                      onSelected: (on) => setState(() {
+                        if (on) {
+                          _wafAppVersions.add(ver);
+                        } else {
+                          _wafAppVersions.remove(ver);
+                        }
+                      }),
+                    ),
+                  if (_facetAppVersions.isEmpty)
+                    const Text('No app versions in recent events',
+                        style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+                ],
+              ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Network error categories',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
               const Text(
                 'Map HTTP status codes to Critical, User, Auth, or Success. Affects issue grouping and fault badges on network events.',
@@ -621,15 +930,25 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                   padding: const EdgeInsets.only(bottom: 8),
                   child: Row(
                     children: [
-                      SizedBox(width: 72, child: Text('HTTP $code', style: const TextStyle(fontWeight: FontWeight.w600))),
+                      SizedBox(
+                          width: 72,
+                          child: Text('HTTP $code',
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w600))),
                       const SizedBox(width: 12),
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           value: _faultEdits[code],
-                          decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
+                          decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 8)),
                           items: [
-                            for (final cls in NetworkFaultInfo.editableFaultClasses)
-                              DropdownMenuItem(value: cls.name, child: Text(_faultClassLabel(cls.name))),
+                            for (final cls
+                                in NetworkFaultInfo.editableFaultClasses)
+                              DropdownMenuItem(
+                                  value: cls.name,
+                                  child: Text(_faultClassLabel(cls.name))),
                           ],
                           onChanged: (v) {
                             if (v == null) return;
@@ -640,7 +959,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                       if (!kPresetNetworkFaultCodes.contains(code))
                         IconButton(
                           tooltip: 'Remove',
-                          onPressed: () => setState(() => _faultEdits.remove(code)),
+                          onPressed: () =>
+                              setState(() => _faultEdits.remove(code)),
                           icon: const Icon(Icons.close, size: 18),
                         ),
                     ],
@@ -654,15 +974,18 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     child: TextField(
                       controller: _newFaultCodeCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(hintText: '418', isDense: true),
+                      decoration:
+                          const InputDecoration(hintText: '418', isDense: true),
                       onSubmitted: (_) => _addFaultCode(),
                     ),
                   ),
                   const SizedBox(width: 8),
-                  OutlinedButton(onPressed: _addFaultCode, child: const Text('Add code')),
+                  OutlinedButton(
+                      onPressed: _addFaultCode, child: const Text('Add code')),
                   const Spacer(),
                   TextButton(
-                    onPressed: () => setState(() => _faultEdits = _buildFaultEdits(const {})),
+                    onPressed: () => setState(
+                        () => _faultEdits = _buildFaultEdits(const {})),
                     child: const Text('Reset defaults'),
                   ),
                 ],
@@ -674,10 +997,14 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('SDK — Log levels', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('SDK — Log levels',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
-              const Text('Events below unchecked levels are dropped in the app before upload.', style: TextStyle(color: AppTheme.muted, fontSize: 13)),
+              const Text(
+                  'Events below unchecked levels are dropped in the app before upload.',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 13)),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
@@ -704,13 +1031,16 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('SDK — Capture', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('SDK — Capture',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Auto error & crash hooks'),
-                subtitle: const Text('FlutterError.onError and platform dispatcher crashes'),
+                subtitle: const Text(
+                    'FlutterError.onError and platform dispatcher crashes'),
                 value: _flutterHooks,
                 onChanged: (v) => setState(() => _flutterHooks = v),
               ),
@@ -724,12 +1054,14 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 title: const Text('Network response bodies'),
-                subtitle: const Text('Include request/response bodies in network events'),
+                subtitle: const Text(
+                    'Include request/response bodies in network events'),
                 value: _networkBodies,
                 onChanged: (v) => setState(() => _networkBodies = v),
               ),
               const SizedBox(height: 8),
-              Text('Slow request threshold (${_slowThresholdMs}ms)', style: const TextStyle(fontWeight: FontWeight.w600)),
+              Text('Slow request threshold (${_slowThresholdMs}ms)',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
               Slider(
                 value: _slowThresholdMs.toDouble(),
                 min: 500,
@@ -739,7 +1071,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 onChanged: (v) => setState(() => _slowThresholdMs = v.round()),
               ),
               const SizedBox(height: 16),
-              const Text('Network log scope', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text('Network log scope',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               const Text(
                 'Which HTTP calls the SDK uploads. Errors are always 4xx/5xx and Dio failures.',
@@ -753,10 +1086,12 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                   ButtonSegment(value: 'slowOnly', label: Text('Slow')),
                 ],
                 selected: {_networkLogScope},
-                onSelectionChanged: (v) => setState(() => _networkLogScope = v.first),
+                onSelectionChanged: (v) =>
+                    setState(() => _networkLogScope = v.first),
               ),
               const SizedBox(height: 16),
-              const Text('Ignore HTTP status codes', style: TextStyle(fontWeight: FontWeight.w600)),
+              const Text('Ignore HTTP status codes',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 4),
               const Text(
                 'Matching responses are not logged (e.g. 401 on auth refresh). Comma-separated.',
@@ -768,7 +1103,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 decoration: const InputDecoration(hintText: '401, 403, 404'),
                 keyboardType: TextInputType.number,
                 onChanged: (v) => setState(() {
-                  _ignoreCodes = normalizeStatusCodes(v.split(RegExp(r'[,\s]+')).where((s) => s.isNotEmpty).toList()).toSet();
+                  _ignoreCodes = normalizeStatusCodes(v
+                          .split(RegExp(r'[,\s]+'))
+                          .where((s) => s.isNotEmpty)
+                          .toList())
+                      .toSet();
                 }),
               ),
               const SizedBox(height: 8),
@@ -780,7 +1119,9 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                       label: Text('$code'),
                       onPressed: () => setState(() {
                         _ignoreCodes.add(code);
-                        _ignoreCodesCtrl.text = normalizeStatusCodes(_ignoreCodes.toList()).join(', ');
+                        _ignoreCodesCtrl.text =
+                            normalizeStatusCodes(_ignoreCodes.toList())
+                                .join(', ');
                       }),
                     ),
                 ],
@@ -792,8 +1133,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Data retention', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Data retention',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
               const SizedBox(height: 6),
               const Text(
                 'Delete raw event payloads after N days. Daily counts and issue totals are kept forever.',
@@ -843,32 +1186,49 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
             color: AppTheme.error.withValues(alpha: 0.04),
             child: Padding(
               padding: const EdgeInsets.all(20),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Danger zone', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: AppTheme.error)),
-                const SizedBox(height: 8),
-                const Text(
-                  'Delete events in a date range to start over, or remove the entire project.',
-                  style: TextStyle(color: AppTheme.muted, fontSize: 13),
-                ),
-                const SizedBox(height: 16),
-                OutlinedButton.icon(
-                  onPressed: _purging ? null : _confirmPurgeData,
-                  icon: _purging
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.date_range, color: AppTheme.error),
-                  label: const Text('Delete data in date range…', style: TextStyle(color: AppTheme.error)),
-                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.error)),
-                ),
-                const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: _deleting ? null : _confirmDelete,
-                  icon: _deleting
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.delete_outline, color: AppTheme.error),
-                  label: const Text('Delete project', style: TextStyle(color: AppTheme.error)),
-                  style: OutlinedButton.styleFrom(side: const BorderSide(color: AppTheme.error)),
-                ),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Danger zone',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                            color: AppTheme.error)),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Delete events in a date range to start over, or remove the entire project.',
+                      style: TextStyle(color: AppTheme.muted, fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    OutlinedButton.icon(
+                      onPressed: _purging ? null : _confirmPurgeData,
+                      icon: _purging
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.date_range, color: AppTheme.error),
+                      label: const Text('Delete data in date range…',
+                          style: TextStyle(color: AppTheme.error)),
+                      style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppTheme.error)),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: _deleting ? null : _confirmDelete,
+                      icon: _deleting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.delete_outline,
+                              color: AppTheme.error),
+                      label: const Text('Delete project',
+                          style: TextStyle(color: AppTheme.error)),
+                      style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppTheme.error)),
+                    ),
+                  ]),
             ),
           ),
         ],

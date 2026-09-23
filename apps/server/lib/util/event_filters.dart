@@ -308,3 +308,129 @@ bool isSuccessEvent(String type, Map<String, dynamic> payload) {
   if (code == null) return false;
   return code < 400;
 }
+
+/// Best-effort Content-Type from network payload (headers map or flat fields).
+String sqlNetworkContentType({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return '''
+LOWER(SPLIT_PART(TRIM(BOTH FROM COALESCE(
+  NULLIF(${p}payload->'network'->'response'->'headers'->>'content-type', ''),
+  NULLIF(${p}payload->'network'->'response'->'headers'->>'Content-Type', ''),
+  NULLIF(${p}payload->'network'->'response'->>'contentType', ''),
+  NULLIF(${p}payload->'network'->'response'->>'content-type', ''),
+  NULLIF(${p}payload->'network'->>'contentType', ''),
+  NULLIF(${p}payload->'network'->>'content-type', ''),
+  ''
+)), ';', 1))''';
+}
+
+String sqlNetworkResponseBody({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return '''
+COALESCE(
+  ${p}payload->'network'->'response'->>'body',
+  ${p}payload->'network'->>'responseBody',
+  ''
+)''';
+}
+
+String _sqlIntList(List<int> codes) => codes.join(', ');
+
+String _sqlTextList(List<String> values) =>
+    values.map((v) => "'${v.replaceAll("'", "''")}'").join(', ');
+
+/// Network events that look like WAF / edge HTML block pages.
+String sqlIsWafRejectEvent({
+  String alias = '',
+  required List<int> statusCodes,
+  required List<String> contentTypes,
+}) {
+  if (statusCodes.isEmpty || contentTypes.isEmpty) return 'FALSE';
+  final p = alias.isEmpty ? '' : '$alias.';
+  final ct = sqlNetworkContentType(alias: alias);
+  final body = sqlNetworkResponseBody(alias: alias);
+  final codes = _sqlIntList(statusCodes);
+  final types = _sqlTextList(contentTypes.map((e) => e.toLowerCase()).toList());
+  return '''
+(
+  ${p}type = 'network'
+  AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
+  AND (${p}payload->'network'->>'statusCode')::int IN ($codes)
+  AND (
+    (
+      $ct <> ''
+      AND $ct IN ($types)
+    )
+    OR (
+      $ct = ''
+      AND $body ~* '(<html|request rejected|cf-ray|attention required|access denied)'
+    )
+  )
+)''';
+}
+
+/// Optional multi-value env / version filters from WAF project settings.
+/// Empty lists mean “all”.
+String sqlWafSettingsFacets({
+  String alias = '',
+  List<String> environments = const [],
+  List<String> appVersions = const [],
+}) {
+  final parts = <String>[];
+  if (environments.isNotEmpty) {
+    parts.add('${sqlEnvironmentExpr(alias: alias)} IN (${_sqlTextList(environments)})');
+  }
+  if (appVersions.isNotEmpty) {
+    parts.add('${sqlAppVersionExpr(alias: alias)} IN (${_sqlTextList(appVersions)})');
+  }
+  if (parts.isEmpty) return '';
+  return parts.map((p) => 'AND $p').join('\n          ');
+}
+
+bool isWafRejectEvent(
+  String type,
+  Map<String, dynamic> payload, {
+  required List<int> statusCodes,
+  required List<String> contentTypes,
+}) {
+  if (type != 'network' || statusCodes.isEmpty || contentTypes.isEmpty) return false;
+  final network = payload['network'];
+  if (network is! Map) return false;
+  final code = int.tryParse('${network['statusCode'] ?? ''}');
+  if (code == null || !statusCodes.contains(code)) return false;
+
+  final response = network['response'] is Map ? Map<String, dynamic>.from(network['response'] as Map) : <String, dynamic>{};
+  final headers = response['headers'] is Map ? Map<String, dynamic>.from(response['headers'] as Map) : <String, dynamic>{};
+  String? rawCt;
+  for (final key in ['content-type', 'Content-Type', 'contentType']) {
+    rawCt ??= headers[key]?.toString() ?? response[key]?.toString() ?? network[key]?.toString();
+  }
+  final ct = (rawCt ?? '').split(';').first.trim().toLowerCase();
+  final types = contentTypes.map((e) => e.toLowerCase()).toList();
+  if (ct.isNotEmpty) return types.contains(ct);
+  final body = '${response['body'] ?? network['responseBody'] ?? ''}';
+  return RegExp(r'(<html|request rejected|cf-ray|attention required|access denied)', caseSensitive: false)
+      .hasMatch(body);
+}
+
+/// Pull support / ray / request id from WAF HTML body or CF-Ray header.
+String? extractWafRequestId(String? html, {String? headerRay}) {
+  final body = html ?? '';
+  final patterns = <RegExp>[
+    RegExp(r'support\s*ID\s*is\s*[:\s]*([A-Za-z0-9_-]+)', caseSensitive: false),
+    RegExp(r'request\s*ID\s*[:\s#]*([A-Za-z0-9_-]+)', caseSensitive: false),
+    RegExp(r'ray\s*ID\s*[:\s]*([A-Za-z0-9_-]+)', caseSensitive: false),
+    RegExp(r'cf-ray["\s:=]+([A-Za-z0-9_-]+)', caseSensitive: false),
+    RegExp(r'incident\s*ID\s*[:\s]*([A-Za-z0-9_-]+)', caseSensitive: false),
+  ];
+  for (final re in patterns) {
+    final m = re.firstMatch(body);
+    if (m != null) {
+      final id = m.group(1)?.trim();
+      if (id != null && id.isNotEmpty) return id;
+    }
+  }
+  final ray = headerRay?.trim();
+  if (ray != null && ray.isNotEmpty) return ray;
+  return null;
+}

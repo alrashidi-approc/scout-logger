@@ -1633,15 +1633,39 @@ class ScoutStore {
     final grouped = normalizedView == 'grouped' && (groupKey == null || groupKey.isEmpty);
     final focus = normalizedView == 'focus' && (groupKey == null || groupKey.isEmpty);
     final groupKeyExpr = sqlEventGroupKey();
+    final isWaf = kind == 'waf';
+
+    List<int> wafCodes = const [];
+    List<String> wafTypes = const [];
+    List<String> wafEnvs = const [];
+    List<String> wafVers = const [];
+    if (isWaf) {
+      final settingsRows = await conn.execute(
+        Sql.named('SELECT settings FROM projects WHERE id = @id'),
+        parameters: {'id': projectId},
+      );
+      final raw = settingsRows.isEmpty ? null : settingsRows.first[0];
+      final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+      final waf = WafRejectConfig.fromJson(
+        settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null,
+      ).resolved();
+      wafCodes = List<int>.from(waf.statusCodes ?? const []);
+      wafTypes = List<String>.from(waf.contentTypes ?? const []);
+      wafEnvs = List<String>.from(waf.environments ?? const []);
+      wafVers = List<String>.from(waf.appVersions ?? const []);
+    }
+
     final filters = '''
         FROM events WHERE project_id = @pid
           AND $sqlHideSessionHeartbeat
-          ${focus ? 'AND $sqlFocusWorthyEvent' : ''}
+          ${focus && !isWaf ? 'AND $sqlFocusWorthyEvent' : ''}
           AND (
             @kind::text IS NULL
             OR (@kind::text = 'errors' AND ${sqlIsErrorEvent()})
-            OR (@kind::text <> 'errors' AND type = @kind::text)
+            OR (@kind::text = 'waf' AND ${sqlIsWafRejectEvent(statusCodes: wafCodes, contentTypes: wafTypes)})
+            OR (@kind::text <> 'errors' AND @kind::text <> 'waf' AND type = @kind::text)
           )
+          ${isWaf ? sqlWafSettingsFacets(environments: wafEnvs, appVersions: wafVers) : ''}
           AND (
             @level::text IS NULL
             OR LOWER(COALESCE(NULLIF(payload->>'level', ''),
@@ -1784,6 +1808,110 @@ class ScoutStore {
       'limit': lim,
       'offset': off,
       'hasMore': off + events.length < total,
+    };
+  }
+
+  /// WAF rejects with curl + response body for branded PDF export (max 500).
+  Future<Map<String, dynamic>> listWafExport(
+    String projectId, {
+    String? q,
+    String? environment,
+    String? appVersion,
+    TimeWindow? window,
+    int limit = 500,
+  }) async {
+    final conn = await db.connect();
+    final project = await fetchProjectById(projectId);
+    if (project == null) throw ArgumentError('Project not found');
+
+    final w = window ?? TimeWindow.lastDays(30);
+    final lim = limit.clamp(1, 500);
+
+    final settingsRows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id'),
+      parameters: {'id': projectId},
+    );
+    final raw = settingsRows.isEmpty ? null : settingsRows.first[0];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final waf = WafRejectConfig.fromJson(
+      settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null,
+    ).resolved();
+    final wafCodes = List<int>.from(waf.statusCodes ?? const []);
+    final wafTypes = List<String>.from(waf.contentTypes ?? const []);
+    final wafEnvs = List<String>.from(waf.environments ?? const []);
+    final wafVers = List<String>.from(waf.appVersions ?? const []);
+
+    final filters = '''
+        FROM events WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          AND ${sqlIsWafRejectEvent(statusCodes: wafCodes, contentTypes: wafTypes)}
+          ${sqlWafSettingsFacets(environments: wafEnvs, appVersions: wafVers)}
+          AND (
+            @q::text IS NULL
+            OR message ILIKE '%' || @q::text || '%'
+            OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
+            OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
+          )
+          ${sqlEventFacetFilters(applyDevice: false)}
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+    ''';
+    final params = {
+      'pid': projectId,
+      'q': q,
+      'env': environment,
+      'ver': appVersion,
+      ...timeParams(w),
+    };
+
+    final total = (await conn.execute(Sql.named('SELECT COUNT(*)::int $filters'), parameters: params)).first[0] as int;
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, occurred_at,
+               COALESCE(payload->'network'->>'url', payload->'network'->>'path', '') AS url,
+               payload->'network'->>'statusCode' AS status_code,
+               payload->'network'->>'curl' AS curl,
+               COALESCE(
+                 payload->'network'->'response'->>'body',
+                 payload->'network'->>'responseBody',
+                 ''
+               ) AS response_body,
+               COALESCE(
+                 payload->'network'->'response'->'headers'->>'cf-ray',
+                 payload->'network'->'response'->'headers'->>'CF-Ray',
+                 payload->'network'->>'traceId',
+                 ''
+               ) AS header_ray
+        $filters
+        ORDER BY occurred_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {...params, 'lim': lim},
+    );
+
+    final events = rows.map((r) {
+      final body = r[5]?.toString() ?? '';
+      final headerRay = r[6]?.toString() ?? '';
+      return {
+        'id': r[0],
+        'occurredAt': (r[1] as DateTime).toUtc().toIso8601String(),
+        'url': r[2]?.toString() ?? '',
+        'statusCode': r[3]?.toString(),
+        'curl': r[4]?.toString() ?? '',
+        'responseBody': body.length > 8000 ? body.substring(0, 8000) : body,
+        'requestId': extractWafRequestId(body, headerRay: headerRay.isEmpty ? null : headerRay),
+      };
+    }).toList();
+
+    return {
+      'projectId': projectId,
+      'projectName': project['name'] ?? projectId,
+      'from': w.since,
+      'to': w.until,
+      'total': total,
+      'exported': events.length,
+      'events': events,
+      'waf': waf.toJson(),
     };
   }
 
@@ -2177,13 +2305,27 @@ class ScoutStore {
     final raw = rows.first[0];
     final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     final remote = ProjectRemoteConfig.fromSettings(settings);
+    final waf = WafRejectConfig.fromJson(
+      settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null,
+    );
     return {
       ...remote.toClientResponse(),
       'retention': retentionFromSettings(settings).toClientJson(),
+      'waf': waf.resolved().toJson(),
     };
   }
 
-  Future<Map<String, dynamic>> getClientConfig(String projectId) async => getProjectSettings(projectId);
+  Future<Map<String, dynamic>> getClientConfig(String projectId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT settings FROM projects WHERE id = @id'),
+      parameters: {'id': projectId},
+    );
+    if (rows.isEmpty) throw ArgumentError('Project not found');
+    final raw = rows.first[0];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    return ProjectRemoteConfig.fromSettings(settings).toClientResponse();
+  }
 
   Future<int> getConfigVersion(String projectId) async {
     final conn = await db.connect();
@@ -2203,25 +2345,37 @@ class ScoutStore {
     );
     if (rows.isEmpty) throw ArgumentError('Project not found');
     final raw = rows.first[0];
-    final current = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
-    final prev = ProjectRemoteConfig.fromSettings(current);
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final prev = ProjectRemoteConfig.fromSettings(settings);
+
     final retentionPatch = patch['retention'];
     final retention = retentionPatch is Map
-        ? retentionFromSettings(current).mergePatch(Map<String, dynamic>.from(retentionPatch))
-        : retentionFromSettings(current);
-    ProjectRemoteConfig next = prev;
-    if (patch.containsKey('sdk')) {
-      final merged = prev.sdk.mergePatch(patch);
+        ? retentionFromSettings(settings).mergePatch(Map<String, dynamic>.from(retentionPatch))
+        : retentionFromSettings(settings);
+
+    final prevWaf = WafRejectConfig.fromJson(
+      settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null,
+    );
+    var waf = prevWaf;
+    if (patch['waf'] is Map) {
+      waf = prevWaf.mergePatch(Map<String, dynamic>.from(patch['waf'] as Map));
+    }
+
+    var next = prev;
+    if (patch.containsKey('sdk') || patch.containsKey('retention') || patch.containsKey('waf')) {
       next = ProjectRemoteConfig(
         configVersion: prev.configVersion + 1,
         updatedAt: DateTime.now().toUtc().toIso8601String(),
-        sdk: merged,
+        sdk: patch.containsKey('sdk') ? prev.sdk.mergePatch(patch) : prev.sdk,
       );
     }
-    final settings = {
-      ...next.toSettingsJson(),
-      'retention': retention.toJson(),
-    };
+
+    settings['configVersion'] = next.configVersion;
+    settings['updatedAt'] = next.updatedAt;
+    settings['sdk'] = next.sdk.toJson();
+    settings['retention'] = retention.toJson();
+    settings['waf'] = waf.resolved().toJson();
+
     await conn.execute(
       Sql.named('UPDATE projects SET settings = @settings::jsonb WHERE id = @id'),
       parameters: {'id': projectId, 'settings': jsonEncode(settings)},
@@ -2229,6 +2383,7 @@ class ScoutStore {
     return {
       ...next.toClientResponse(),
       'retention': retention.toClientJson(),
+      'waf': waf.resolved().toJson(),
     };
   }
 

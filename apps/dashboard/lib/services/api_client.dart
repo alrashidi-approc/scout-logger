@@ -458,6 +458,27 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['settings']);
   }
 
+  Future<Map<String, dynamic>> fetchWafExport(
+    String projectId, {
+    PeriodFilter? period,
+    String? q,
+    String? environment,
+    String? appVersion,
+    int limit = 500,
+  }) async {
+    final params = <String, String>{
+      ...(period ?? const PeriodFilter.days(30)).toQuery(),
+      'limit': '$limit',
+    };
+    if (q != null && q.isNotEmpty) params['q'] = q;
+    if (environment != null) params['environment'] = environment;
+    if (appVersion != null) params['appVersion'] = appVersion;
+    final uri = _uri('/api/projects/$projectId/waf/export').replace(queryParameters: params);
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
   Future<Map<String, dynamic>> updateProjectSettings(String projectId, Map<String, dynamic> body) async {
     final res = await _client.patch(
       _uri('/api/projects/$projectId/settings'),
