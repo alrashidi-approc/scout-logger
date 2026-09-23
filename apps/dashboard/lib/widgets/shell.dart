@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:scout_models/scout_models.dart';
 import 'package:url_launcher/link.dart';
 
 import '../services/dashboard_scope.dart';
@@ -27,22 +28,25 @@ class _DashboardShellState extends State<DashboardShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _pageBucket = PageStorageBucket();
   String? _projectName;
+  bool _wafVisible = true;
+  String? _lastPath;
 
-  static const _navItems = [
-    (Icons.dashboard_outlined, Icons.dashboard, 'Overview'),
-    (Icons.people_outline, Icons.people, 'Logged-in users'),
-    (Icons.devices_outlined, Icons.devices, 'Devices'),
-    (Icons.play_circle_outline, Icons.play_circle, 'Sessions'),
-    (Icons.insights_outlined, Icons.insights, 'Analytics'),
-    (Icons.bug_report_outlined, Icons.bug_report, 'Issues'),
-    (Icons.list_alt_outlined, Icons.list_alt, 'Events'),
-    (Icons.public_outlined, Icons.public, 'Geography'),
-    (Icons.terminal_outlined, Icons.terminal, 'UI errors'),
-    (Icons.description_outlined, Icons.description, 'Reports'),
-    (Icons.monitor_heart_outlined, Icons.monitor_heart, 'Server health'),
-    (Icons.notifications_outlined, Icons.notifications, 'Notifications'),
-    (Icons.tune_outlined, Icons.tune, 'Settings'),
-  ];
+  List<(IconData, IconData, String, String)> _navItems() => [
+        (Icons.dashboard_outlined, Icons.dashboard, 'Overview', ''),
+        (Icons.people_outline, Icons.people, 'Logged-in users', '/users'),
+        (Icons.devices_outlined, Icons.devices, 'Devices', '/devices'),
+        (Icons.play_circle_outline, Icons.play_circle, 'Sessions', '/sessions'),
+        (Icons.insights_outlined, Icons.insights, 'Analytics', '/analytics'),
+        (Icons.bug_report_outlined, Icons.bug_report, 'Issues', '/issues'),
+        (Icons.list_alt_outlined, Icons.list_alt, 'Events', '/events'),
+        if (_wafVisible) (Icons.security_outlined, Icons.security, 'WAF rejects', '/waf'),
+        (Icons.public_outlined, Icons.public, 'Geography', '/geo'),
+        (Icons.terminal_outlined, Icons.terminal, 'UI errors', '/logs'),
+        (Icons.description_outlined, Icons.description, 'Reports', '/reports'),
+        (Icons.monitor_heart_outlined, Icons.monitor_heart, 'Server health', '/health-check'),
+        (Icons.notifications_outlined, Icons.notifications, 'Notifications', '/notifications'),
+        (Icons.tune_outlined, Icons.tune, 'Settings', '/settings'),
+      ];
 
   @override
   void initState() {
@@ -59,11 +63,21 @@ class _DashboardShellState extends State<DashboardShell> {
   Future<void> _loadProject() async {
     final id = widget.projectId;
     if (id == null) {
-      if (mounted) setState(() => _projectName = null);
+      if (mounted) {
+        setState(() {
+          _projectName = null;
+          _wafVisible = false;
+        });
+      }
       return;
     }
     try {
-      final projects = await _api.fetchProjects();
+      final results = await Future.wait([
+        _api.fetchProjects(),
+        _api.fetchProjectSettings(id),
+      ]);
+      final projects = results[0] as List<Map<String, dynamic>>;
+      final settings = results[1] as Map<String, dynamic>;
       String? name;
       for (final p in projects) {
         if (p['id'] == id) {
@@ -71,51 +85,53 @@ class _DashboardShellState extends State<DashboardShell> {
           break;
         }
       }
-      if (mounted) setState(() => _projectName = name ?? id);
+      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
+      if (mounted) {
+        setState(() {
+          _projectName = name ?? id;
+          _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!;
+        });
+      }
     } catch (_) {
-      if (mounted) setState(() => _projectName = id);
+      if (mounted) {
+        setState(() {
+          _projectName = id;
+          _wafVisible = true;
+        });
+      }
     }
+  }
+
+  Future<void> _refreshWafVisible() async {
+    final id = widget.projectId;
+    if (id == null) return;
+    try {
+      final settings = await _api.fetchProjectSettings(id);
+      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
+      if (mounted) setState(() => _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!);
+    } catch (_) {}
   }
 
   int _selectedIndex(BuildContext context) {
     final path = GoRouterState.of(context).uri.path;
     if (widget.projectId == null) return 0;
-    if (path.contains('/stats')) return 0;
-    if (path.contains('/users')) return 1;
-    if (path.contains('/devices')) return 2;
-    if (path.contains('/sessions')) return 3;
-    if (path.contains('/analytics')) return 4;
-    if (path.contains('/issues')) return 5;
-    if (path.contains('/events')) return 6;
-    if (path.contains('/geo')) return 7;
-    if (path.contains('/logs')) return 8;
-    if (path.contains('/reports')) return 9;
-    if (path.contains('/health-check')) return 10;
-    if (path.contains('/notifications')) return 11;
-    if (path.contains('/settings')) return 12;
+    final items = _navItems();
+    for (var i = items.length - 1; i >= 0; i--) {
+      final suffix = items[i].$4;
+      if (suffix.isEmpty) continue;
+      if (path.contains(suffix)) return i;
+    }
     return 0;
   }
 
   String _locationFor(int i, BuildContext context) {
     final id = widget.projectId;
-    final periodQ = PeriodFilter.queryFromUri(
-        GoRouterState.of(context).uri.queryParameters);
-    final path = switch (i) {
-      0 => id == null ? '/projects' : '/p/$id',
-      1 => '/p/$id/users',
-      2 => '/p/$id/devices',
-      3 => '/p/$id/sessions',
-      4 => '/p/$id/analytics',
-      5 => '/p/$id/issues',
-      6 => '/p/$id/events',
-      7 => '/p/$id/geo',
-      8 => '/p/$id/logs',
-      9 => '/p/$id/reports',
-      10 => '/p/$id/health-check',
-      11 => '/p/$id/notifications',
-      12 => '/p/$id/settings',
-      _ => '/projects',
-    };
+    final periodQ = PeriodFilter.queryFromUri(GoRouterState.of(context).uri.queryParameters);
+    if (id == null) return '/projects';
+    final items = _navItems();
+    if (i < 0 || i >= items.length) return '/projects';
+    final suffix = items[i].$4;
+    final path = suffix.isEmpty ? '/p/$id' : '/p/$id$suffix';
     return Uri(path: path, queryParameters: periodQ).toString();
   }
 
@@ -127,8 +143,7 @@ class _DashboardShellState extends State<DashboardShell> {
     }
   }
 
-  Widget _sidebarNav(BuildContext context,
-      {required bool extended, required int selected}) {
+  Widget _sidebarNav(BuildContext context, {required bool extended, required int selected}) {
     if (widget.projectId == null) {
       final path = GoRouterState.of(context).uri.path;
       final onAlerts = path.startsWith('/alerts');
@@ -157,12 +172,12 @@ class _DashboardShellState extends State<DashboardShell> {
       );
     }
 
+    final items = _navItems();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding:
-              EdgeInsets.fromLTRB(extended ? 16 : 12, 0, extended ? 16 : 12, 8),
+          padding: EdgeInsets.fromLTRB(extended ? 16 : 12, 0, extended ? 16 : 12, 8),
           child: Text(
             'MONITORING',
             style: TextStyle(
@@ -173,11 +188,11 @@ class _DashboardShellState extends State<DashboardShell> {
             ),
           ),
         ),
-        for (var i = 0; i < _navItems.length; i++)
+        for (var i = 0; i < items.length; i++)
           _NavTile(
-            icon: _navItems[i].$1,
-            activeIcon: _navItems[i].$2,
-            label: _navItems[i].$3,
+            icon: items[i].$1,
+            activeIcon: items[i].$2,
+            label: items[i].$3,
             selected: selected == i,
             extended: extended,
             location: _locationFor(i, context),
@@ -244,7 +259,12 @@ class _DashboardShellState extends State<DashboardShell> {
   @override
   Widget build(BuildContext context) {
     DashboardScope.projectId = widget.projectId;
-    DashboardScope.route = GoRouterState.of(context).uri.path;
+    final path = GoRouterState.of(context).uri.path;
+    DashboardScope.route = path;
+    if (_lastPath != null && _lastPath!.contains('/settings') && !path.contains('/settings')) {
+      _refreshWafVisible();
+    }
+    _lastPath = path;
 
     final drawerMode = useDrawerNav(context);
     final wide = !drawerMode &&

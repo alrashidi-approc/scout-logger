@@ -478,6 +478,23 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/waf/export', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      final data = await store.listWafExport(
+        id,
+        q: q['q'],
+        environment: q['environment'],
+        appVersion: q['appVersion'] ?? q['app_version'],
+        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        limit: int.tryParse(q['limit'] ?? '') ?? 500,
+      );
+      return Response.ok(jsonEncode({'ok': true, ...data}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
   router.get('/projects/<id>/events/<eventId>', (Request request, String id, String eventId) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);

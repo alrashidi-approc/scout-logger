@@ -202,4 +202,22 @@ void main() {
       expect(sql, isNot(matches(RegExp(r'AND\s+AND', caseSensitive: false))));
     });
   });
+
+  group('extractWafRequestId', () {
+    test('parses support ID from HTML block page', () {
+      expect(
+        extractWafRequestId(
+          "The requested URL was rejected.<br>Your support ID is: 7128484374364495771<br>",
+        ),
+        '7128484374364495771',
+      );
+    });
+
+    test('falls back to CF-Ray header', () {
+      expect(
+        extractWafRequestId('<html>blocked</html>', headerRay: 'a3b6a16f8a37e1e8-MRS'),
+        'a3b6a16f8a37e1e8-MRS',
+      );
+    });
+  });
 }

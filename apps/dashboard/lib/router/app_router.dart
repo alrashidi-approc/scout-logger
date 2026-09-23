@@ -21,6 +21,7 @@ import '../screens/project_notifications_screen.dart';
 import '../screens/health_check_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
+import '../screens/waf_rejects_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/sessions_screen.dart';
 import '../screens/device_detail_screen.dart';
@@ -318,6 +319,22 @@ GoRouter createRouter() {
                 initialPeriod: PeriodFilter.parse(s.uri.queryParameters),
               ),
             ),
+          ),
+          GoRoute(
+            path: '/p/:projectId/waf',
+            pageBuilder: (c, s) {
+              final q = s.uri.queryParameters;
+              return scoutPage(
+                s,
+                WafRejectsScreen(
+                  projectId: s.pathParameters['projectId']!,
+                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(30),
+                  initialQuery: q['q'],
+                  initialEnvironment: q['environment'],
+                  initialAppVersion: q['appVersion'],
+                ),
+              );
+            },
           ),
           GoRoute(
             path: '/p/:projectId/logs',
