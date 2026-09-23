@@ -82,6 +82,8 @@ HealthCheckReport _timeoutReport(HealthCheckReport? partial, {required int limit
     current: partial.current,
     timedOutAt: at,
     pending: partial.pending,
+    wafLearning: partial.wafLearning,
+    networkProbe: partial.networkProbe,
   );
 }
 

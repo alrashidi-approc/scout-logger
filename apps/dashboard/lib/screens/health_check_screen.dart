@@ -148,20 +148,27 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
       final script = scriptMeta['script'] as String?;
       if (!mounted) return;
       setState(() {
-        _scriptCtrl.text = (script != null && script.isNotEmpty) ? script : _defaultScript;
+        _scriptCtrl.text =
+            (script != null && script.isNotEmpty) ? script : _defaultScript;
         _scriptUpdatedAt = scriptMeta['updatedAt'] as String?;
-        _latestRun = data['latestRun'] == null ? null : jsonMap(data['latestRun']);
+        _latestRun =
+            data['latestRun'] == null ? null : jsonMap(data['latestRun']);
         _share = data['share'] == null ? null : jsonMap(data['share']);
         _runs = runs;
         final uptime = data['uptime'] == null ? null : jsonMap(data['uptime']);
         _uptime = uptime;
         _uptimeEnabled = uptime?['enabled'] == true;
         _uptimeUrlCtrl.text = _urlsTextFromUptime(uptime);
-        _uptimeIntervalMinutes = (data['uptimeIntervalMinutes'] as num?)?.toInt() ?? kUptimeMonitorIntervalMinutes;
+        _uptimeIntervalMinutes =
+            (data['uptimeIntervalMinutes'] as num?)?.toInt() ??
+                kUptimeMonitorIntervalMinutes;
         _loading = false;
       });
     } catch (e, st) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
       if (!mounted) return;
       setState(() {
         _error = e;
@@ -185,12 +192,17 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         _uptimeUrlCtrl.text = _urlsTextFromUptime(saved);
         _savingUptime = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Uptime monitor saved')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Uptime monitor saved')));
     } catch (e, st) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
       if (!mounted) return;
       setState(() => _savingUptime = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -209,30 +221,43 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         _checkingUptime = false;
       });
       final status = result['lastStatus']?.toString() ?? 'unknown';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(status == 'ok' ? 'Server reachable' : 'Server unreachable — emergency alert if newly down')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(status == 'ok'
+              ? 'Server reachable'
+              : 'Server unreachable — emergency alert if newly down')));
     } catch (e, st) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
       if (!mounted) return;
       setState(() => _checkingUptime = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      final saved = await _api.saveHealthCheckScript(widget.projectId, _scriptCtrl.text);
+      final saved =
+          await _api.saveHealthCheckScript(widget.projectId, _scriptCtrl.text);
       if (!mounted) return;
       setState(() {
         _scriptUpdatedAt = saved['updatedAt'] as String?;
         _saving = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Script saved')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Script saved')));
     } catch (e, st) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -248,12 +273,17 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
       });
       await _load();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Health check finished')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Health check finished')));
     } catch (e, st) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e), context: {'stack': '$st'});
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
       if (!mounted) return;
       setState(() => _running = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
   }
 
@@ -268,16 +298,27 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         children: [
           PageHeader(
             title: 'Server health',
-            subtitle: 'Light uptime ping every $_uptimeIntervalMinutes min, plus optional full script checks.',
+            subtitle:
+                'Light uptime ping every $_uptimeIntervalMinutes min, plus optional full script checks.',
             actions: [
               FilledButton.icon(
                 onPressed: (_saving || _running) ? null : _save,
-                icon: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.save_outlined, size: 18),
+                icon: _saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.save_outlined, size: 18),
                 label: const Text('Save script'),
               ),
               FilledButton.tonalIcon(
                 onPressed: (_saving || _running) ? null : _run,
-                icon: _running ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.play_arrow_outlined, size: 18),
+                icon: _running
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.play_arrow_outlined, size: 18),
                 label: const Text('Run check'),
               ),
             ],
@@ -301,14 +342,20 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
                 padding: const EdgeInsets.all(24),
                 child: Row(
                   children: [
-                    const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
+                    const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2)),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Running health check…', style: TextStyle(fontWeight: FontWeight.w600)),
-                          Text('This may take a few minutes for large scripts.', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                          const Text('Running health check…',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
+                          Text('This may take a few minutes for large scripts.',
+                              style: TextStyle(
+                                  color: AppTheme.muted, fontSize: 12)),
                         ],
                       ),
                     ),
@@ -319,7 +366,8 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
           ],
           if (_latestRun != null && !_running) ...[
             const SizedBox(height: 20),
-            const Text('Latest report', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Text('Latest report',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 8),
             HealthCheckReportCard(run: _latestRun!),
           ],
@@ -331,21 +379,25 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
           _PromptCard(
             step: 1,
             title: 'Generate API reference (in your app repo)',
-            hint: 'Replace {APP_NAME} and {SOURCE_HINTS}, run in Cursor/Claude/etc., save the MD file.',
+            hint:
+                'Replace {APP_NAME} and {SOURCE_HINTS}, run in Cursor/Claude/etc., save the MD file.',
             prompt: HealthCheckPrompts.prompt1GenerateApiReference,
           ),
           const SizedBox(height: 12),
           _PromptCard(
             step: 2,
             title: 'Convert MD → Dart script',
-            hint: 'Paste your API reference MD where indicated, then copy the generated script.',
+            hint:
+                'Paste your API reference MD where indicated, then copy the generated script.',
             prompt: HealthCheckPrompts.prompt2ConvertToDartScript,
           ),
           const SizedBox(height: 20),
-          const Text('3. Paste script here', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+          const Text('3. Paste script here',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
           const SizedBox(height: 8),
           if (_scriptUpdatedAt != null)
-            Text('Last saved: $_scriptUpdatedAt', style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
+            Text('Last saved: $_scriptUpdatedAt',
+                style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
           if (_scriptUpdatedAt != null) const SizedBox(height: 8),
           TextField(
             controller: _scriptCtrl,
@@ -359,9 +411,13 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
           ),
           if (_runs.length > 1) ...[
             const SizedBox(height: 24),
-            const Text('History', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Text('History',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 8),
-            ..._runs.map((r) => _HistoryTile(run: r, selected: r['id'] == _latestRun?['id'], onTap: () => setState(() => _latestRun = r))),
+            ..._runs.map((r) => _HistoryTile(
+                run: r,
+                selected: r['id'] == _latestRun?['id'],
+                onTap: () => setState(() => _latestRun = r))),
           ],
         ],
       ),
@@ -410,7 +466,8 @@ class _UptimeCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Server URL uptime', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Text('Server URL uptime',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             const SizedBox(height: 4),
             Text(
               'Light ping every $intervalMinutes minutes from Scout (DNS + HTTP). '
@@ -430,7 +487,8 @@ class _UptimeCard extends StatelessWidget {
               maxLines: 6,
               decoration: const InputDecoration(
                 labelText: 'Server URLs',
-                hintText: 'https://api.example.com/health\nhttps://auth.example.com/health',
+                hintText:
+                    'https://api.example.com/health\nhttps://auth.example.com/health',
                 alignLabelWithHint: true,
                 border: OutlineInputBorder(),
               ),
@@ -453,14 +511,21 @@ class _UptimeCard extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: saving ? null : onSave,
                   icon: saving
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
                       : const Icon(Icons.save_outlined, size: 18),
                   label: const Text('Save uptime'),
                 ),
                 FilledButton.tonalIcon(
                   onPressed: (checking || !enabled) ? null : onCheckNow,
                   icon: checking
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.network_check, size: 18),
                   label: const Text('Check now'),
                 ),
@@ -483,7 +548,11 @@ class _UptimeStatusRow extends StatelessWidget {
     final status = target['lastStatus']?.toString() ?? '';
     final ok = status == 'ok';
     final down = status == 'down';
-    final color = ok ? AppTheme.success : down ? AppTheme.error : AppTheme.muted;
+    final color = ok
+        ? AppTheme.success
+        : down
+            ? AppTheme.error
+            : AppTheme.muted;
     final url = target['url']?.toString() ?? '';
     final detail = target['lastDetail']?.toString();
     final checkedAt = target['lastCheckedAt']?.toString();
@@ -500,9 +569,11 @@ class _UptimeStatusRow extends StatelessWidget {
         children: [
           Text(
             '${down ? 'DOWN' : ok ? 'OK' : status.toUpperCase()} · $url',
-            style: TextStyle(fontWeight: FontWeight.w700, color: color, fontSize: 13),
+            style: TextStyle(
+                fontWeight: FontWeight.w700, color: color, fontSize: 13),
           ),
-          if (detail != null) Text(detail, style: const TextStyle(fontSize: 12)),
+          if (detail != null)
+            Text(detail, style: const TextStyle(fontSize: 12)),
           if (checkedAt != null || latency != null)
             Text(
               [
@@ -518,7 +589,11 @@ class _UptimeStatusRow extends StatelessWidget {
 }
 
 class _PromptCard extends StatelessWidget {
-  const _PromptCard({required this.step, required this.title, required this.hint, required this.prompt});
+  const _PromptCard(
+      {required this.step,
+      required this.title,
+      required this.hint,
+      required this.prompt});
 
   final int step;
   final String title;
@@ -534,10 +609,13 @@ class _PromptCard extends StatelessWidget {
         child: ExpansionTile(
           initiallyExpanded: step == 1,
           tilePadding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
-          title: Text('$step. $title', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+          title: Text('$step. $title',
+              style:
+                  const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
           subtitle: Padding(
             padding: const EdgeInsets.only(top: 4, bottom: 8),
-            child: Text(hint, style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
+            child: Text(hint,
+                style: const TextStyle(color: AppTheme.muted, fontSize: 12)),
           ),
           children: [
             Padding(
@@ -545,7 +623,8 @@ class _PromptCard extends StatelessWidget {
               child: Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
-                  onPressed: () => copyWithFeedback(context, prompt, message: 'Prompt copied'),
+                  onPressed: () => copyWithFeedback(context, prompt,
+                      message: 'Prompt copied'),
                   icon: const Icon(Icons.copy_outlined, size: 16),
                   label: const Text('Copy prompt'),
                 ),
@@ -557,7 +636,8 @@ class _PromptCard extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               child: SelectableText(
                 prompt,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 11, height: 1.4),
+                style: const TextStyle(
+                    fontFamily: 'monospace', fontSize: 11, height: 1.4),
               ),
             ),
           ],
@@ -586,7 +666,8 @@ class _ShareLinkCard extends StatelessWidget {
               children: [
                 Icon(Icons.link_outlined, size: 18, color: AppTheme.muted),
                 SizedBox(width: 8),
-                Text('Public snapshot link', style: TextStyle(fontWeight: FontWeight.w600)),
+                Text('Public snapshot link',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
               ],
             ),
             const SizedBox(height: 6),
@@ -596,15 +677,20 @@ class _ShareLinkCard extends StatelessWidget {
             ),
             if (updatedAt != null) ...[
               const SizedBox(height: 4),
-              Text('Snapshot updated: $updatedAt', style: TextStyle(color: AppTheme.muted, fontSize: 11)),
+              Text('Snapshot updated: $updatedAt',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 11)),
             ],
             const SizedBox(height: 12),
-            SelectableText(url, style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
+            SelectableText(url,
+                style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
-                onPressed: url.isEmpty ? null : () => copyWithFeedback(context, url, message: 'Share link copied'),
+                onPressed: url.isEmpty
+                    ? null
+                    : () => copyWithFeedback(context, url,
+                        message: 'Share link copied'),
                 icon: const Icon(Icons.copy_outlined, size: 16),
                 label: const Text('Copy link'),
               ),
@@ -617,7 +703,8 @@ class _ShareLinkCard extends StatelessWidget {
 }
 
 class _HistoryTile extends StatelessWidget {
-  const _HistoryTile({required this.run, required this.selected, required this.onTap});
+  const _HistoryTile(
+      {required this.run, required this.selected, required this.onTap});
 
   final Map<String, dynamic> run;
   final bool selected;
@@ -625,9 +712,14 @@ class _HistoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final report = run['report'] is Map ? HealthCheckReport.fromJson(Map<String, dynamic>.from(run['report'] as Map)) : null;
+    final report = run['report'] is Map
+        ? HealthCheckReport.fromJson(
+            Map<String, dynamic>.from(run['report'] as Map))
+        : null;
     final stats = report?.stats;
-    final okLabel = stats != null ? '${stats.ok}/${stats.total} ok' : '${report?.okCount ?? 0}/${report?.checks.length ?? 0} ok';
+    final okLabel = stats != null
+        ? '${stats.ok}/${stats.total} ok'
+        : '${report?.okCount ?? 0}/${report?.checks.length ?? 0} ok';
     final issues = (report?.failCount ?? 0) + (report?.timeoutCount ?? 0);
     final duration = (run['durationMs'] as num?)?.toInt();
     final durLabel = duration == null
@@ -640,25 +732,40 @@ class _HistoryTile extends StatelessWidget {
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: selected ? AppTheme.primary : AppTheme.border, width: selected ? 1.5 : 1),
+        side: BorderSide(
+            color: selected ? AppTheme.primary : AppTheme.border,
+            width: selected ? 1.5 : 1),
       ),
       child: ListTile(
         selected: selected,
         onTap: onTap,
         leading: CircleAvatar(
           radius: 14,
-          backgroundColor: (report != null ? HealthCheckReportCard.verdictColor(report.verdict) : AppTheme.muted).withValues(alpha: 0.12),
+          backgroundColor: (report != null
+                  ? HealthCheckReportCard.verdictColor(report.verdict)
+                  : AppTheme.muted)
+              .withValues(alpha: 0.12),
           child: Icon(
             report != null ? Icons.monitor_heart_outlined : Icons.help_outline,
             size: 16,
-            color: report != null ? HealthCheckReportCard.verdictColor(report.verdict) : AppTheme.muted,
+            color: report != null
+                ? HealthCheckReportCard.verdictColor(report.verdict)
+                : AppTheme.muted,
           ),
         ),
-        title: Text(report?.summary ?? '${run['status']} · ${run['startedAt'] ?? ''}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+        title: Text(
+            report?.summary ?? '${run['status']} · ${run['startedAt'] ?? ''}',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
         subtitle: report != null
-            ? Text('$okLabel · ${report.verdict}${issues > 0 ? ' · $issues issue${issues == 1 ? '' : 's'}' : ''}', style: const TextStyle(fontSize: 11))
+            ? Text(
+                '$okLabel · ${report.verdict}${issues > 0 ? ' · $issues issue${issues == 1 ? '' : 's'}' : ''}',
+                style: const TextStyle(fontSize: 11))
             : null,
-        trailing: Text(durLabel, style: const TextStyle(color: AppTheme.muted, fontSize: 12, fontWeight: FontWeight.w600)),
+        trailing: Text(durLabel,
+            style: const TextStyle(
+                color: AppTheme.muted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600)),
       ),
     );
   }

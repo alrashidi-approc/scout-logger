@@ -182,9 +182,9 @@ class _HealthCheckReportCardState extends State<HealthCheckReportCard> {
             const Divider(height: 1),
             _LogsSection(run: widget.run),
           ],
-          if (report?.wafLearning != null) ...[
+          if (report != null) ...[
             const Divider(height: 1),
-            _WafLearningPanel(wafLearning: report!.wafLearning!),
+            _WafLearningPanel(wafLearning: report.wafLearning),
           ],
           _RunFooter(run: widget.run),
         ],
@@ -991,14 +991,39 @@ class _RunFooter extends StatelessWidget {
 class _WafLearningPanel extends StatelessWidget {
   const _WafLearningPanel({required this.wafLearning});
 
-  final Map<String, dynamic> wafLearning;
+  final Map<String, dynamic>? wafLearning;
 
   @override
   Widget build(BuildContext context) {
-    final count = (wafLearning['observationCount'] as num?)?.toInt() ?? 0;
-    final openApi = wafLearning['openApi'] as Map<String, dynamic>?;
+    final waf = wafLearning;
+    if (waf == null) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.traffic_outlined, size: 20, color: AppTheme.muted),
+                SizedBox(width: 8),
+                Text('WAF learning', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+              ],
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Not in this report. Paste the EPA health script that emits wafLearning '
+              '(scripts/epa_api_health_check.dart), Save script, then Run check again.',
+              style: TextStyle(fontSize: 12, color: AppTheme.muted),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final count = (waf['observationCount'] as num?)?.toInt() ?? 0;
+    final openApi = waf['openApi'] is Map ? Map<String, dynamic>.from(waf['openApi'] as Map) : null;
     final pathCount = (openApi?['paths'] as Map?)?.length ?? 0;
-    final generatedAt = wafLearning['generatedAt'] as String?;
+    final generatedAt = waf['generatedAt'] as String?;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -1026,7 +1051,7 @@ class _WafLearningPanel extends StatelessWidget {
                   label: const Text('Copy OpenAPI'),
                 ),
               OutlinedButton.icon(
-                onPressed: () => copyWithFeedback(context, const JsonEncoder.withIndent('  ').convert(wafLearning), message: 'WAF JSON copied'),
+                onPressed: () => copyWithFeedback(context, const JsonEncoder.withIndent('  ').convert(waf), message: 'WAF JSON copied'),
                 icon: const Icon(Icons.data_object, size: 16),
                 label: const Text('Copy WAF JSON'),
               ),
