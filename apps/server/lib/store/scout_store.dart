@@ -1479,6 +1479,7 @@ class ScoutStore {
         SELECT id, title, type, event_count, NULL::text AS top_version
         FROM issues
         WHERE project_id = @pid
+          AND status = 'open'
           AND last_seen_at >= now() - (@hrs::text || ' hours')::interval
         ORDER BY event_count DESC
         LIMIT @lim
@@ -1490,7 +1491,7 @@ class ScoutStore {
         SELECT
           COUNT(*) FILTER (WHERE regressed_at >= now() - (@hrs::text || ' hours')::interval)::int,
           COUNT(*) FILTER (WHERE first_seen_at >= now() - (@hrs::text || ' hours')::interval)::int
-        FROM issues WHERE project_id = @pid
+        FROM issues WHERE project_id = @pid AND status = 'open'
       '''),
       parameters: {'pid': projectId, 'hrs': hours},
     );
@@ -2810,8 +2811,76 @@ class ScoutStore {
       );
     }
 
+    // Network issues with no remaining true-error events (all expected / cleared).
+    await c.execute(
+      Sql.named('''
+        UPDATE issues i SET
+          status = 'ignored',
+          resolved_at = COALESCE(resolved_at, now())
+        WHERE i.project_id = @pid
+          AND i.type = 'network'
+          AND i.status = 'open'
+          AND NOT EXISTS (
+            SELECT 1 FROM events e
+            WHERE e.project_id = @pid
+              AND e.issue_id = i.id
+              AND ${sqlIsErrorEvent(alias: 'e')}
+          )
+      '''),
+      parameters: {'pid': projectId},
+    );
+
+    // Any expected rule for method+path silences the open network issue.
+    // Fingerprints are route-only (404 and "no response" share one bucket), so a
+    // 404 rule still drops that route from Top issues even when the latest title
+    // is a timeout.
+    for (final rule in rules) {
+      final path = normalizeExpectedNetworkPath(rule.path);
+      if (path.isEmpty) continue;
+      final method = rule.method == '*' ? null : rule.method;
+      final open = await c.execute(
+        Sql.named('''
+          SELECT id, title FROM issues
+          WHERE project_id = @pid AND type = 'network' AND status = 'open'
+          LIMIT 500
+        '''),
+        parameters: {'pid': projectId},
+      );
+      for (final row in open) {
+        final title = '${row[1]}';
+        final titleMethod = RegExp(r'^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+', caseSensitive: false)
+            .firstMatch(title)
+            ?.group(1)
+            ?.toUpperCase();
+        if (method != null && titleMethod != null && titleMethod != method) continue;
+        var rest = title.replaceFirst(
+          RegExp(r'^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+', caseSensitive: false),
+          '',
+        );
+        rest = rest.split(RegExp(r'\s+[—–-]\s+')).first.trim();
+        final titlePath = normalizeExpectedNetworkPath(rest);
+        if (!_issueTitleMatchesExpectedPath(titlePath, path)) continue;
+        await c.execute(
+          Sql.named('''
+            UPDATE issues SET
+              status = 'ignored',
+              resolved_at = COALESCE(resolved_at, now())
+            WHERE project_id = @pid AND id = @id AND status = 'open'
+          '''),
+          parameters: {'pid': projectId, 'id': row[0]},
+        );
+      }
+    }
+
     await _rebuildErrorRollups(c, projectId, since: since);
     return updated;
+  }
+
+  bool _issueTitleMatchesExpectedPath(String titlePath, String rulePath) {
+    if (titlePath.isEmpty || rulePath.isEmpty) return false;
+    if (titlePath == rulePath) return true;
+    final rule = rulePath.startsWith('/') ? rulePath : '/$rulePath';
+    return titlePath.length > rule.length && titlePath.endsWith(rule);
   }
 
   /// Recount error metrics used by overview / reports / stats after reclassify.

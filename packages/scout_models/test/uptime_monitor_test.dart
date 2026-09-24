@@ -5,9 +5,46 @@ void main() {
   test('uptimeShouldAlert only on transition to down', () {
     expect(uptimeShouldAlert(previousStatus: null, newStatus: 'down'), isTrue);
     expect(uptimeShouldAlert(previousStatus: 'ok', newStatus: 'down'), isTrue);
+    expect(uptimeShouldAlert(previousStatus: 'confirming', newStatus: 'down'), isTrue);
     expect(uptimeShouldAlert(previousStatus: 'down', newStatus: 'down'), isFalse);
     expect(uptimeShouldAlert(previousStatus: 'down', newStatus: 'ok'), isFalse);
     expect(uptimeShouldAlert(previousStatus: null, newStatus: 'ok'), isFalse);
+  });
+
+  test('uptimeStatusAfterProbe enters confirming on first failure', () {
+    expect(uptimeStatusAfterProbe(previousStatus: 'ok', reachable: false), 'confirming');
+    expect(uptimeStatusAfterProbe(previousStatus: null, reachable: false), 'confirming');
+    expect(uptimeStatusAfterProbe(previousStatus: 'confirming', reachable: false), 'confirming');
+    expect(uptimeStatusAfterProbe(previousStatus: 'down', reachable: false), 'down');
+    expect(uptimeStatusAfterProbe(previousStatus: 'down', reachable: true), 'ok');
+    expect(uptimeStatusAfterProbe(previousStatus: 'confirming', reachable: true), 'ok');
+  });
+
+  test('uptimeShouldStartConfirm only on new failures', () {
+    expect(
+      uptimeShouldStartConfirm(previousStatus: 'ok', reachable: false, confirmInFlight: false),
+      isTrue,
+    );
+    expect(
+      uptimeShouldStartConfirm(previousStatus: null, reachable: false, confirmInFlight: false),
+      isTrue,
+    );
+    expect(
+      uptimeShouldStartConfirm(previousStatus: 'ok', reachable: false, confirmInFlight: true),
+      isFalse,
+    );
+    expect(
+      uptimeShouldStartConfirm(previousStatus: 'down', reachable: false, confirmInFlight: false),
+      isFalse,
+    );
+    expect(
+      uptimeShouldStartConfirm(previousStatus: 'ok', reachable: true, confirmInFlight: false),
+      isFalse,
+    );
+    expect(
+      uptimeShouldStartConfirm(previousStatus: 'confirming', reachable: false, confirmInFlight: false),
+      isTrue,
+    );
   });
 
   test('legacy single url still loads', () {
@@ -30,7 +67,7 @@ void main() {
     );
     expect(cfg.validTargets, hasLength(2));
     expect(cfg.urlsText, contains('a.example.com'));
-    expect(cfg.toJson()['targets'], hasLength(2));
+    expect(cfg.toJson()['targets'], hasLength(3));
   });
 
   test('fromUrlsText keeps prior probe results for same url', () {

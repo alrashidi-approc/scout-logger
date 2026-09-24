@@ -354,6 +354,11 @@ GoRouter createRouter() {
             path: '/p/:projectId/health-check',
             pageBuilder: (c, s) => scoutPage(s, HealthCheckScreen(projectId: s.pathParameters['projectId']!)),
           ),
+          // Alias for older Slack / email links that used /health.
+          GoRoute(
+            path: '/p/:projectId/health',
+            redirect: (c, s) => '/p/${s.pathParameters['projectId']}/health-check',
+          ),
           GoRoute(
             path: '/p/:projectId/settings',
             pageBuilder: (c, s) => scoutPage(s, ProjectSettingsScreen(projectId: s.pathParameters['projectId']!)),

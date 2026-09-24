@@ -192,6 +192,12 @@ class HealthCheckRun {
 const kUptimeMonitorIntervalMinutes = 10;
 const kDefaultUptimeMonitorEnabled = false;
 
+/// After a first failed probe, wait this long and probe again before treating as down.
+const kUptimeConfirmRetry1Minutes = 2;
+
+/// After the first confirm retry still fails, wait this long and probe once more.
+const kUptimeConfirmRetry2Minutes = 4;
+
 bool _isHttpUrl(String raw) {
   final u = raw.trim();
   if (u.isEmpty) return false;
@@ -331,8 +337,33 @@ class UptimeMonitorConfig {
       );
 }
 
-/// True when we should page: first failure, or transition from ok → down.
+/// True when we should page: confirmed down (not the first flap / confirming).
+///
+/// Flow: ok|null → confirming (no alert) → down (alert once) → down (no repeat).
 bool uptimeShouldAlert({required String? previousStatus, required String newStatus}) {
   if (newStatus != 'down') return false;
   return previousStatus != 'down';
+}
+
+/// Whether this probe result should start the 2m + 4m confirm sequence.
+bool uptimeShouldStartConfirm({
+  required String? previousStatus,
+  required bool reachable,
+  required bool confirmInFlight,
+}) {
+  if (reachable || confirmInFlight) return false;
+  // Already in a confirmed outage — periodic checks stay quiet.
+  if (previousStatus == 'down') return false;
+  // First failure (ok/null), or stranded `confirming` after a process restart.
+  return true;
+}
+
+/// Status to persist after a single probe (before / outside confirm completion).
+String uptimeStatusAfterProbe({
+  required String? previousStatus,
+  required bool reachable,
+}) {
+  if (reachable) return 'ok';
+  if (previousStatus == 'down') return 'down';
+  return 'confirming';
 }

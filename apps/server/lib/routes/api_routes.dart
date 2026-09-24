@@ -211,7 +211,7 @@ Handler apiRoutes(
           store.projectOverview(id, window: w, includeTrend: false),
           analytics.projectStats(id, window: w),
           analytics.dashboardInsights(id, window: w),
-          store.listIssues(id, window: w, limit: 5, lite: true),
+          store.listIssues(id, window: w, limit: 5, lite: true, status: 'open'),
         ];
         final needSdkHealth = !preferIdentityRollups(w);
         if (needSdkHealth) {

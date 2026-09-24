@@ -1041,7 +1041,8 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                 'Treat matching method + route + status as normal business outcomes — not errors, '
                 'not issues, and not counted in error rate / reports / alerts. '
                 'Example: POST empCardImageM → 404 when the employee has no image. '
-                'Saving reapplies rules to recent events.',
+                'Leave Codes blank to match any outcome (including no response / timeouts). '
+                'Saving reapplies rules to recent events and drops matching routes from Top issues.',
                 style: TextStyle(color: AppTheme.muted, fontSize: 13),
               ),
               const SizedBox(height: 16),
@@ -1110,7 +1111,11 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     width: 100,
                     child: TextField(
                       controller: _expectedCodesCtrl,
-                      decoration: const InputDecoration(labelText: 'Codes', hintText: '404', isDense: true),
+                      decoration: const InputDecoration(
+                        labelText: 'Codes',
+                        hintText: '404 or blank',
+                        isDense: true,
+                      ),
                     ),
                   ),
                   SizedBox(

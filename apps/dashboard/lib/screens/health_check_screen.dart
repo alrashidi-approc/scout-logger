@@ -220,11 +220,25 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
         _uptime = result;
         _checkingUptime = false;
       });
-      final status = result['lastStatus']?.toString() ?? 'unknown';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(status == 'ok'
-              ? 'Server reachable'
-              : 'Server unreachable — emergency alert if newly down')));
+      final statuses = <String>[];
+      final rawTargets = result['targets'];
+      if (rawTargets is List) {
+        for (final t in rawTargets) {
+          if (t is Map && t['lastStatus'] != null) {
+            statuses.add(t['lastStatus'].toString());
+          }
+        }
+      } else if (result['lastStatus'] != null) {
+        statuses.add(result['lastStatus'].toString());
+      }
+      final msg = statuses.contains('down')
+          ? 'Server unreachable — emergency alert after confirm retries'
+          : statuses.contains('confirming')
+              ? 'Unreachable — confirming with retries before alert'
+              : statuses.isNotEmpty && statuses.every((s) => s == 'ok')
+                  ? 'Server reachable'
+                  : 'Uptime check finished';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } catch (e, st) {
       DashboardLogService.record(
           projectId: widget.projectId,
@@ -471,7 +485,9 @@ class _UptimeCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               'Light ping every $intervalMinutes minutes from Scout (DNS + HTTP). '
-              'Add one URL per line if the app uses multiple servers. Down → emergency alert.',
+              'Add one URL per line if the app uses multiple servers. '
+              'A failure is confirmed with retries at ${kUptimeConfirmRetry1Minutes}m then '
+              '${kUptimeConfirmRetry2Minutes}m before an emergency alert (avoids flaps / restarts).',
               style: const TextStyle(color: AppTheme.muted, fontSize: 13),
             ),
             const SizedBox(height: 8),
@@ -548,15 +564,25 @@ class _UptimeStatusRow extends StatelessWidget {
     final status = target['lastStatus']?.toString() ?? '';
     final ok = status == 'ok';
     final down = status == 'down';
+    final confirming = status == 'confirming';
     final color = ok
         ? AppTheme.success
         : down
             ? AppTheme.error
-            : AppTheme.muted;
+            : confirming
+                ? AppTheme.warning
+                : AppTheme.muted;
     final url = target['url']?.toString() ?? '';
     final detail = target['lastDetail']?.toString();
     final checkedAt = target['lastCheckedAt']?.toString();
     final latency = target['lastLatencyMs'];
+    final label = down
+        ? 'DOWN'
+        : ok
+            ? 'OK'
+            : confirming
+                ? 'CONFIRMING'
+                : status.toUpperCase();
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
@@ -568,10 +594,15 @@ class _UptimeStatusRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${down ? 'DOWN' : ok ? 'OK' : status.toUpperCase()} · $url',
+            '$label · $url',
             style: TextStyle(
                 fontWeight: FontWeight.w700, color: color, fontSize: 13),
           ),
+          if (confirming)
+            const Text(
+              'Failed once — rechecking in 2m then 4m before alerting',
+              style: TextStyle(fontSize: 12),
+            ),
           if (detail != null)
             Text(detail, style: const TextStyle(fontSize: 12)),
           if (checkedAt != null || latency != null)

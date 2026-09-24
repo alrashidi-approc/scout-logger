@@ -362,7 +362,7 @@ class NotificationService {
   }) async {
     if (!notifications.enabled || !notifications.healthCheckNotify) return;
 
-    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health';
+    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health-check';
     final dedupKey = 'uptime-${Uri.encodeComponent(url)}';
     final title = '🚨 Server unreachable — $projectName';
     final body = StringBuffer()
@@ -370,7 +370,10 @@ class NotificationService {
       ..writeln('URL: $url')
       ..writeln('Detail: $detail');
     if (latencyMs != null) body.writeln('Latency: ${latencyMs}ms');
-    body.writeln('Scout light uptime check (every ${kUptimeMonitorIntervalMinutes}m) — not the full health script.');
+    body.writeln(
+      'Confirmed after retries (${kUptimeConfirmRetry1Minutes}m + ${kUptimeConfirmRetry2Minutes}m) — '
+      'Scout light uptime check (every ${kUptimeMonitorIntervalMinutes}m), not the full health script.',
+    );
 
     for (final channel in readyNotificationChannels(config: notifications, platform: platform)) {
       // Soft dedup so a flapping host does not page every tick while still down.
@@ -434,7 +437,7 @@ class NotificationService {
     final projectName = await store.projectName(projectId) ?? projectId;
     final verdict = report?['verdict']?.toString() ?? status;
     final summary = report?['summary']?.toString() ?? 'Health check $status';
-    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health';
+    final eventUrl = '${config.publicUrl}${config.dashboardUrlPath}/p/$projectId/health-check';
     final dedupKey = 'health-check-$runId';
     final title = '🚨 [$verdict] Health check — $projectName';
     final body = StringBuffer()
