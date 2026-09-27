@@ -47,17 +47,27 @@ void main() {
     expect(urgent.dedupMinutes, 5);
     expect(urgent.groupMinutes, 0);
     expect(urgent.threshold.enabled, isTrue);
-    expect(urgent.threshold.errorCount, greaterThan(0));
+    expect(urgent.threshold.errorCount, 20);
+    expect(urgent.threshold.crashCount, 3);
     expect(urgent.rules.single.categories, kUrgentNotificationCategories);
   });
 
-  test('normal preset restores defaults', () {
+  test('normal preset restores defaults with moderate spikes', () {
     final noisy = applyNotificationPreset(const ProjectNotificationConfig(), 'quiet');
     final normal = applyNotificationPreset(noisy, 'normal');
     expect(normal.preset, 'normal');
     expect(normal.dedupMinutes, kDefaultDedupMinutes);
     expect(normal.groupMinutes, kDefaultGroupMinutes);
+    expect(normal.threshold.enabled, isTrue);
+    expect(normal.threshold.errorCount, 50);
+    expect(normal.threshold.crashCount, 5);
     expect(normal.rules.single.categories, kDefaultNotificationCategories);
+  });
+
+  test('preset blurbs are non-empty', () {
+    for (final p in ['quiet', 'normal', 'urgent', 'custom']) {
+      expect(notificationPresetBlurb(p), isNotEmpty);
+    }
   });
 
   test('round-trip includes preset and healthCheckNotify', () {

@@ -268,4 +268,101 @@ class HealthCheckStore {
       if (row[10] != null) 'durationMs': row[10],
     };
   }
+
+  Future<void> appendUptimeProbe({
+    required String projectId,
+    required String url,
+    required String status,
+    int? latencyMs,
+    String? detail,
+    DateTime? checkedAt,
+  }) async {
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO uptime_probes (id, project_id, url, status, checked_at, latency_ms, detail)
+        VALUES (@id, @pid, @url, @status, @at, @lat, @detail)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'url': url.trim(),
+        'status': status,
+        'at': checkedAt ?? DateTime.now().toUtc(),
+        'lat': latencyMs,
+        'detail': detail,
+      },
+    );
+  }
+
+  Future<void> pruneUptimeProbes(
+    String projectId, {
+    int retentionDays = kUptimeProbeRetentionDays,
+  }) async {
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        DELETE FROM uptime_probes
+        WHERE project_id = @pid
+          AND checked_at < now() - (@days::text || ' days')::interval
+      '''),
+      parameters: {'pid': projectId, 'days': retentionDays.clamp(7, 90)},
+    );
+  }
+
+  Future<List<UptimeProbeSample>> listUptimeProbes(
+    String projectId, {
+    int days = kUptimeHistoryDefaultDays,
+    String? url,
+    int limit = 2000,
+  }) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        SELECT id, url, status, checked_at, latency_ms, detail
+        FROM uptime_probes
+        WHERE project_id = @pid
+          AND checked_at >= now() - (@days::text || ' days')::interval
+          AND (@url::text IS NULL OR url = @url)
+        ORDER BY checked_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {
+        'pid': projectId,
+        'days': days.clamp(1, kUptimeProbeRetentionDays),
+        'url': url?.trim().isEmpty == true ? null : url?.trim(),
+        'lim': limit.clamp(1, 5000),
+      },
+    );
+    return [
+      for (final r in rows)
+        UptimeProbeSample(
+          id: r[0] as String,
+          url: r[1] as String,
+          status: r[2] as String,
+          checkedAt: (r[3] as DateTime).toUtc(),
+          latencyMs: (r[4] as num?)?.toInt(),
+          detail: r[5] as String?,
+        ),
+    ];
+  }
+
+  /// Probes + collapsed outages + summary for dashboard / share.
+  Future<Map<String, dynamic>> uptimeHistory(
+    String projectId, {
+    int days = kUptimeHistoryDefaultDays,
+    String? url,
+  }) async {
+    final d = days.clamp(1, kUptimeProbeRetentionDays);
+    final samples = await listUptimeProbes(projectId, days: d, url: url);
+    final outages = collapseUptimeOutages(samples);
+    final stats = uptimeHistoryStats(samples: samples, outages: outages, days: d);
+    return {
+      'days': d,
+      'stats': stats,
+      'outages': outages.map((o) => o.toJson()).toList(),
+      // Newest-first samples capped for UI; full set already used for outages.
+      'samples': samples.take(200).map((s) => s.toJson()).toList(),
+    };
+  }
 }

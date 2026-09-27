@@ -3244,6 +3244,33 @@ class ScoutStore {
     return {'token': token, 'expiresAt': expiresAt.toIso8601String()};
   }
 
+  /// Share live uptime history for [days] (resolved at view time).
+  Future<Map<String, dynamic>> createUptimeShareToken({
+    required String projectId,
+    int days = kUptimeHistoryDefaultDays,
+    String? createdBy,
+    int expiresInDays = 30,
+  }) async {
+    final token = newToken();
+    final expiresAt = DateTime.now().toUtc().add(Duration(days: expiresInDays.clamp(1, 90)));
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO share_tokens (id, project_id, resource_type, resource_id, token_hash, expires_at, created_by, payload)
+        VALUES (@id, @pid, 'uptime', @pid, @hash, @exp, @uid, @payload::jsonb)
+      '''),
+      parameters: {
+        'id': newId(),
+        'pid': projectId,
+        'hash': hashToken(token),
+        'exp': expiresAt,
+        'uid': createdBy,
+        'payload': jsonEncode({'days': days.clamp(1, kUptimeProbeRetentionDays)}),
+      },
+    );
+    return {'token': token, 'expiresAt': expiresAt.toIso8601String(), 'days': days.clamp(1, kUptimeProbeRetentionDays)};
+  }
+
   /// Stable per-project share link — payload updates on each health check run.
   Future<Map<String, dynamic>> upsertHealthCheckShareSnapshot({
     required String projectId,

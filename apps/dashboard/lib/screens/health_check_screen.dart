@@ -8,6 +8,7 @@ import '../utils/clipboard.dart';
 import '../utils/health_check_prompts.dart';
 import '../widgets/health_check_report_card.dart';
 import '../widgets/page_header.dart';
+import '../widgets/shared_uptime_history_view.dart';
 
 const _defaultScript = '''import 'dart:convert';
 import 'dart:io';
@@ -119,6 +120,8 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
   bool _uptimeEnabled = false;
   Map<String, dynamic>? _uptime;
   int _uptimeIntervalMinutes = kUptimeMonitorIntervalMinutes;
+  Map<String, dynamic>? _uptimeHistory;
+  bool _sharingUptime = false;
 
   @override
   void dispose() {
@@ -146,6 +149,13 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
       final runs = await _api.fetchHealthCheckRuns(widget.projectId);
       final scriptMeta = jsonMap(data['script']);
       final script = scriptMeta['script'] as String?;
+      final uptime = data['uptime'] == null ? null : jsonMap(data['uptime']);
+      Map<String, dynamic>? history;
+      if (uptime?['enabled'] == true) {
+        try {
+          history = await _api.fetchUptimeHistory(widget.projectId);
+        } catch (_) {}
+      }
       if (!mounted) return;
       setState(() {
         _scriptCtrl.text =
@@ -155,13 +165,13 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
             data['latestRun'] == null ? null : jsonMap(data['latestRun']);
         _share = data['share'] == null ? null : jsonMap(data['share']);
         _runs = runs;
-        final uptime = data['uptime'] == null ? null : jsonMap(data['uptime']);
         _uptime = uptime;
         _uptimeEnabled = uptime?['enabled'] == true;
         _uptimeUrlCtrl.text = _urlsTextFromUptime(uptime);
         _uptimeIntervalMinutes =
             (data['uptimeIntervalMinutes'] as num?)?.toInt() ??
                 kUptimeMonitorIntervalMinutes;
+        _uptimeHistory = history;
         _loading = false;
       });
     } catch (e, st) {
@@ -239,6 +249,10 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
                   ? 'Server reachable'
                   : 'Uptime check finished';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      try {
+        final history = await _api.fetchUptimeHistory(widget.projectId);
+        if (mounted) setState(() => _uptimeHistory = history);
+      } catch (_) {}
     } catch (e, st) {
       DashboardLogService.record(
           projectId: widget.projectId,
@@ -246,6 +260,28 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
           context: {'stack': '$st'});
       if (!mounted) return;
       setState(() => _checkingUptime = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
+    }
+  }
+
+  Future<void> _shareUptimeHistory() async {
+    setState(() => _sharingUptime = true);
+    try {
+      final share = await _api.shareUptimeHistory(widget.projectId);
+      final url = share['url']?.toString() ?? '';
+      if (!mounted) return;
+      setState(() => _sharingUptime = false);
+      if (url.isNotEmpty) {
+        await copyWithFeedback(context, url, message: '7-day uptime report link copied');
+      }
+    } catch (e, st) {
+      DashboardLogService.record(
+          projectId: widget.projectId,
+          message: formatLoadError(e),
+          context: {'stack': '$st'});
+      if (!mounted) return;
+      setState(() => _sharingUptime = false);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
     }
@@ -349,6 +385,14 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
             onSave: _saveUptime,
             onCheckNow: _checkUptimeNow,
           ),
+          if (_uptimeEnabled && _uptimeHistory != null) ...[
+            const SizedBox(height: 16),
+            _UptimeHistoryCard(
+              history: _uptimeHistory!,
+              sharing: _sharingUptime,
+              onShare: _shareUptimeHistory,
+            ),
+          ],
           if (_running) ...[
             const SizedBox(height: 20),
             Card(
@@ -433,6 +477,116 @@ class _HealthCheckScreenState extends State<HealthCheckScreen> {
                 selected: r['id'] == _latestRun?['id'],
                 onTap: () => setState(() => _latestRun = r))),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _UptimeHistoryCard extends StatelessWidget {
+  const _UptimeHistoryCard({
+    required this.history,
+    required this.sharing,
+    required this.onShare,
+  });
+
+  final Map<String, dynamic> history;
+  final bool sharing;
+  final VoidCallback onShare;
+
+  @override
+  Widget build(BuildContext context) {
+    final days = (history['days'] as num?)?.toInt() ?? kUptimeHistoryDefaultDays;
+    final stats = history['stats'] is Map
+        ? Map<String, dynamic>.from(history['stats'] as Map)
+        : <String, dynamic>{};
+    final outages = uptimeOutagesFromJson(history['outages']);
+    final uptimePct = (stats['uptimePercent'] as num?)?.toDouble() ?? 100;
+    final outageCount = (stats['outageCount'] as num?)?.toInt() ?? outages.length;
+    final downMs = (stats['downMs'] as num?)?.toInt() ?? 0;
+    final downMins = (downMs / 60000).round();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Uptime history',
+                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                ),
+                TextButton.icon(
+                  onPressed: sharing ? null : onShare,
+                  icon: sharing
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.link_outlined, size: 16),
+                  label: Text('Share last $days days'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Scout records each light ping for $kUptimeProbeRetentionDays days. '
+              'Share a report with the server team for investigation.',
+              style: const TextStyle(color: AppTheme.muted, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '${uptimePct.toStringAsFixed(1)}% uptime · $outageCount outage${outageCount == 1 ? '' : 's'}'
+              '${downMins > 0 ? ' · ~${downMins}m unavailable' : ''}',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            if (outages.isEmpty)
+              const Text('No unavailable windows in this period.',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 13))
+            else
+              for (final o in outages.take(8)) ...[
+                _CompactOutageRow(outage: o),
+                const SizedBox(height: 6),
+              ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CompactOutageRow extends StatelessWidget {
+  const _CompactOutageRow({required this.outage});
+  final Map<String, dynamic> outage;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = outage['url']?.toString() ?? '';
+    final started = outage['startedAt']?.toString() ?? '';
+    final ongoing = outage['ongoing'] == true;
+    final detail = outage['lastDetail']?.toString();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppTheme.error.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${ongoing ? 'ONGOING' : 'OUTAGE'} · $url',
+            style: const TextStyle(
+                fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.error),
+          ),
+          Text(
+            started + (detail != null && detail.isNotEmpty ? ' — $detail' : ''),
+            style: const TextStyle(fontSize: 11, color: AppTheme.muted),
+          ),
         ],
       ),
     );

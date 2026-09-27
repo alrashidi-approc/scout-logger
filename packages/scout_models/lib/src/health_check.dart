@@ -198,6 +198,12 @@ const kUptimeConfirmRetry1Minutes = 2;
 /// After the first confirm retry still fails, wait this long and probe once more.
 const kUptimeConfirmRetry2Minutes = 4;
 
+/// How long probe samples are retained for history / share reports.
+const kUptimeProbeRetentionDays = 30;
+
+/// Default window for uptime history UI and share links.
+const kUptimeHistoryDefaultDays = 7;
+
 bool _isHttpUrl(String raw) {
   final u = raw.trim();
   if (u.isEmpty) return false;
@@ -366,4 +372,180 @@ String uptimeStatusAfterProbe({
   if (reachable) return 'ok';
   if (previousStatus == 'down') return 'down';
   return 'confirming';
+}
+
+/// One stored light-uptime sample (cron or confirm retry).
+class UptimeProbeSample {
+  const UptimeProbeSample({
+    required this.url,
+    required this.status,
+    required this.checkedAt,
+    this.latencyMs,
+    this.detail,
+    this.id,
+  });
+
+  final String? id;
+  final String url;
+  final String status;
+  final DateTime checkedAt;
+  final int? latencyMs;
+  final String? detail;
+
+  bool get isOk => status == 'ok';
+  bool get isUnavailable => status == 'down' || status == 'confirming';
+
+  factory UptimeProbeSample.fromJson(Map<String, dynamic> json) => UptimeProbeSample(
+        id: json['id']?.toString(),
+        url: json['url']?.toString() ?? '',
+        status: json['status']?.toString() ?? '',
+        checkedAt: DateTime.tryParse(json['checkedAt']?.toString() ?? '')?.toUtc() ??
+            DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        latencyMs: (json['latencyMs'] as num?)?.toInt(),
+        detail: json['detail']?.toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (id != null) 'id': id,
+        'url': url,
+        'status': status,
+        'checkedAt': checkedAt.toUtc().toIso8601String(),
+        if (latencyMs != null) 'latencyMs': latencyMs,
+        if (detail != null) 'detail': detail,
+      };
+}
+
+/// Continuous unavailable window derived from probe samples.
+class UptimeOutage {
+  const UptimeOutage({
+    required this.url,
+    required this.startedAt,
+    this.endedAt,
+    this.probeCount = 1,
+    this.lastDetail,
+    this.lastStatus,
+  });
+
+  final String url;
+  final DateTime startedAt;
+  final DateTime? endedAt;
+  final int probeCount;
+  final String? lastDetail;
+  final String? lastStatus;
+
+  bool get ongoing => endedAt == null;
+
+  Duration duration({DateTime? now}) =>
+      (endedAt ?? now ?? DateTime.now().toUtc()).difference(startedAt);
+
+  factory UptimeOutage.fromJson(Map<String, dynamic> json) => UptimeOutage(
+        url: json['url']?.toString() ?? '',
+        startedAt: DateTime.tryParse(json['startedAt']?.toString() ?? '')?.toUtc() ??
+            DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        endedAt: DateTime.tryParse(json['endedAt']?.toString() ?? '')?.toUtc(),
+        probeCount: (json['probeCount'] as num?)?.toInt() ?? 1,
+        lastDetail: json['lastDetail']?.toString(),
+        lastStatus: json['lastStatus']?.toString(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'url': url,
+        'startedAt': startedAt.toUtc().toIso8601String(),
+        if (endedAt != null) 'endedAt': endedAt!.toUtc().toIso8601String(),
+        'probeCount': probeCount,
+        'ongoing': ongoing,
+        'durationMs': duration().inMilliseconds,
+        if (lastDetail != null) 'lastDetail': lastDetail,
+        if (lastStatus != null) 'lastStatus': lastStatus,
+      };
+}
+
+/// Collapse probe samples into per-URL outage windows (confirming + down = unavailable).
+List<UptimeOutage> collapseUptimeOutages(List<UptimeProbeSample> samples) {
+  final byUrl = <String, List<UptimeProbeSample>>{};
+  for (final s in samples) {
+    if (s.url.isEmpty) continue;
+    (byUrl[s.url] ??= []).add(s);
+  }
+
+  final out = <UptimeOutage>[];
+  for (final entry in byUrl.entries) {
+    final list = List<UptimeProbeSample>.from(entry.value)
+      ..sort((a, b) => a.checkedAt.compareTo(b.checkedAt));
+
+    DateTime? start;
+    var count = 0;
+    String? detail;
+    String? status;
+
+    void close(DateTime end) {
+      if (start == null) return;
+      out.add(UptimeOutage(
+        url: entry.key,
+        startedAt: start!,
+        endedAt: end,
+        probeCount: count,
+        lastDetail: detail,
+        lastStatus: status,
+      ));
+      start = null;
+      count = 0;
+      detail = null;
+      status = null;
+    }
+
+    for (final s in list) {
+      if (s.isUnavailable) {
+        start ??= s.checkedAt;
+        count++;
+        detail = s.detail ?? detail;
+        status = s.status;
+      } else if (start != null) {
+        close(s.checkedAt);
+      }
+    }
+    if (start != null) {
+      out.add(UptimeOutage(
+        url: entry.key,
+        startedAt: start!,
+        endedAt: null,
+        probeCount: count,
+        lastDetail: detail,
+        lastStatus: status,
+      ));
+    }
+  }
+
+  out.sort((a, b) => b.startedAt.compareTo(a.startedAt));
+  return out;
+}
+
+/// Summary stats for a history window.
+Map<String, dynamic> uptimeHistoryStats({
+  required List<UptimeProbeSample> samples,
+  required List<UptimeOutage> outages,
+  required int days,
+  DateTime? now,
+}) {
+  final n = now ?? DateTime.now().toUtc();
+  final windowStart = n.subtract(Duration(days: days));
+  final windowMs = n.difference(windowStart).inMilliseconds;
+  var downMs = 0;
+  for (final o in outages) {
+    final start = o.startedAt.isBefore(windowStart) ? windowStart : o.startedAt;
+    final end = o.endedAt ?? n;
+    if (end.isBefore(windowStart)) continue;
+    final ms = end.difference(start).inMilliseconds;
+    if (ms > 0) downMs += ms;
+  }
+  final uptimePct = windowMs <= 0
+      ? 100.0
+      : (((windowMs - downMs).clamp(0, windowMs) / windowMs) * 1000).round() / 10;
+  return {
+    'days': days,
+    'sampleCount': samples.length,
+    'outageCount': outages.length,
+    'downMs': downMs,
+    'uptimePercent': uptimePct,
+  };
 }

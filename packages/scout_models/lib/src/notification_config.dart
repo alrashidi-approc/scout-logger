@@ -463,8 +463,8 @@ ProjectNotificationConfig applyNotificationPreset(ProjectNotificationConfig base
         enabled: true,
         mode: 'count',
         windowMinutes: 15,
-        errorCount: base.threshold.errorCount > 0 ? base.threshold.errorCount : 20,
-        crashCount: base.threshold.crashCount > 0 ? base.threshold.crashCount : 3,
+        errorCount: 20,
+        crashCount: 3,
         sensitivity: base.threshold.sensitivity,
         channels: channels,
         environments: kDefaultNotificationEnvironments,
@@ -474,11 +474,11 @@ ProjectNotificationConfig applyNotificationPreset(ProjectNotificationConfig base
       dedup = kDefaultDedupMinutes;
       group = kDefaultGroupMinutes;
       threshold = ThresholdConfig(
-        enabled: base.threshold.enabled,
-        mode: base.threshold.mode,
-        windowMinutes: base.threshold.windowMinutes,
-        errorCount: base.threshold.errorCount,
-        crashCount: base.threshold.crashCount,
+        enabled: true,
+        mode: 'count',
+        windowMinutes: 15,
+        errorCount: 50,
+        crashCount: 5,
         sensitivity: base.threshold.sensitivity,
         channels: channels,
         environments: kDefaultNotificationEnvironments,
@@ -502,6 +502,14 @@ ProjectNotificationConfig applyNotificationPreset(ProjectNotificationConfig base
     threshold: threshold,
   );
 }
+
+/// Short copy for the Simple notifications UI.
+String notificationPresetBlurb(String preset) => switch (preset.trim().toLowerCase()) {
+      'quiet' => 'Crashes + critical network only. Longer dedup, no spike alerts. Health outages still page.',
+      'urgent' => 'Most categories, short dedup, no grouping, aggressive spike thresholds.',
+      'custom' => 'Advanced knobs differ from Quiet / Normal / Urgent.',
+      _ => 'Crashes, errors, critical/transport network. Moderate dedup + spike alerts. Health outages page.',
+    };
 
 List<String> _normList(List<dynamic>? raw, Set<String> allowed, List<String> fallback) {
   if (raw == null || raw.isEmpty) return List<String>.from(fallback);

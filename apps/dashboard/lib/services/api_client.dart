@@ -485,6 +485,28 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['uptime']);
   }
 
+  Future<Map<String, dynamic>> fetchUptimeHistory(String projectId, {int days = kUptimeHistoryDefaultDays}) async {
+    final uri = _uri('/api/projects/$projectId/health-check/uptime/history')
+        .replace(queryParameters: {'days': '$days'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> shareUptimeHistory(
+    String projectId, {
+    int days = kUptimeHistoryDefaultDays,
+    int expiresInDays = 30,
+  }) async {
+    final res = await _client.post(
+      _uri('/api/projects/$projectId/health-check/uptime/share'),
+      headers: _headers,
+      body: jsonEncode({'days': days, 'expiresInDays': expiresInDays}),
+    );
+    _ok(res, projectId: projectId);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
   Future<Map<String, dynamic>> runHealthCheck(String projectId) async {
     final res = await _client.post(_uri('/api/projects/$projectId/health-check/run'), headers: _headers);
     _ok(res, projectId: projectId);

@@ -571,10 +571,35 @@ Handler apiRoutes(
         );
       }
 
+      if (type == 'uptime') {
+        final days = (body['days'] is num)
+            ? (body['days'] as num).toInt()
+            : int.tryParse('${body['days'] ?? ''}') ?? kUptimeHistoryDefaultDays;
+        final share = await store.createUptimeShareToken(
+          projectId: id,
+          days: days,
+          createdBy: auth.userId,
+          expiresInDays: expiresInDays,
+        );
+        final token = share['token'] as String;
+        final path = '${config.dashboardUrlPath}/share/$token';
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'token': token,
+            'url': '${config.publicUrl}$path',
+            'path': '/share/$token',
+            'expiresAt': share['expiresAt'],
+            'days': share['days'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
       if (resourceId == null || resourceId.isEmpty) {
         return jsonErr('type and resourceId required');
       }
-      if (!{'event', 'issue'}.contains(type)) return jsonErr('type must be event, issue, or waf');
+      if (!{'event', 'issue'}.contains(type)) return jsonErr('type must be event, issue, waf, or uptime');
       final share = await store.createShareToken(
         projectId: id,
         resourceType: type,
@@ -836,6 +861,52 @@ Handler apiRoutes(
       } on ArgumentError catch (e) {
         return jsonErr('$e', status: 400);
       }
+    });
+  });
+
+  router.get('/projects/<id>/health-check/uptime/history', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      final days = int.tryParse(q['days'] ?? '') ?? kUptimeHistoryDefaultDays;
+      final history = await healthCheckStore.uptimeHistory(id, days: days, url: q['url']);
+      return Response.ok(jsonEncode({'ok': true, ...history}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.post('/projects/<id>/health-check/uptime/share', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final raw = await readBody(request);
+      final body = raw.trim().isEmpty ? <String, dynamic>{} : jsonDecode(raw) as Map<String, dynamic>;
+      final days = (body['days'] is num)
+          ? (body['days'] as num).toInt()
+          : int.tryParse('${body['days'] ?? ''}') ?? kUptimeHistoryDefaultDays;
+      final expiresInDays = (body['expiresInDays'] is num)
+          ? (body['expiresInDays'] as num).toInt()
+          : int.tryParse('${body['expiresInDays'] ?? ''}') ?? 30;
+      final auth = authFrom(request)!;
+      final share = await store.createUptimeShareToken(
+        projectId: id,
+        days: days,
+        createdBy: auth.userId,
+        expiresInDays: expiresInDays,
+      );
+      final token = share['token'] as String;
+      final path = '${config.dashboardUrlPath}/share/$token';
+      return Response.ok(
+        jsonEncode({
+          'ok': true,
+          'token': token,
+          'url': '${config.publicUrl}$path',
+          'path': path,
+          'expiresAt': share['expiresAt'],
+          'days': share['days'],
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
     });
   });
 

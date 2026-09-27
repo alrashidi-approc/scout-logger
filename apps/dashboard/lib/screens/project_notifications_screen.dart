@@ -581,13 +581,14 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 _selectPreset(s.first);
               },
             ),
-            if (_preset == 'custom') ...[
-              const SizedBox(height: 8),
-              Text(
-                'Custom — Advanced settings differ from Quiet / Normal / Urgent.',
-                style: TextStyle(fontSize: 12, color: AppTheme.warning.withValues(alpha: 0.95)),
+            const SizedBox(height: 8),
+            Text(
+              notificationPresetBlurb(_preset),
+              style: TextStyle(
+                fontSize: 12,
+                color: _preset == 'custom' ? AppTheme.warning.withValues(alpha: 0.95) : AppTheme.muted,
               ),
-            ],
+            ),
             const SizedBox(height: 16),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

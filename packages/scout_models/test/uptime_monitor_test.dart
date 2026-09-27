@@ -96,4 +96,75 @@ void main() {
     expect(again.targets, hasLength(2));
     expect(again.targets[1].lastStatus, 'down');
   });
+
+  test('collapseUptimeOutages merges consecutive unavailable probes', () {
+    final samples = [
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'ok',
+        checkedAt: DateTime.utc(2026, 1, 1, 10),
+      ),
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'confirming',
+        checkedAt: DateTime.utc(2026, 1, 1, 10, 10),
+        detail: 'timeout',
+      ),
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'down',
+        checkedAt: DateTime.utc(2026, 1, 1, 10, 16),
+        detail: 'handshake',
+      ),
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'ok',
+        checkedAt: DateTime.utc(2026, 1, 1, 10, 30),
+      ),
+    ];
+    final outages = collapseUptimeOutages(samples);
+    expect(outages, hasLength(1));
+    expect(outages.first.startedAt, DateTime.utc(2026, 1, 1, 10, 10));
+    expect(outages.first.endedAt, DateTime.utc(2026, 1, 1, 10, 30));
+    expect(outages.first.probeCount, 2);
+    expect(outages.first.lastDetail, 'handshake');
+  });
+
+  test('collapseUptimeOutages keeps ongoing outage open', () {
+    final samples = [
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'down',
+        checkedAt: DateTime.utc(2026, 1, 1, 12),
+      ),
+    ];
+    final outages = collapseUptimeOutages(samples);
+    expect(outages.single.ongoing, isTrue);
+    expect(outages.single.endedAt, isNull);
+  });
+
+  test('uptimeHistoryStats computes uptime percent', () {
+    final samples = [
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'down',
+        checkedAt: DateTime.utc(2026, 1, 1, 0),
+      ),
+      UptimeProbeSample(
+        url: 'https://a.example.com',
+        status: 'ok',
+        checkedAt: DateTime.utc(2026, 1, 1, 1),
+      ),
+    ];
+    final outages = collapseUptimeOutages(samples);
+    final stats = uptimeHistoryStats(
+      samples: samples,
+      outages: outages,
+      days: 1,
+      now: DateTime.utc(2026, 1, 2),
+    );
+    expect(stats['outageCount'], 1);
+    expect(stats['downMs'], greaterThan(0));
+    expect((stats['uptimePercent'] as num) < 100, isTrue);
+  });
 }

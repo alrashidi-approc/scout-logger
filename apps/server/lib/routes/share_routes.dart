@@ -1,14 +1,17 @@
 import 'dart:convert';
 
+import 'package:scout_models/scout_models.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf_router/shelf_router.dart';
 
 import '../middleware/http_utils.dart';
+import '../store/health_check_store.dart';
 import '../store/scout_store.dart';
 import '../util/dates.dart';
 
 Handler shareRoutes(ScoutStore store) {
   final router = Router();
+  final healthStore = HealthCheckStore(store.db);
 
   router.get('/<token>', (Request request, String token) async {
     try {
@@ -150,6 +153,32 @@ Handler shareRoutes(ScoutStore store) {
             'events': events,
             'total': page['total'],
             'waf': page['waf'],
+            'expiresAt': meta['expiresAt'],
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+
+      if (type == 'uptime') {
+        final raw = meta['payload'];
+        final payload = raw is Map
+            ? Map<String, dynamic>.from(raw)
+            : raw is String
+                ? Map<String, dynamic>.from(jsonDecode(raw) as Map)
+                : <String, dynamic>{};
+        final days = (payload['days'] is num)
+            ? (payload['days'] as num).toInt()
+            : int.tryParse('${payload['days'] ?? ''}') ?? kUptimeHistoryDefaultDays;
+        final history = await healthStore.uptimeHistory(pid, days: days);
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'type': 'uptime',
+            'projectName': projectName,
+            'days': days,
+            'stats': history['stats'],
+            'outages': history['outages'],
+            'samples': history['samples'],
             'expiresAt': meta['expiresAt'],
           }),
           headers: {'Content-Type': 'application/json'},

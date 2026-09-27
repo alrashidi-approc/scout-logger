@@ -93,6 +93,7 @@ class UptimeMonitorScheduler {
       final status = uptimeStatusAfterProbe(previousStatus: previous, reachable: reachable);
       final next = _targetFromProbe(target, probe, status: status);
       updated.add(next);
+      unawaited(_recordProbe(projectId: projectId, url: target.url, probe: probe, status: status));
 
       if (uptimeShouldStartConfirm(
         previousStatus: previous,
@@ -105,6 +106,7 @@ class UptimeMonitorScheduler {
 
     final saved = uptime.copyWith(targets: updated);
     await healthStore.saveUptime(projectId, saved);
+    unawaited(healthStore.pruneUptimeProbes(projectId));
 
     for (final t in toConfirm) {
       unawaited(_confirmDown(
@@ -120,6 +122,25 @@ class UptimeMonitorScheduler {
   Future<Map<String, dynamic>> _probe(String url) async {
     final uri = Uri.parse(url.trim());
     return probeHost(host: uri.host, sampleUrl: url.trim());
+  }
+
+  Future<void> _recordProbe({
+    required String projectId,
+    required String url,
+    required Map<String, dynamic> probe,
+    required String status,
+  }) async {
+    try {
+      await healthStore.appendUptimeProbe(
+        projectId: projectId,
+        url: url.trim(),
+        status: status,
+        latencyMs: (probe['latencyMs'] as num?)?.toInt(),
+        detail: probe['detail']?.toString() ?? probe['status']?.toString(),
+      );
+    } catch (e) {
+      stderr.writeln('uptime probe history error ($projectId $url): $e');
+    }
   }
 
   UptimeTarget _targetFromProbe(
@@ -150,6 +171,7 @@ class UptimeMonitorScheduler {
           t,
     ];
     await healthStore.saveUptime(projectId, current.copyWith(targets: targets));
+    await _recordProbe(projectId: projectId, url: url, probe: probe, status: status);
   }
 
   Future<void> _confirmDown({

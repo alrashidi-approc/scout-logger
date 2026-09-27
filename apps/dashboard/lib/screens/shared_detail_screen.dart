@@ -12,6 +12,7 @@ import '../theme/app_theme.dart';
 import '../widgets/shared_health_check_view.dart';
 import '../widgets/page_placeholder.dart';
 import '../widgets/shared_report_view.dart';
+import '../widgets/shared_uptime_history_view.dart';
 import '../widgets/shared_waf_rejects_view.dart';
 import 'package:scout_models/scout_models.dart';
 
@@ -38,6 +39,9 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
   Map<String, dynamic>? _wafFilters;
   Map<String, dynamic>? _wafConfig;
   int? _wafTotal;
+  int? _uptimeDays;
+  Map<String, dynamic>? _uptimeStats;
+  List<Map<String, dynamic>> _uptimeOutages = [];
   String? _projectName;
   String? _expiresAt;
   bool _loading = true;
@@ -104,6 +108,16 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
           _expiresAt = res['expiresAt'] as String?;
           _loading = false;
         });
+      } else if (type == 'uptime') {
+        setState(() {
+          _type = type;
+          _projectName = res['projectName'] as String?;
+          _uptimeDays = (res['days'] as num?)?.toInt() ?? kUptimeHistoryDefaultDays;
+          _uptimeStats = res['stats'] is Map ? Map<String, dynamic>.from(res['stats'] as Map) : {};
+          _uptimeOutages = uptimeOutagesFromJson(res['outages']);
+          _expiresAt = res['expiresAt'] as String?;
+          _loading = false;
+        });
       } else {
         setState(() {
           _type = type;
@@ -130,12 +144,16 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
           ? (_alertData?['title'] as String? ?? 'Scout alert')
           : _type == 'waf'
               ? 'WAF rejects — ${_projectName ?? 'Scout'}'
-              : shareSeoTitle(type: _type, issue: _issue, event: _event),
+              : _type == 'uptime'
+                  ? 'Uptime — ${_projectName ?? 'Scout'}'
+                  : shareSeoTitle(type: _type, issue: _issue, event: _event),
       description: _type == 'alert'
           ? (_alertData?['summary'] as String? ?? 'Read-only Scout alert')
           : _type == 'waf'
               ? 'Read-only Scout WAF rejects list'
-              : shareSeoDescription(type: _type, issue: _issue, event: _event),
+              : _type == 'uptime'
+                  ? 'Read-only Scout uptime / outage report'
+                  : shareSeoDescription(type: _type, issue: _issue, event: _event),
       url: _shareUrl,
     );
   }
@@ -205,6 +223,30 @@ class _SharedDetailScreenState extends State<SharedDetailScreen> {
                 total: _wafTotal,
                 filters: _wafFilters,
                 waf: _wafConfig,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (_type == 'uptime') {
+      return Material(
+        color: AppTheme.bg,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SharedBanner(
+              shareUrl: _shareUrl,
+              expiresAt: _expiresAt,
+              onCopy: () => _copyLink(context),
+              hint: 'Live uptime history from Scout light pings',
+            ),
+            Expanded(
+              child: SharedUptimeHistoryView(
+                projectName: _projectName ?? 'Project',
+                days: _uptimeDays ?? kUptimeHistoryDefaultDays,
+                stats: _uptimeStats ?? const {},
+                outages: _uptimeOutages,
               ),
             ),
           ],

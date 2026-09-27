@@ -20,9 +20,9 @@ Domain terms for specs, tickets, and ADRs. Keep entries short.
 | **Expected network response** | Project rule (method + path + status) that marks matching network calls as non-errors — excluded from Issues, Errors filter, error rate, reports, and alerts |
 | **Alert** | Outbound notification for a signal that matched project notification policy |
 | **Signal** | Something that may become an alert: ingested event, issue regression, spike, health-check failure |
-| **Alert preset** | Quiet / Normal / Urgent — named mapping onto notification config (rules, dedup, spikes, health notify) |
+| **Alert preset** | Quiet / Normal / Urgent / Custom — named mapping onto notification config (rules, dedup, spikes, health notify). Simple UI on Project → Notifications; Advanced edits flip to Custom. |
 | **Emergency** | Highest urgency: new crash/crash regression, health-check fail/timeout, or spike over threshold (prod only) |
 | **Alert channel** | Slack, WhatsApp, or email sink; people are targeted by being on that channel (not by Scout roles in Phase 1) |
-| **Uptime monitor** | Light automatic URL ping every 10 minutes from Scout (not the full health script); down → emergency alert |
+| **Uptime monitor** | Light automatic URL ping every 10 minutes from Scout (not the full health script); downtime confirmed with 2m+4m retries before emergency alert; probe history retained ~30 days for shareable outage reports |
 
 Add terms when `/grill-with-docs` locks a new domain word.
