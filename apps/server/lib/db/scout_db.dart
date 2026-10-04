@@ -61,12 +61,28 @@ class ScoutDb {
 
   /// Round-robin among a small pool so parallel API handlers don't serialize
   /// on one Postgres session (was causing 20–50s "Queued" waits in the browser).
-  Future<Connection> connect() {
+  /// Reopens a slot if Postgres closed the idle connection (idle timeout / restart).
+  Future<Connection> connect() async {
     final i = _rr++ % _poolSize;
-    return _slots[i] ??= _open();
+    final existing = _slots[i];
+    if (existing != null) {
+      try {
+        final conn = await existing;
+        if (conn.isOpen) return conn;
+      } catch (_) {}
+      if (identical(_slots[i], existing)) _slots[i] = null;
+    }
+    final opened = _open();
+    _slots[i] = opened;
+    try {
+      return await opened;
+    } catch (_) {
+      if (identical(_slots[i], opened)) _slots[i] = null;
+      rethrow;
+    }
   }
 
-  Future<Connection> _open() async {
+  Future<Connection> _open() {
     return Connection.open(
       Endpoint(
         host: config.host,
