@@ -726,7 +726,11 @@ class ScoutStore {
       faultOverrides: faultOverrides,
       expectedResponses: expectedResponses,
     );
-    final occurredAt = DateTime.tryParse(event.timestamp)?.toUtc() ?? DateTime.now().toUtc();
+    final receivedAt = DateTime.tryParse('${enrichment['receivedAt']}')?.toUtc() ?? DateTime.now().toUtc();
+    final deviceAt = DateTime.tryParse(event.timestamp)?.toUtc();
+    // Future timestamps mean a fast device clock; past ones may be legit offline queueing.
+    final clockAhead = deviceAt != null && deviceAt.difference(receivedAt) > const Duration(minutes: 5);
+    final occurredAt = clockAhead ? receivedAt : deviceAt ?? receivedAt;
     final user = payload['user'] is Map ? Map<String, dynamic>.from(payload['user'] as Map) : <String, dynamic>{};
     final device = payload['device'] is Map ? Map<String, dynamic>.from(payload['device'] as Map) : <String, dynamic>{};
     final userId = user['id']?.toString() ?? user['userId']?.toString();
@@ -765,6 +769,7 @@ class ScoutStore {
     final eventEnrichment = {
       ...enrichment,
       'geo': resolved.toEnrichmentJson(),
+      if (clockAhead) 'deviceOccurredAt': deviceAt.toIso8601String(),
     };
 
     String? issueId;

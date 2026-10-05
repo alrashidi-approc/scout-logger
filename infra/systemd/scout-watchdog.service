@@ -1,0 +1,13 @@
+[Unit]
+Description=Scout Logger host health watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/scout-logger
+ExecStart=/bin/bash /opt/scout-logger/scripts/watchdog-scout.sh
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

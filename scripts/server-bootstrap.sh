@@ -33,4 +33,19 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
   echo "==> UFW allow + route allow for tcp/${PORT}"
 fi
 
+# Host watchdog: probes published PORT from the host (catches dead Podman conmon forward).
+if command -v systemctl >/dev/null 2>&1 && [[ -d /etc/systemd/system ]]; then
+  chmod +x "${ROOT}/scripts/watchdog-scout.sh"
+  mkdir -p /var/lib/scout-logger
+  UNIT_SRC="${ROOT}/infra/systemd"
+  if [[ -f "${UNIT_SRC}/scout-watchdog.service" && -f "${UNIT_SRC}/scout-watchdog.timer" ]]; then
+    sed "s|/opt/scout-logger|${ROOT}|g" "${UNIT_SRC}/scout-watchdog.service" \
+      >/etc/systemd/system/scout-watchdog.service
+    cp "${UNIT_SRC}/scout-watchdog.timer" /etc/systemd/system/scout-watchdog.timer
+    systemctl daemon-reload
+    systemctl enable --now scout-watchdog.timer
+    echo "==> scout-watchdog.timer enabled (host /health every 1m)"
+  fi
+fi
+
 echo "==> Server bootstrap OK ($(pwd))"

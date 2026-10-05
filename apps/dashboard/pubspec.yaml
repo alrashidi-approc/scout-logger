@@ -1,7 +1,7 @@
 name: scout_dashboard
 description: Scout Logger — Flutter Web dashboard
 publish_to: none
-version: 0.1.1+53
+version: 0.1.1+58
 
 environment:
   sdk: ^3.5.0

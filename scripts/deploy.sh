@@ -126,6 +126,7 @@ else
   bash scripts/compose.sh down 2>/dev/null || true
 fi
 bash scripts/compose.sh up -d --build
+podman image prune -f >/dev/null 2>&1 || docker image prune -f >/dev/null 2>&1 || true
 for i in \$(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     curl -fsS -o /dev/null -w "dashboard:%{http_code}\n" "http://127.0.0.1:${PORT}/${DASHBOARD_WEB_PATH}/"
@@ -153,6 +154,7 @@ echo "  Health     ${PUBLIC}/health"
 echo "  Dashboard  ${PUBLIC}/${DASHBOARD_WEB_PATH}/"
 echo "  Logs       ssh ${HETZNER_HOST} 'cd ${HETZNER_DIR} && bash scripts/compose.sh logs -f server'"
 echo "  Restart    ssh ${HETZNER_HOST} 'cd ${HETZNER_DIR} && bash scripts/compose.sh restart server'"
+echo "  Watchdog   ssh ${HETZNER_HOST} 'systemctl status scout-watchdog.timer'"
 
 HEALTH="$(ssh "${SSH_OPTS[@]}" "$HETZNER_HOST" "curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:${PORT}/health" || echo "000")"
 if [[ "$HEALTH" != "200" ]]; then
