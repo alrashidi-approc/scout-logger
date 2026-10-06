@@ -52,6 +52,7 @@ case "$cmd" in
     echo "==> Applying migrations to localhost:${DB_PORT}..."
     cd "${ROOT}/apps/server"
     dart run bin/migrate.dart
+    dart run bin/migrate.dart --backfills
     ;;
   server)
     start_db

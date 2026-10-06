@@ -1,6 +1,11 @@
 import 'network_fault.dart';
 import 'expected_network.dart';
 
+/// Readable flags that mark a network event as a business outcome, not an incident.
+/// Gates add their own `issueWorthy` / `alertWorthy` checks on top.
+bool isExpectedOrNonOperationalNetwork(Map readable) =>
+    readable['faultKind'] == 'expected' || readable['operationalError'] == false;
+
 Map<String, dynamic> networkReadableFrom(
   Map<String, dynamic> network, {
   Map<int, NetworkFaultClass>? faultOverrides,

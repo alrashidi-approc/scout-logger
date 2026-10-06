@@ -44,14 +44,9 @@ Handler ingestRoutes(ScoutStore store, GeoEnricher geo) {
         enrichment: enrichment,
       );
 
-      // Events are committed: a 5xx now would make the SDK resend (duplicate) them.
-      final configVersion = await store
-          .getConfigVersion(project['projectId'] as String)
-          .then<int?>((v) => v, onError: (Object _) => null);
-
       return Response(
         202,
-        body: jsonEncode({'ok': true, 'configVersion': configVersion, ...result}),
+        body: jsonEncode({'ok': true, ...result}),
         headers: {'Content-Type': 'application/json'},
       );
     } on BodyTooLargeException catch (e) {

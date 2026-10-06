@@ -8,6 +8,7 @@ infra/ca-certificates.crt
 **/.packages
 **/build/
 apps/server/server
+apps/server/migrate
 **/.flutter-plugins
 **/.flutter-plugins-dependencies
 **/pubspec.lock

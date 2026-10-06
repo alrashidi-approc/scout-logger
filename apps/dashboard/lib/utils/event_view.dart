@@ -4,7 +4,6 @@ import 'package:scout_models/scout_models.dart';
 
 import 'geo_source.dart';
 import 'product_readable.dart';
-import 'user_identity.dart';
 
 Map<String, dynamic> asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : {};
 

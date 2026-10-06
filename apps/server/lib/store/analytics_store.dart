@@ -828,13 +828,12 @@ class AnalyticsStore {
     TimeWindow? window,
     String? q,
   }) async {
-    final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
     final query = q?.trim();
     final qParam = query == null || query.isEmpty ? null : query;
 
     if (preferIdentityRollups(w)) {
-      final rows = await conn.execute(
+      final rows = await db.search(qParam, (s) => s.execute(
         Sql.named('''
           SELECT u.user_id,
                  u.first_seen_at,
@@ -857,24 +856,15 @@ class AnalyticsStore {
           WHERE u.project_id = @pid
             AND (
               @q::text IS NULL
-              OR u.user_id ILIKE '%' || @q::text || '%'
-              OR u.email ILIKE '%' || @q::text || '%'
-              OR u.display_name ILIKE '%' || @q::text || '%'
-              OR u.phone ILIKE '%' || @q::text || '%'
-              OR u.username ILIKE '%' || @q::text || '%'
-              OR u.device_name ILIKE '%' || @q::text || '%'
-              OR u.country ILIKE '%' || @q::text || '%'
-              OR u.install_id ILIKE '%' || @q::text || '%'
-              OR EXISTS (
-                SELECT 1 FROM user_device_links l
+              OR u.user_id IN (
+                SELECT s.user_id FROM user_stats s
+                WHERE s.project_id = @pid AND ${sqlSearchMatch(sqlUserStatsSearchText('s'))}
+                UNION
+                SELECT l.user_id FROM user_device_links l
                 LEFT JOIN device_stats ds
                   ON ds.project_id = l.project_id AND ds.install_id = l.install_id
-                WHERE l.project_id = u.project_id AND l.user_id = u.user_id
-                  AND (
-                    l.install_id ILIKE '%' || @q::text || '%'
-                    OR ds.device_name ILIKE '%' || @q::text || '%'
-                    OR ds.platform ILIKE '%' || @q::text || '%'
-                  )
+                WHERE l.project_id = @pid
+                  AND (${sqlSearchMatch('l.install_id')} OR ${sqlSearchMatch('ds.device_name')} OR ${sqlSearchMatch('ds.platform')})
               )
             )
           GROUP BY u.project_id, u.user_id, u.first_seen_at, u.last_seen_at,
@@ -891,7 +881,7 @@ class AnalyticsStore {
           'lim': limit,
           'q': qParam,
         },
-      );
+      ));
       return rows
           .map((r) => {
                 'userId': r[0],
@@ -920,7 +910,7 @@ class AnalyticsStore {
           .toList();
     }
 
-    final rows = await conn.execute(
+    final rows = await db.search(qParam, (s) => s.execute(
       Sql.named('''
         SELECT user_id,
                MIN(occurred_at) AS first_seen,
@@ -983,7 +973,7 @@ class AnalyticsStore {
         'lim': limit,
         'q': qParam,
       },
-    );
+    ));
     return rows
         .map((r) => {
               'userId': r[0],
@@ -1319,13 +1309,12 @@ class AnalyticsStore {
     TimeWindow? window,
     String? q,
   }) async {
-    final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days.clamp(1, 90));
     final query = q?.trim();
     final qParam = query == null || query.isEmpty ? null : query;
 
     if (preferIdentityRollups(w)) {
-      final rows = await conn.execute(
+      final rows = await db.search(qParam, (s) => s.execute(
         Sql.named('''
           SELECT d.install_id,
                  d.first_seen_at,
@@ -1347,22 +1336,16 @@ class AnalyticsStore {
           WHERE d.project_id = @pid
             AND (
               @q::text IS NULL
-              OR d.install_id ILIKE '%' || @q::text || '%'
-              OR d.device_name ILIKE '%' || @q::text || '%'
-              OR d.platform ILIKE '%' || @q::text || '%'
-              OR d.country ILIKE '%' || @q::text || '%'
-              OR EXISTS (
-                SELECT 1 FROM user_device_links l
+              OR d.install_id IN (
+                SELECT s.install_id FROM device_stats s
+                WHERE s.project_id = @pid AND ${sqlSearchMatch(sqlDeviceStatsSearchText('s'))}
+                UNION
+                SELECT l.install_id FROM user_device_links l
                 LEFT JOIN user_stats us
                   ON us.project_id = l.project_id AND us.user_id = l.user_id
-                WHERE l.project_id = d.project_id AND l.install_id = d.install_id
-                  AND (
-                    l.user_id ILIKE '%' || @q::text || '%'
-                    OR us.email ILIKE '%' || @q::text || '%'
-                    OR us.display_name ILIKE '%' || @q::text || '%'
-                    OR us.phone ILIKE '%' || @q::text || '%'
-                    OR us.username ILIKE '%' || @q::text || '%'
-                  )
+                WHERE l.project_id = @pid
+                  AND (${sqlSearchMatch('l.user_id')} OR ${sqlSearchMatch('us.email')} OR ${sqlSearchMatch('us.display_name')}
+                    OR ${sqlSearchMatch('us.phone')} OR ${sqlSearchMatch('us.username')})
               )
             )
           GROUP BY d.project_id, d.install_id, d.first_seen_at, d.last_seen_at,
@@ -1377,7 +1360,7 @@ class AnalyticsStore {
           'lim': limit,
           'q': qParam,
         },
-      );
+      ));
       return rows
           .map((r) {
             final userCount = r[7] as int;
@@ -1403,7 +1386,7 @@ class AnalyticsStore {
           .toList();
     }
 
-    final rows = await conn.execute(
+    final rows = await db.search(qParam, (s) => s.execute(
       Sql.named('''
         SELECT install_id,
                MIN(occurred_at) AS first_seen,
@@ -1450,7 +1433,7 @@ class AnalyticsStore {
         'lim': limit,
         'q': qParam,
       },
-    );
+    ));
     return rows
         .map((r) => {
               'installId': r[0],

@@ -97,11 +97,7 @@ bool _networkAlertWorthy(Map<String, dynamic> payload) {
   final n = Map<String, dynamic>.from(network);
   final readable = n['readable'];
   if (readable is Map) {
-    if (readable['operationalError'] == false ||
-        readable['alertWorthy'] == false ||
-        readable['faultKind'] == 'expected') {
-      return false;
-    }
+    if (isExpectedOrNonOperationalNetwork(readable) || readable['alertWorthy'] == false) return false;
   }
   final fault = NetworkFaultInfo.fromJson(readable is Map ? readable['fault'] : null) ?? classifyNetworkFault(n);
   return fault.alertWorthy && fault.operationalError && fault.kind != 'expected';
@@ -144,7 +140,7 @@ List<NotificationJob> routeNotifications({
     eventId: eventId,
     payload: payload,
   );
-  final release = _releaseFromPayload(payload);
+  final release = releaseFromPayload(payload);
   final title = _alertTitle(type: type, environment: environment, message: message, payload: payload);
   final body = _alertBody(
     projectName: projectName,
@@ -225,21 +221,6 @@ String alertDedupKey({
     }
   }
   return issueId ?? fingerprint ?? eventId;
-}
-
-String? _releaseFromPayload(Map<String, dynamic> payload) {
-  final direct = payload['release'];
-  if (direct is String && direct.trim().isNotEmpty) return direct.trim();
-  if (direct is Map) {
-    final v = direct['version'] ?? direct['name'] ?? direct['id'];
-    if (v != null && v.toString().trim().isNotEmpty) return v.toString().trim();
-  }
-  final app = payload['app'];
-  if (app is Map) {
-    final v = app['version'] ?? app['build'];
-    if (v != null && v.toString().trim().isNotEmpty) return v.toString().trim();
-  }
-  return null;
 }
 
 /// Path only (no query / secrets), trimmed for alert titles.

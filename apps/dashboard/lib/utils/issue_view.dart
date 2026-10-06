@@ -29,6 +29,50 @@ bool issueErrorFocus(Map<String, dynamic> issue) =>
 
 bool issueWarningFocus(Map<String, dynamic> issue) => issueLevel(issue) == 'warning';
 
+Color priorityColor(int priority) => priority >= 6
+    ? AppTheme.error
+    : priority >= 3
+        ? AppTheme.warning
+        : AppTheme.muted;
+
+/// Top [max] suspect labels, e.g. `ios · 92%`, `v1.4.0 · 80%`.
+List<String> suspectLabels(Map<String, dynamic> issue, {int max = 2}) => [
+      for (final s in ((issue['suspects'] as List?) ?? const []).whereType<Map>().take(max))
+        '${s['dimension'] == 'app_version' ? 'v' : ''}${s['value']} · ${(((s['share'] as num?) ?? 0) * 100).round()}%',
+    ];
+
+DateTime? _issueTime(Map<String, dynamic> issue, String key) => DateTime.tryParse(issue[key] as String? ?? '');
+
+/// Triage inbox buckets; each issue lands in the first that matches (spike → new → regression → waiting),
+/// keeping the incoming (priority) order.
+({
+  List<Map<String, dynamic>> spikes,
+  List<Map<String, dynamic>> fresh,
+  List<Map<String, dynamic>> regressions,
+  List<Map<String, dynamic>> waiting,
+}) triageSections(List<Map<String, dynamic>> issues, {required DateTime since}) {
+  final spikes = <Map<String, dynamic>>[];
+  final fresh = <Map<String, dynamic>>[];
+  final regressions = <Map<String, dynamic>>[];
+  final waiting = <Map<String, dynamic>>[];
+  for (final i in issues) {
+    final bucket = i['spike'] == true
+        ? spikes
+        : !(_issueTime(i, 'firstSeenAt')?.isBefore(since) ?? true)
+            ? fresh
+            : !(_issueTime(i, 'regressedAt')?.isBefore(since) ?? true)
+                ? regressions
+                : waiting;
+    bucket.add(i);
+  }
+  return (spikes: spikes, fresh: fresh, regressions: regressions, waiting: waiting);
+}
+
+/// First seen, regressed or spiking after [lastVisit].
+bool issueSinceVisit(Map<String, dynamic> issue, DateTime? lastVisit) =>
+    lastVisit != null &&
+    ['firstSeenAt', 'regressedAt', 'spikeAt'].any((k) => _issueTime(issue, k)?.isAfter(lastVisit) ?? false);
+
 Color chartTypeColor(String type) => switch (type.toLowerCase()) {
       'error' || 'crash' => AppTheme.error,
       'network' => AppTheme.warning,

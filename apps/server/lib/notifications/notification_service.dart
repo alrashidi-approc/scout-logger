@@ -59,8 +59,11 @@ class NotificationService {
 
   Future<void> onEventIngested({
     required String projectId,
+    required String projectName,
     required String eventId,
     required String? issueId,
+    /// Dedup as this issue instead (the v1 predecessor of a v2 issue).
+    String? alertIssueId,
     required String type,
     required String environment,
     required String? message,
@@ -74,7 +77,6 @@ class NotificationService {
     // Auto-alerts only for release/production builds — never debug/staging/dev.
     if (!isReleaseNotificationEnvironment(environment)) return;
 
-    final projectName = await store.projectName(projectId) ?? projectId;
     final jobs = routeNotifications(
       config: notifications,
       platform: platform,
@@ -91,7 +93,8 @@ class NotificationService {
     );
     if (jobs.isEmpty) return;
 
-    for (final job in jobs) {
+    for (var job in jobs) {
+      if (alertIssueId != null) job = job.copyWith(dedupKey: alertIssueId);
       // Await so sequential ingest in a batch cannot race past dedup.
       await _deliver(
         projectId: projectId,

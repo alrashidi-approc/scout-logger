@@ -51,6 +51,17 @@ class GeoLookup {
   }
 }
 
+/// Geo source buckets shared by ingest (`daily_stats.geo_*`), the backfill and
+/// the raw-event geoBreakdown — one list so they can't drift.
+const geoSourceBuckets = {
+  'locale': ['locale', 'device_locale'],
+  'ip': ['ip', 'local_ip'],
+  'profile': ['profile'],
+};
+
+String sqlGeoSourceIn(String bucket) =>
+    "enrichment->'geo'->>'source' IN (${geoSourceBuckets[bucket]!.map((s) => "'$s'").join(', ')})";
+
 class GeoResolution {
   const GeoResolution({
     required this.geo,

@@ -1,0 +1,161 @@
+{
+ "boom": {
+  "events": [
+   "boom at checkout"
+  ],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [],
+  "devices": []
+ },
+ "user-42": {
+  "events": [
+   "boom at checkout"
+  ],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [
+   "user-42"
+  ],
+  "devices": [
+   "inst-7"
+  ]
+ },
+ "sess-9": {
+  "events": [
+   "user tapped pay"
+  ],
+  "issues": [],
+  "users": [],
+  "devices": []
+ },
+ "inst-7": {
+  "events": [],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [
+   "user-42"
+  ],
+  "devices": [
+   "inst-7"
+  ]
+ },
+ "/api/pay": {
+  "events": [
+   "POST /api/pay"
+  ],
+  "issues": [
+   "POST /api/pay · Server error"
+  ],
+  "users": [],
+  "devices": []
+ },
+ "trace-abc": {
+  "events": [
+   "POST /api/pay"
+  ],
+  "issues": [],
+  "users": [],
+  "devices": []
+ },
+ "pixel": {
+  "events": [
+   "boom at checkout"
+  ],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [
+   "user-42"
+  ],
+  "devices": [
+   "inst-7"
+  ]
+ },
+ "alice@": {
+  "events": [],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [
+   "user-42"
+  ],
+  "devices": [
+   "inst-7"
+  ]
+ },
+ "Alice Smith": {
+  "events": [],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [
+   "user-42"
+  ],
+  "devices": [
+   "inst-7"
+  ]
+ },
+ "StackFrame": {
+  "events": [
+   "boom at checkout"
+  ],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [],
+  "devices": []
+ },
+ "deepframe": {
+  "events": [
+   "boom at checkout"
+  ],
+  "issues": [
+   "main.dart: boom at checkout"
+  ],
+  "users": [],
+  "devices": []
+ },
+ "TraceOnly": {
+  "events": [
+   "other failure"
+  ],
+  "issues": [],
+  "users": [],
+  "devices": []
+ },
+ "Carol": {
+  "events": [],
+  "issues": [
+   "other failure"
+  ],
+  "users": [
+   "user-45"
+  ],
+  "devices": []
+ },
+ "example": {
+  "events": [],
+  "issues": [
+   "main.dart: boom at checkout",
+   "POST /api/pay · Server error"
+  ],
+  "users": [
+   "user-42",
+   "user-44"
+  ],
+  "devices": [
+   "inst-7",
+   "inst-8"
+  ]
+ },
+ "zzznomatch": {
+  "events": [],
+  "issues": [],
+  "users": [],
+  "devices": []
+ }
+}

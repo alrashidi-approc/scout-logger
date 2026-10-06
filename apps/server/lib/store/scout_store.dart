@@ -14,10 +14,23 @@ import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/identity_rollups.dart';
 import '../util/insights.dart';
+import '../util/issue_rules.dart';
 import '../util/rollup_batch.dart';
 import '../util/user_identity.dart';
 
 const _sessionIdleMinutes = 5;
+
+/// Raw events still stored. Retention never deletes past the shortest retention window, so
+/// later days come from daily_stats and older ones are counted. Odd settings fall back to 1 day.
+const _sqlStoredEventCount = r'''
+(SELECT ((SELECT COALESCE(SUM(d.events_total), 0) FROM daily_stats d WHERE d.project_id = p.id AND d.date >= w.day)
+       + (SELECT COUNT(*) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat
+            AND e.occurred_at < w.day::timestamp AT TIME ZONE 'UTC'))::int
+ FROM (SELECT (now() AT TIME ZONE 'UTC')::date + 1 - LEAST(
+         CASE WHEN rd IS NULL THEN 30 WHEN rd ~ '^[0-9]{1,3}$' THEN GREATEST(LEAST(rd::int, 365), 1) ELSE 1 END,
+         CASE WHEN ed IS NULL THEN 90 WHEN ed = '0' THEN 365 WHEN ed ~ '^[0-9]{1,3}$' THEN GREATEST(ed::int, 1) ELSE 1 END
+       ) AS day
+       FROM (SELECT p.settings #>> '{retention,routineDays}' AS rd, p.settings #>> '{retention,errorDays}' AS ed) s) w)''';
 
 bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   final level = (payload['level']?.toString() ?? '').toLowerCase();
@@ -28,7 +41,7 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   if (network is Map) {
     final n = Map<String, dynamic>.from(network);
     final readable = _asMap(n['readable']);
-    if (readable['operationalError'] == false || readable['issueWorthy'] == false || readable['faultKind'] == 'expected') {
+    if (isExpectedOrNonOperationalNetwork(readable) || readable['issueWorthy'] == false) {
       return false;
     }
     final fault = NetworkFaultInfo.fromJson(readable['fault']) ?? classifyNetworkFault(n);
@@ -43,6 +56,29 @@ bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
 
 Map<String, dynamic> _asMap(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
 
+/// The project's releases in production-like environments, newest first (`release`, `first_seen_at`).
+const _latestReleaseSql = '''
+  SELECT release, MIN(first_seen_at) AS since FROM releases
+  WHERE project_id = @pid AND lower(environment) IN ('production', 'prod', 'release')
+  GROUP BY release ORDER BY since DESC''';
+
+/// Event columns checked for a dominant value (I15 suspects / issue insights correlations).
+const _suspectColumns = [
+  ('app_version', 'App version'),
+  ('platform', 'Platform'),
+  ('country', 'Country'),
+  ('environment', 'Environment'),
+];
+
+/// A value is a suspect when at least this share of the issue's error events carry it.
+const _suspectShare = 0.6;
+
+/// Leading issue columns read by [ScoutStore._issueSummaryFromRow] (keep the order).
+const _issueCols = 'id, fingerprint, type, title, status, event_count, affected_users, first_seen_at, last_seen_at, top_country, '
+    'priority, priority_reasons, spike, spike_at, noise_reason, first_release, summary, likely_cause, '
+    'culprit, auto_status_reason, auto_status_at, suspects, regressed_at';
+final _n = _issueCols.split(',').length;
+
 List<String>? _normalizedEnvFilter(List<String>? environments) {
   if (environments == null || environments.isEmpty || environments.contains('*')) return null;
   final envs = environments.map((e) => e.trim().toLowerCase()).where((e) => e.isNotEmpty).toSet().toList();
@@ -52,21 +88,45 @@ List<String>? _normalizedEnvFilter(List<String>? environments) {
 /// Result of grouping an event into an issue.
 /// One fingerprint's events within an ingest batch, upserted as a single issue row.
 class _IssueEvents {
-  _IssueEvents(this.type, this.firstSeenAt, this.affectedUser);
+  /// [payload] is the batch's first event for this issue.
+  _IssueEvents(this.type, this.firstSeenAt, Map<String, dynamic> payload)
+      : firstRelease = releaseFromPayload(payload),
+        v1Fingerprint = type == 'network' ? null : legacyFingerprint(type, payload),
+        culprit = type == 'network' ? _nonEmpty(networkRoute(payload)) : culpritPath(stackFromPayload(payload)),
+        groupHint = type == 'network' ? null : issueGroupHint(payload);
 
   final String type;
   final DateTime firstSeenAt;
-  final bool affectedUser;
+  final String? firstRelease;
+  /// Top in-app frame file, or the normalized route for network issues.
+  final String? culprit;
+  final String? groupHint;
+
+  static String? _nonEmpty(String s) => s.isEmpty ? null : s;
+
+  /// Locates the v1 predecessor issue on insert.
+  final String? v1Fingerprint;
   late DateTime lastSeenAt = firstSeenAt;
   var count = 0;
   var title = '';
+  var titleRank = 0;
+  ({String summary, String? likelyCause})? brief;
   String? country;
 
-  void add(String title, DateTime at, String? country) {
+  /// Identified users in this batch ([isIdentifiedAppUser]).
+  final users = <String>{};
+
+  void add(String title, int titleRank, ({String summary, String? likelyCause})? brief, DateTime at, String? country,
+      String? identifiedUser) {
     count++;
     if (at.isAfter(lastSeenAt)) lastSeenAt = at;
-    if (title.isNotEmpty) this.title = title;
+    if (title.isNotEmpty && titleRank >= this.titleRank) {
+      this.title = title;
+      this.titleRank = titleRank;
+      if (brief != null) this.brief = brief;
+    }
     this.country ??= country;
+    if (identifiedUser != null) users.add(identifiedUser);
   }
 }
 
@@ -76,13 +136,16 @@ class _IngestBatch {
   final events = <({
     String? fingerprint,
     Map<String, Object?> params,
-    Future<void> Function(String? issueId, bool regression)? notify,
+    Future<void> Function(String? issueId, String? alertIssueId, bool regression)? notify,
   })>[];
   final rollups = RollupBatch();
 }
 
 class IssueUpsert {
-  const IssueUpsert({required this.id, required this.muted, required this.regression});
+  const IssueUpsert({required this.id, required this.muted, required this.regression, this.predecessorId});
+
+  /// v1 issue this v2 issue replaced — alerts keep deduplicating on its id.
+  final String? predecessorId;
 
   /// Issue is muted (status `ignored`) — suppress notifications.
   final bool muted;
@@ -116,6 +179,14 @@ class ScoutStore {
   final ScoutDb db;
   final KeyCipher? _cipher;
   final NotificationService? _notifications;
+  final _sessionsSweptAt = <String, DateTime>{};
+
+  /// The latest batch's background notification sends (awaited by tests).
+  Future<void> lastNotifications = Future.value();
+
+  /// Background expected-network reclassify runs (awaited by tests).
+  Future<void> lastReclassify = Future.value();
+  final _reclassifyAgain = <String, bool>{};
 
   Future<Map<String, dynamic>?> findProjectByIngestKey(String rawKey) async {
     final conn = await db.connect();
@@ -185,7 +256,7 @@ class ScoutStore {
     if (admin) {
       rows = await conn.execute('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
+               $_sqlStoredEventCount,
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
                (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat),
                NULL::text
@@ -196,7 +267,7 @@ class ScoutStore {
       rows = await conn.execute(
         Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
+               $_sqlStoredEventCount,
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
                (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat),
                m.role
@@ -254,7 +325,7 @@ class ScoutStore {
     final rows = await conn.execute(
       Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
+               $_sqlStoredEventCount,
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
                (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat)
         FROM projects p WHERE p.id = @id
@@ -680,14 +751,29 @@ class ScoutStore {
     required Map<String, dynamic> enrichment,
   }) async {
     final conn = await db.connect();
-    await closeStaleSessions(projectId: projectId, conn: conn);
-    final faultOverrides = await _networkFaultOverrides(conn, projectId);
-    final expectedResponses = await _expectedNetworkResponses(conn, projectId);
+    // Heartbeats skip stale sessions themselves, so sweeping once a minute is enough.
+    final now = DateTime.now();
+    if (now.difference(_sessionsSweptAt[projectId] ?? DateTime(0)) >= const Duration(seconds: 60)) {
+      _sessionsSweptAt[projectId] = now;
+      await closeStaleSessions(projectId: projectId, conn: conn);
+    }
+    final projectRows = await conn.execute(
+      Sql.named("SELECT name, settings, COALESCE((settings->>'configVersion')::int, 1) FROM projects WHERE id = @id"),
+      parameters: {'id': projectId},
+    );
+    final projectName = projectRows.firstOrNull?[0] as String? ?? projectId;
+    final raw = projectRows.firstOrNull?[1];
+    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final configVersion = projectRows.firstOrNull?[2] as int? ?? 1;
+    final sdk = _sdkConfig(settings);
+    final faultOverrides = sdk.networkFaultOverrides;
+    final expectedResponses = sdk.expectedNetworkRules;
     ProjectNotificationConfig? notifConfig;
     PlatformNotificationPolicy? platformPolicy;
     final notifications = _notifications;
     if (notifications != null) {
-      notifConfig = await notifications.store.getConfig(projectId);
+      final json = settings['notifications'];
+      notifConfig = ProjectNotificationConfig.fromJson(json is Map ? Map<String, dynamic>.from(json) : null);
       platformPolicy = await notifications.platformStore.getNotificationPolicy();
     }
     final known = events.where((e) => isKnownEventType(e.type)).toList();
@@ -710,6 +796,7 @@ class ScoutStore {
                 expectedResponses: expectedResponses,
                 notifConfig: notifConfig,
                 platformPolicy: platformPolicy,
+                projectName: projectName,
                 batch: writes,
               );
             }
@@ -742,34 +829,34 @@ class ScoutStore {
       }
     }
 
-    for (final notify in afterCommit) {
-      try {
-        await notify();
-      } catch (e) {
-        stderr.writeln('ingest: notification failed (project $projectId): $e');
+    // Sent in the background, in order (dedup relies on it); lost if the process dies first.
+    lastNotifications = () async {
+      for (final notify in afterCommit) {
+        try {
+          await notify();
+        } catch (e) {
+          stderr.writeln('ingest: notification failed (project $projectId): $e');
+        }
       }
-    }
-    return {'accepted': known.length - rejected, 'total': events.length, 'rejected': rejected};
-  }
-
-  Future<Map<int, NetworkFaultClass>> _networkFaultOverrides(Session conn, String projectId) async {
-    final sdk = await _projectSdkConfig(conn, projectId);
-    return sdk.networkFaultOverrides;
+    }();
+    return {
+      'accepted': known.length - rejected,
+      'total': events.length,
+      'rejected': rejected,
+      'configVersion': configVersion,
+    };
   }
 
   Future<List<ExpectedNetworkResponse>> _expectedNetworkResponses(Session conn, String projectId) async {
-    final sdk = await _projectSdkConfig(conn, projectId);
-    return sdk.expectedNetworkRules;
-  }
-
-  Future<ProjectSdkConfig> _projectSdkConfig(Session conn, String projectId) async {
     final rows = await conn.execute(
       Sql.named('SELECT settings FROM projects WHERE id = @id'),
       parameters: {'id': projectId},
     );
-    if (rows.isEmpty) return const ProjectSdkConfig();
-    final raw = rows.first[0];
-    final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    final raw = rows.firstOrNull?[0];
+    return _sdkConfig(raw is Map ? Map<String, dynamic>.from(raw) : const {}).expectedNetworkRules;
+  }
+
+  ProjectSdkConfig _sdkConfig(Map<String, dynamic> settings) {
     final sdkJson = settings['sdk'];
     return ProjectSdkConfig.fromJson(sdkJson is Map ? Map<String, dynamic>.from(sdkJson) : null);
   }
@@ -784,6 +871,7 @@ class ScoutStore {
     List<ExpectedNetworkResponse>? expectedResponses,
     ProjectNotificationConfig? notifConfig,
     PlatformNotificationPolicy? platformPolicy,
+    required String projectName,
     required _IngestBatch batch,
   }) async {
     final payload = _payloadWithNetworkReadable(
@@ -844,9 +932,16 @@ class ScoutStore {
       batch.issues
           .putIfAbsent(
             fingerprint,
-            () => _IssueEvents(event.type, occurredAt, isIdentifiedAppUser(userId: userId, installId: installId)),
+            () => _IssueEvents(event.type, occurredAt, payload),
           )
-          .add(eventTitle(event.type, payload), occurredAt, country);
+          .add(
+            eventTitle(event.type, payload),
+            titleRank(payload),
+            diagnosisBrief(payload),
+            occurredAt,
+            country,
+            isIdentifiedAppUser(userId: userId, installId: installId) ? userId : null,
+          );
     }
 
     final eventId = newId();
@@ -878,10 +973,12 @@ class ScoutStore {
       },
       notify: notifications == null || notifConfig == null || platformPolicy == null
           ? null
-          : (String? issueId, bool regression) => notifications.onEventIngested(
+          : (String? issueId, String? alertIssueId, bool regression) => notifications.onEventIngested(
                 projectId: projectId,
+                projectName: projectName,
                 eventId: eventId,
                 issueId: issueId,
+                alertIssueId: alertIssueId,
                 type: event.type,
                 environment: environment,
                 message: message,
@@ -952,13 +1049,16 @@ class ScoutStore {
     final sessionFlag = event.type == 'session' ? 1 : 0;
     final spanFlag = event.type == 'span' ? 1 : 0;
     final logFlag = event.type == 'log' ? 1 : 0;
+    int geo(String bucket) => geoSourceBuckets[bucket]!.contains(resolved.source) ? 1 : 0;
     batch.rollups.add(
       '''
         INSERT INTO daily_stats (
           project_id, date, country, events_total, errors, crashes, unique_users,
-          network_total, network_success, network_error, session_total, span_total, log_total
+          network_total, network_success, network_error, session_total, span_total, log_total,
+          geo_locale, geo_ip, geo_profile
         )
-        VALUES (@pid, @day::date, @country, @n, @err, @crash, @uu, @net, @nets, @nete, @sess, @span, @log)
+        VALUES (@pid, @day::date, @country, @n, @err, @crash, @uu, @net, @nets, @nete, @sess, @span, @log,
+                @gloc, @gip, @gprof)
         ON CONFLICT (project_id, date, country) DO UPDATE SET
           events_total = daily_stats.events_total + EXCLUDED.events_total,
           errors = daily_stats.errors + EXCLUDED.errors,
@@ -968,7 +1068,10 @@ class ScoutStore {
           network_error = daily_stats.network_error + EXCLUDED.network_error,
           session_total = daily_stats.session_total + EXCLUDED.session_total,
           span_total = daily_stats.span_total + EXCLUDED.span_total,
-          log_total = daily_stats.log_total + EXCLUDED.log_total
+          log_total = daily_stats.log_total + EXCLUDED.log_total,
+          geo_locale = daily_stats.geo_locale + EXCLUDED.geo_locale,
+          geo_ip = daily_stats.geo_ip + EXCLUDED.geo_ip,
+          geo_profile = daily_stats.geo_profile + EXCLUDED.geo_profile
       ''',
       [projectId, day, country ?? ''],
       {
@@ -985,8 +1088,11 @@ class ScoutStore {
         'sess': sessionFlag,
         'span': spanFlag,
         'log': logFlag,
+        'gloc': geo('locale'),
+        'gip': geo('ip'),
+        'gprof': geo('profile'),
       },
-      sum: {'n', 'err', 'crash', 'net', 'nets', 'nete', 'sess', 'span', 'log'},
+      sum: {'n', 'err', 'crash', 'net', 'nets', 'nete', 'sess', 'span', 'log', 'gloc', 'gip', 'gprof'},
     );
 
     upsertIdentityRollups(
@@ -1037,7 +1143,7 @@ class ScoutStore {
       // Only the issue's first event in the batch reopened it.
       final regression = issue != null && issue.regression && regressed.add(event.fingerprint!);
       final notify = event.notify;
-      if (notify != null && !(issue?.muted ?? false)) afterCommit.add(() => notify(issue?.id, regression));
+      if (notify != null && !(issue?.muted ?? false)) afterCommit.add(() => notify(issue?.id, issue?.predecessorId, regression));
     }
     await batch.rollups.apply(conn);
   }
@@ -1048,8 +1154,9 @@ class ScoutStore {
     required String fingerprint,
     required _IssueEvents issue,
   }) async {
+    // FOR UPDATE: the new-user count below then sees concurrent batches' committed events.
     final existing = await conn.execute(
-      Sql.named('SELECT id, status FROM issues WHERE project_id = @pid AND fingerprint = @fp'),
+      Sql.named('SELECT id, status, predecessor_id FROM issues WHERE project_id = @pid AND fingerprint = @fp FOR UPDATE'),
       parameters: {'pid': projectId, 'fp': fingerprint},
     );
 
@@ -1058,13 +1165,32 @@ class ScoutStore {
       final status = existing.first[1] as String? ?? 'open';
       final muted = status == 'ignored';
       final regression = status == 'resolved';
+      // Runs before this batch's events are inserted; uses events_user (project_id, user_id).
+      final newUsers = issue.users.isEmpty
+          ? 0
+          : (await conn.execute(
+              Sql.named('''
+                SELECT COUNT(*)::int FROM unnest(@users::text[]) u(uid)
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM events e WHERE e.project_id = @pid AND e.user_id = u.uid AND e.issue_id = @id
+                )
+              '''),
+              parameters: {'users': issue.users.toList(), 'pid': projectId, 'id': id},
+            ))
+              .first[0] as int;
       await conn.execute(
         Sql.named('''
           UPDATE issues SET
             last_seen_at = GREATEST(last_seen_at, @last),
             event_count = event_count + @n,
-            title = COALESCE(NULLIF(@title, ''), title),
+            affected_users = affected_users + @au,
+            title = CASE WHEN @rank >= title_rank THEN COALESCE(NULLIF(@title, ''), title) ELSE title END,
+            summary = CASE WHEN @rank > 0 AND @rank >= title_rank THEN @summary::text ELSE summary END,
+            likely_cause = CASE WHEN @rank > 0 AND @rank >= title_rank THEN @cause::text ELSE likely_cause END,
+            title_rank = GREATEST(title_rank, @rank),
             top_country = COALESCE(top_country, @country),
+            culprit = COALESCE(culprit, @culprit::text),
+            group_hint = COALESCE(group_hint, @hint::text),
             status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END,
             regressed_at = CASE WHEN status = 'resolved' THEN @at ELSE regressed_at END
           WHERE id = @id
@@ -1074,20 +1200,38 @@ class ScoutStore {
           'at': issue.firstSeenAt,
           'last': issue.lastSeenAt,
           'n': issue.count,
+          'au': newUsers,
           'title': issue.title,
+          'rank': issue.titleRank,
+          'summary': issue.brief?.summary,
+          'cause': issue.brief?.likelyCause,
+          'culprit': issue.culprit,
+          'hint': issue.groupHint,
           'country': issue.country,
         },
       );
-      return IssueUpsert(id: id, muted: muted, regression: regression);
+      return IssueUpsert(id: id, muted: muted, regression: regression, predecessorId: existing.first[2] as String?);
     }
 
+    // A v2 issue whose v1 predecessor was active lately is not news: no alert on creation.
+    final predecessorId = issue.v1Fingerprint == null
+        ? null
+        : (await conn.execute(
+            Sql.named('''
+              SELECT id FROM issues
+              WHERE project_id = @pid AND fingerprint = @fp AND last_seen_at >= now() - interval '14 days'
+            '''),
+            parameters: {'pid': projectId, 'fp': issue.v1Fingerprint},
+          ))
+            .firstOrNull?[0] as String?;
     final id = newId();
     final inserted = await conn.execute(
       Sql.named('''
         INSERT INTO issues (
           id, project_id, fingerprint, type, title, first_seen_at, last_seen_at,
-          event_count, affected_users, top_country
-        ) VALUES (@id, @pid, @fp, @type, @title, @at, @last, @n, @au, @country)
+          event_count, affected_users, top_country, title_rank, summary, likely_cause, first_release, predecessor_id, culprit, group_hint
+        ) VALUES (@id, @pid, @fp, @type, @title, @at, @last, @n, @au, @country, @rank, @summary::text, @cause::text, @rel::text, @prev::text,
+                  @culprit::text, @hint::text)
         ON CONFLICT (project_id, fingerprint) DO NOTHING
         RETURNING id
       '''),
@@ -1100,13 +1244,20 @@ class ScoutStore {
         'at': issue.firstSeenAt,
         'last': issue.lastSeenAt,
         'n': issue.count,
-        'au': issue.affectedUser ? 1 : 0,
+        'au': issue.users.length,
+        'rank': issue.titleRank,
+        'summary': issue.brief?.summary,
+        'cause': issue.brief?.likelyCause,
+        'rel': issue.firstRelease,
+        'prev': predecessorId,
+        'culprit': issue.culprit,
+        'hint': issue.groupHint,
         'country': issue.country,
       },
     );
     // Lost the race to a concurrent insert — take the update path instead.
     if (inserted.isEmpty) return _upsertIssue(conn, projectId: projectId, fingerprint: fingerprint, issue: issue);
-    return IssueUpsert(id: id, muted: false, regression: false);
+    return IssueUpsert(id: id, muted: predecessorId != null, regression: false, predecessorId: predecessorId);
   }
 
   Future<List<Map<String, dynamic>>> listIssues(
@@ -1122,12 +1273,24 @@ class ScoutStore {
     TimeWindow? window,
     /// Issues-table only (no per-row event scans). For overview / light lists.
     bool lite = false,
+    /// Drop issues the signals job tagged with a `noise_reason`.
+    bool hideNoise = false,
+    /// Highest `priority` first instead of most recently seen.
+    bool byPriority = false,
+    /// Only issues first seen in this release (`first_release`).
+    String? firstRelease,
   }) async {
     final conn = await db.connect();
     final w = window ?? (days == null ? TimeWindow.all : TimeWindow.lastDays(days));
+    final issueFilter = [
+      if (hideNoise) 'AND noise_reason IS NULL',
+      if (firstRelease != null) 'AND first_release = @frel',
+    ].join(' ');
+    final order = byPriority ? 'priority DESC, last_seen_at DESC' : 'last_seen_at DESC';
     final facetActive = hasEventFacetFilters(environment: environment, appVersion: appVersion, deviceName: deviceName);
+    // With facets an issue matches on any scoped event in the window; last_seen_at >= since is implied.
     final issueTimeClause = facetActive
-        ? ''
+        ? 'AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)'
         : '''
           AND (@since::timestamptz IS NULL OR last_seen_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR last_seen_at < @until::timestamptz)''';
@@ -1135,72 +1298,30 @@ class ScoutStore {
     if (lite && !facetActive && (q == null || q.isEmpty)) {
       final rows = await conn.execute(
         Sql.named('''
-          SELECT id, fingerprint, type, title, status, event_count, affected_users,
-                 first_seen_at, last_seen_at, top_country
+          SELECT $_issueCols
           FROM issues WHERE project_id = @pid
             AND (@type::text IS NULL OR type = @type::text)
             AND (@status::text IS NULL OR status = @status::text)
             $issueTimeClause
-          ORDER BY last_seen_at DESC LIMIT @lim
+            $issueFilter
+          ORDER BY $order LIMIT @lim
         '''),
         parameters: {
           'pid': projectId,
           'lim': limit,
           'type': type,
           'status': status,
+          if (firstRelease != null) 'frel': firstRelease,
           ...timeParams(w),
         },
       );
-      return rows.map((r) {
-        final lastSeen = r[8] as DateTime;
-        final sev = computeIssueSeverity(
-          eventCount: (r[5] as int?) ?? 0,
-          affectedUsers: (r[6] as int?) ?? 0,
-          hoursSinceLastSeen: DateTime.now().toUtc().difference(lastSeen.toUtc()).inHours,
-          isCrash: r[2] == 'crash',
-        );
-        return {
-          'id': r[0],
-          'fingerprint': r[1],
-          'type': r[2],
-          'title': r[3],
-          'status': r[4],
-          'eventCount': r[5],
-          'affectedUsers': (r[6] as int?) ?? 0,
-          'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
-          'lastSeenAt': lastSeen.toUtc().toIso8601String(),
-          'topCountry': r[9],
-          'severity': sev.severity,
-        };
-      }).toList();
+      return rows.map(_issueSummaryFromRow).toList();
     }
 
-    final rows = await conn.execute(
+    final rows = await db.search(q, (s) => s.execute(
       Sql.named('''
-        SELECT id, fingerprint, type, title, status, event_count, affected_users,
-               first_seen_at, last_seen_at, top_country,
-               (SELECT COALESCE(NULLIF(e.payload->>'level', ''), 'error')
-                FROM events e WHERE ${sqlIssueEventScope()}
-                ORDER BY e.occurred_at DESC LIMIT 1) AS level,
-               (SELECT e.payload->'network'->>'statusCode'
-                FROM events e WHERE ${sqlIssueEventScope()}
-                ORDER BY e.occurred_at DESC LIMIT 1) AS status_code,
-               (SELECT COUNT(*)::int
-                FROM events e
-                WHERE ${sqlIssueEventScope()}
-               ) AS period_events,
-               (SELECT device FROM (
-                  SELECT ${sqlDeviceNameExpr(alias: 'e2')} AS device, COUNT(*)::int AS c
-                  FROM events e2
-                  WHERE ${sqlIssueEventScope(alias: 'e2')}
-                    AND ${sqlDeviceNameExpr(alias: 'e2')} IS NOT NULL AND ${sqlDeviceNameExpr(alias: 'e2')} <> ''
-                  GROUP BY device ORDER BY c DESC LIMIT 1
-                ) d) AS top_device,
-               (SELECT COUNT(DISTINCT e.user_id)::int
-                FROM events e
-                WHERE ${sqlIssueEventScope()}
-                  AND e.user_id IS NOT NULL AND e.user_id <> ''
-               ) AS period_users
+        WITH picked AS (
+        SELECT $_issueCols
         FROM issues WHERE project_id = @pid
           AND EXISTS (
             SELECT 1 FROM events e
@@ -1210,21 +1331,37 @@ class ScoutStore {
           AND (@status::text IS NULL OR status = @status::text)
           AND (
             @q::text IS NULL
-            OR title ILIKE '%' || @q::text || '%'
-            OR EXISTS (
-              SELECT 1 FROM events e WHERE e.project_id = @pid AND e.issue_id = issues.id
-                AND (e.message ILIKE '%' || @q::text || '%'
-                  OR e.user_id ILIKE '%' || @q::text || '%'
-                  OR e.install_id ILIKE '%' || @q::text || '%'
-                  OR ${sqlDeviceNameExpr(alias: 'e')} ILIKE '%' || @q::text || '%'
-                  OR NULLIF(TRIM(e.payload->'user'->>'email'), '') ILIKE '%' || @q::text || '%'
-                  OR NULLIF(TRIM(e.payload->'user'->>'name'), '') ILIKE '%' || @q::text || '%'
-                  OR e.payload->>'stack' ILIKE '%' || @q::text || '%'
-                  OR e.payload->'network'->>'url' ILIKE '%' || @q::text || '%')
+            OR ${sqlSearchMatch('title')}
+            OR id IN (
+              SELECT e.issue_id FROM events e
+              WHERE e.project_id = @pid AND ${sqlSearchMatch(sqlEventSearchText(alias: 'e'))}
             )
           )
           $issueTimeClause
-        ORDER BY last_seen_at DESC LIMIT @lim
+          $issueFilter
+        ORDER BY $order LIMIT @lim
+        ), scoped AS (
+          SELECT e.issue_id, e.occurred_at, e.user_id,
+                 COALESCE(NULLIF(e.payload->>'level', ''), 'error') AS level,
+                 e.payload->'network'->>'statusCode' AS status_code,
+                 ${sqlDeviceNameExpr(alias: 'e')} AS device
+          FROM picked JOIN events e ON ${sqlIssueEventScope(issueIdExpr: 'picked.id')}
+        ), latest AS (
+          SELECT DISTINCT ON (issue_id) issue_id, level, status_code FROM scoped ORDER BY issue_id, occurred_at DESC
+        ), top_device AS (
+          SELECT DISTINCT ON (issue_id) issue_id, device
+          FROM scoped WHERE device <> '' GROUP BY issue_id, device ORDER BY issue_id, COUNT(*) DESC, device
+        ), period AS (
+          SELECT issue_id, COUNT(*)::int AS events,
+                 COUNT(DISTINCT user_id) FILTER (WHERE user_id <> '')::int AS users
+          FROM scoped GROUP BY issue_id
+        )
+        SELECT p.*, l.level, l.status_code, n.events, d.device, n.users
+        FROM picked p
+        JOIN period n ON n.issue_id = p.id
+        JOIN latest l ON l.issue_id = p.id
+        LEFT JOIN top_device d ON d.issue_id = p.id
+        ORDER BY ${byPriority ? 'p.priority DESC, ' : ''}p.last_seen_at DESC
       '''),
       parameters: {
         'pid': projectId,
@@ -1235,72 +1372,128 @@ class ScoutStore {
         'env': environment,
         'ver': appVersion,
         'device': deviceName,
+        if (firstRelease != null) 'frel': firstRelease,
         ...timeParams(w),
       },
+    ));
+    final inPeriod = w.since != null;
+    return [
+      for (final r in rows)
+        {
+          ..._issueSummaryFromRow(
+            r,
+            eventCount: facetActive || inPeriod ? r[_n + 2] as int : null,
+            affectedUsers: facetActive ? (r[_n + 4] as int?) ?? 0 : null,
+          ),
+          if (inPeriod && !facetActive) 'totalEventCount': r[5],
+          'level': r[_n],
+          if (r[_n + 1] != null) 'statusCode': r[_n + 1],
+          if (r[_n + 3] != null) 'topDevice': r[_n + 3],
+        },
+    ];
+  }
+
+  /// Issue JSON from a row starting with [_issueCols]. [eventCount] / [affectedUsers]
+  /// replace the lifetime counts (period / facet scoped); severity scores what is shown.
+  Map<String, dynamic> _issueSummaryFromRow(ResultRow r, {int? eventCount, int? affectedUsers}) => {
+        'id': r[0],
+        'fingerprint': r[1],
+        'type': r[2],
+        'title': r[3],
+        'status': r[4],
+        'eventCount': eventCount ?? r[5],
+        'affectedUsers': affectedUsers ?? r[6],
+        'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
+        'lastSeenAt': (r[8] as DateTime).toUtc().toIso8601String(),
+        'topCountry': r[9],
+        'priority': r[10],
+        'priorityReasons': r[11],
+        'spike': r[12],
+        'spikeAt': (r[13] as DateTime?)?.toUtc().toIso8601String(),
+        'noiseReason': r[14],
+        'firstRelease': r[15],
+        'summary': r[16],
+        'likelyCause': r[17],
+        'culprit': r[18],
+        'autoStatusReason': r[19],
+        'autoStatusAt': (r[20] as DateTime?)?.toUtc().toIso8601String(),
+        'suspects': r[21],
+        'regressedAt': (r[22] as DateTime?)?.toUtc().toIso8601String(),
+        'severity': _issueSeverity(r, eventCount: eventCount, affectedUsers: affectedUsers).severity,
+      };
+
+  ({String severity, List<String> reasons}) _issueSeverity(ResultRow r, {int? eventCount, int? affectedUsers}) =>
+      computeIssueSeverity(
+        eventCount: eventCount ?? r[5] as int,
+        affectedUsers: affectedUsers ?? r[6] as int,
+        hoursSinceLastSeen: DateTime.now().toUtc().difference((r[8] as DateTime).toUtc()).inHours,
+        isCrash: r[2] == 'crash',
+      );
+
+  /// I10 read-only "similar issues": the v1↔v2 lineage first, then issues sharing the
+  /// culprit file / network route or the I11 group hint. Null when the issue is missing.
+  Future<List<Map<String, dynamic>>?> similarIssues(String projectId, String issueId, {int limit = 10}) async {
+    final cols = _issueCols.split(',').map((c) => 'i.${c.trim()}').join(', ');
+    final conn = await db.connect();
+    final target = await conn.execute(
+      Sql.named('SELECT 1 FROM issues WHERE project_id = @pid AND id = @id'),
+      parameters: {'pid': projectId, 'id': issueId},
     );
-    return rows
-        .map((r) {
-          final totalEvents = r[5] as int;
-          final periodEvents = r[12] as int;
-          final periodUsers = (r[14] as int?) ?? 0;
-          final inPeriod = w.since != null;
-          final lastSeen = r[8] as DateTime;
-          final sev = computeIssueSeverity(
-            eventCount: facetActive || inPeriod ? periodEvents : totalEvents,
-            affectedUsers: facetActive ? periodUsers : (r[6] as int?) ?? 0,
-            hoursSinceLastSeen: DateTime.now().toUtc().difference(lastSeen.toUtc()).inHours,
-            isCrash: r[2] == 'crash',
-          );
-          return {
-              'id': r[0],
-              'fingerprint': r[1],
-              'type': r[2],
-              'title': r[3],
-              'status': r[4],
-              'eventCount': facetActive || inPeriod ? periodEvents : totalEvents,
-              if (inPeriod && !facetActive) 'totalEventCount': totalEvents,
-              'affectedUsers': facetActive ? periodUsers : (r[6] as int?) ?? 0,
-              'firstSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
-              'lastSeenAt': lastSeen.toUtc().toIso8601String(),
-              'topCountry': r[9],
-              'level': r[10],
-              if (r[11] != null) 'statusCode': r[11],
-              if (r[13] != null) 'topDevice': r[13],
-              'severity': sev.severity,
-            };
-        })
-        .toList();
+    if (target.isEmpty) return null;
+    final rows = await conn.execute(
+      Sql.named('''
+        WITH t AS (SELECT id, type, culprit, group_hint, predecessor_id FROM issues WHERE project_id = @pid AND id = @id)
+        SELECT $cols,
+               COALESCE(i.id = t.predecessor_id, false), COALESCE(i.predecessor_id = t.id, false),
+               COALESCE(i.culprit = t.culprit, false), COALESCE(i.group_hint = t.group_hint, false)
+        FROM issues i, t
+        WHERE i.project_id = @pid AND i.id <> t.id
+          AND (i.id = t.predecessor_id OR i.predecessor_id = t.id OR i.culprit = t.culprit OR i.group_hint = t.group_hint)
+        ORDER BY COALESCE(i.id = t.predecessor_id OR i.predecessor_id = t.id, false) DESC, i.last_seen_at DESC
+        LIMIT @lim
+      '''),
+      parameters: {'pid': projectId, 'id': issueId, 'lim': limit.clamp(1, 50)},
+    );
+    return [
+      for (final r in rows)
+        {
+          ..._issueSummaryFromRow(r),
+          'fingerprintVersion': (r[1] as String).startsWith('v2:') ? 2 : 1,
+          'similarBecause': [
+            if (r[_n] == true) 'predecessor',
+            if (r[_n + 1] == true) 'successor',
+            if (r[_n + 2] == true) r[2] == 'network' ? 'same_route' : 'same_culprit',
+            if (r[_n + 3] == true) 'same_group_hint',
+          ],
+        },
+    ];
   }
 
   Future<Map<String, dynamic>?> getIssue(String projectId, String issueId) async {
     final conn = await db.connect();
     final rows = await conn.execute(
       Sql.named('''
-        SELECT i.id, i.project_id, i.fingerprint, i.type, i.title, i.status, i.first_seen_at, i.last_seen_at,
-               i.event_count, i.affected_users, i.top_country, i.assignee_user_id, u.email, u.display_name
+        SELECT $_issueCols, project_id, assignee_user_id, u.email, u.display_name,
+               (SELECT settings FROM projects WHERE id = i.project_id)
         FROM issues i
-        LEFT JOIN dashboard_users u ON u.id = i.assignee_user_id
+        LEFT JOIN LATERAL (SELECT email, display_name FROM dashboard_users WHERE id = i.assignee_user_id) u ON true
         WHERE i.project_id = @pid AND i.id = @id
       '''),
       parameters: {'pid': projectId, 'id': issueId},
     );
     if (rows.isEmpty) return null;
     final r = rows.first;
+    final settings = r[_n + 4];
+    final owner = IssueRules.fromSettings(settings is Map ? Map<String, dynamic>.from(settings) : const {})
+        .ownerFor(r[18] as String?);
     final issue = {
-      'id': r[0],
-      'projectId': r[1],
-      'fingerprint': r[2],
-      'type': r[3],
-      'title': r[4],
-      'status': r[5],
-      'firstSeenAt': (r[6] as DateTime).toUtc().toIso8601String(),
-      'lastSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
-      'eventCount': r[8],
-      'affectedUsers': r[9],
-      'topCountry': r[10],
-      if (r[11] != null) 'assigneeUserId': r[11],
-      if (r[11] != null) 'assigneeEmail': r[12],
-      if (r[11] != null) 'assigneeName': r[13],
+      ..._issueSummaryFromRow(r)..remove('severity'),
+      'suggestedAssignee': owner?.assignee,
+      'suggestedOwnerPrefix': owner?.prefix,
+      'projectId': r[_n],
+      if (r[_n + 1] != null) 'assigneeUserId': r[_n + 1],
+      if (r[_n + 1] != null) 'assigneeEmail': r[_n + 2],
+      if (r[_n + 1] != null) 'assigneeName': r[_n + 3],
     };
     issue['notes'] = await listIssueNotes(projectId, issueId);
     final events = await conn.execute(
@@ -1314,7 +1507,7 @@ class ScoutStore {
     issue['events'] = events.map(_eventRow).toList();
     issue['geoBreakdown'] = await _issueGeo(conn, projectId, issueId);
     issue['deviceBreakdown'] = await _issueDevices(conn, projectId, issueId);
-    issue['insights'] = await _issueInsights(conn, projectId, issueId, issue);
+    issue['insights'] = await _issueInsights(conn, projectId, issueId, _issueSeverity(r));
     return issue;
   }
 
@@ -1323,30 +1516,18 @@ class ScoutStore {
     Session conn,
     String projectId,
     String issueId,
-    Map<String, dynamic> issue,
+    ({String severity, List<String> reasons}) sev,
   ) async {
+    final top = await _topCorrelations(conn, projectId, issueId);
     final correlations = <Map<String, dynamic>>[];
-    for (final (col, label) in [
-      ('app_version', 'App version'),
-      ('platform', 'Platform'),
-      ('country', 'Country'),
-      ('environment', 'Environment'),
-    ]) {
-      final c = await _topCorrelation(conn, projectId, issueId, col);
-      if (c != null && c.ratio >= 0.6 && c.value != 'unknown') {
+    for (final (col, label) in _suspectColumns) {
+      final c = top[col];
+      if (c != null && c.ratio >= _suspectShare && c.value != 'unknown') {
         correlations.add({'label': label, 'value': c.value, 'ratio': c.ratio, 'count': c.count});
       }
     }
 
     final culprit = await _stackCulprit(conn, projectId, issueId);
-
-    final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
-    final sev = computeIssueSeverity(
-      eventCount: (issue['eventCount'] as int?) ?? 0,
-      affectedUsers: (issue['affectedUsers'] as int?) ?? 0,
-      hoursSinceLastSeen: last == null ? 9999 : DateTime.now().toUtc().difference(last).inHours,
-      isCrash: (issue['type'] as String?) == 'crash',
-    );
 
     return {
       'severity': sev.severity,
@@ -1356,29 +1537,32 @@ class ScoutStore {
     };
   }
 
-  Future<({String value, double ratio, int count})?> _topCorrelation(
+  /// Most common value per column, in one scan of the issue's error events.
+  Future<Map<String, ({String value, double ratio, int count})>> _topCorrelations(
     Session conn,
     String projectId,
     String issueId,
-    String column,
   ) async {
     final rows = await conn.execute(
       Sql.named('''
-        SELECT COALESCE(NULLIF($column, ''), 'unknown') AS v,
+        SELECT DISTINCT ON (x.col) x.col,
+               COALESCE(NULLIF(x.raw, ''), 'unknown') AS v,
                COUNT(*)::int AS c,
-               SUM(COUNT(*)) OVER ()::int AS total
+               SUM(COUNT(*)) OVER (PARTITION BY x.col)::int AS total
         FROM events e
-        WHERE project_id = @pid AND issue_id = @iid AND ${sqlIsErrorEvent(alias: 'e')}
-        GROUP BY v ORDER BY c DESC LIMIT 1
+        CROSS JOIN LATERAL (VALUES
+          ('app_version', e.app_version), ('platform', e.platform),
+          ('country', e.country), ('environment', e.environment)
+        ) x(col, raw)
+        WHERE e.project_id = @pid AND e.issue_id = @iid AND ${sqlIsErrorEvent(alias: 'e')}
+        GROUP BY x.col, v ORDER BY x.col, c DESC
       '''),
       parameters: {'pid': projectId, 'iid': issueId},
     );
-    if (rows.isEmpty) return null;
-    final value = rows.first[0] as String;
-    final count = (rows.first[1] as int?) ?? 0;
-    final total = (rows.first[2] as int?) ?? 0;
-    if (total == 0) return null;
-    return (value: value, ratio: count / total, count: count);
+    return {
+      for (final r in rows)
+        if ((r[3] as int) > 0) r[0] as String: (value: r[1] as String, ratio: (r[2] as int) / (r[3] as int), count: r[2] as int),
+    };
   }
 
   Future<String?> _stackCulprit(Session conn, String projectId, String issueId) async {
@@ -1442,7 +1626,7 @@ class ScoutStore {
       final method = (network['method']?.toString() ?? 'GET').toUpperCase();
       final url = network['url']?.toString() ?? network['path']?.toString() ?? '';
       final statusCode = int.tryParse('${network['statusCode'] ?? ''}');
-      final path = normalizeExpectedNetworkPath(url);
+      final path = normalizeRoute(url);
       if (path.isNotEmpty) {
         final rule = ExpectedNetworkResponse(
           method: method,
@@ -1581,7 +1765,7 @@ class ScoutStore {
     // Issues table only — joining events for digests was multi-second on busy projects.
     final top = await conn.execute(
       Sql.named('''
-        SELECT id, title, type, event_count, NULL::text AS top_version
+        SELECT id, title, type, event_count, NULL::text AS top_version, summary, likely_cause
         FROM issues
         WHERE project_id = @pid
           AND status = 'open'
@@ -1608,6 +1792,8 @@ class ScoutStore {
                 'type': r[2],
                 'count': r[3],
                 'version': r[4] as String?,
+                'summary': r[5],
+                'likelyCause': r[6],
               })
           .toList(),
       regressions: (counts.first[0] as int?) ?? 0,
@@ -1730,17 +1916,23 @@ class ScoutStore {
     }
     final issueId = event['issueId'] as String?;
     if (issueId != null) {
-      final issue = await getIssue(projectId, issueId);
-      if (issue != null) {
+      final issues = await conn.execute(
+        Sql.named('''
+          SELECT id, title, type, status, event_count, fingerprint, first_seen_at, last_seen_at
+          FROM issues WHERE project_id = @pid AND id = @iid
+        '''),
+        parameters: {'pid': projectId, 'iid': issueId},
+      );
+      for (final r in issues) {
         event['issue'] = {
-          'id': issue['id'],
-          'title': issue['title'],
-          'type': issue['type'],
-          'status': issue['status'],
-          'eventCount': issue['eventCount'],
-          'fingerprint': issue['fingerprint'],
-          'firstSeenAt': issue['firstSeenAt'],
-          'lastSeenAt': issue['lastSeenAt'],
+          'id': r[0],
+          'title': r[1],
+          'type': r[2],
+          'status': r[3],
+          'eventCount': r[4],
+          'fingerprint': r[5],
+          'firstSeenAt': (r[6] as DateTime).toUtc().toIso8601String(),
+          'lastSeenAt': (r[7] as DateTime).toUtc().toIso8601String(),
         };
       }
       final related = await conn.execute(
@@ -2058,17 +2250,7 @@ class ScoutStore {
               )) = LOWER(@level::text)
           )
           AND (@category::text IS NULL OR payload->>'category' = @category::text)
-          AND (
-            @q::text IS NULL
-            OR message ILIKE '%' || @q::text || '%'
-            OR user_id ILIKE '%' || @q::text || '%'
-            OR session_id ILIKE '%' || @q::text || '%'
-            OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
-            OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
-            OR payload->>'stack' ILIKE '%' || @q::text || '%'
-            OR payload->>'stackTrace' ILIKE '%' || @q::text || '%'
-            OR ${sqlDeviceNameExpr()} ILIKE '%' || @q::text || '%'
-          )
+          AND (@q::text IS NULL OR ${sqlSearchMatch(sqlEventSearchText())})
           AND (@country::text IS NULL OR country = @country::text)
           ${sqlEventFacetFilters()}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
@@ -2090,7 +2272,7 @@ class ScoutStore {
     };
 
     if (grouped) {
-      final rows = await conn.execute(
+      final rows = await db.search(q, (s) => s.execute(
         Sql.named('''
           SELECT
             ($groupKeyExpr) AS group_key,
@@ -2109,7 +2291,7 @@ class ScoutStore {
           LIMIT @lim
         '''),
         parameters: {...params, 'lim': lim + 1},
-      );
+      ));
       final hasMore = rows.length > lim;
       final pageRows = hasMore ? rows.sublist(0, lim) : rows;
       final groups = pageRows.map((r) {
@@ -2141,7 +2323,7 @@ class ScoutStore {
     }
 
     // Skip COUNT(*) over 30d of events — that alone was multi-second. Use limit+1.
-    final rows = await conn.execute(
+    final rows = await db.search(q, (s) => s.execute(
       Sql.named('''
         SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
                platform, environment, app_version,
@@ -2158,7 +2340,7 @@ class ScoutStore {
         ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
       parameters: {...params, 'lim': lim + 1, 'off': off},
-    );
+    ));
     final hasMore = rows.length > lim;
     final pageRows = hasMore ? rows.sublist(0, lim) : rows;
     final events = pageRows
@@ -2238,12 +2420,7 @@ class ScoutStore {
           AND $sqlHideSessionHeartbeat
           AND ${sqlIsWafRejectEvent(statusCodes: wafCodes, contentTypes: wafTypes)}
           ${sqlWafSettingsFacets(environments: wafEnvs, appVersions: wafVers)}
-          AND (
-            @q::text IS NULL
-            OR message ILIKE '%' || @q::text || '%'
-            OR payload->'network'->>'url' ILIKE '%' || @q::text || '%'
-            OR payload->'network'->>'traceId' ILIKE '%' || @q::text || '%'
-          )
+          AND (@q::text IS NULL OR ${sqlSearchMatch(sqlEventSearchText())})
           ${sqlEventFacetFilters(applyDevice: false)}
           AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
           AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
@@ -2256,7 +2433,7 @@ class ScoutStore {
       ...timeParams(w),
     };
 
-    final rows = await conn.execute(
+    final rows = await db.search(q, (s) => s.execute(
       Sql.named('''
         SELECT id, occurred_at,
                COALESCE(payload->'network'->>'url', payload->'network'->>'path', '') AS url,
@@ -2278,7 +2455,7 @@ class ScoutStore {
         LIMIT @lim
       '''),
       parameters: {...params, 'lim': lim + 1},
-    );
+    ));
     final hasMore = rows.length > lim;
     final pageRows = hasMore ? rows.sublist(0, lim) : rows;
 
@@ -2376,22 +2553,19 @@ class ScoutStore {
     final uniqueUserCount = uniqueUsers.first[0];
 
     final openRows = await conn.execute(
-      Sql.named("SELECT type, event_count, affected_users, last_seen_at FROM issues WHERE project_id = @pid AND status = 'open'"),
+      Sql.named("SELECT $_issueCols FROM issues WHERE project_id = @pid AND status = 'open'"),
       parameters: {'pid': projectId},
     );
-    final nowUtc = DateTime.now().toUtc();
-    var openCount = 0;
-    var highSeverity = 0;
-    for (final r in openRows) {
-      openCount++;
-      final sev = computeIssueSeverity(
-        eventCount: (r[1] as int?) ?? 0,
-        affectedUsers: (r[2] as int?) ?? 0,
-        hoursSinceLastSeen: nowUtc.difference((r[3] as DateTime).toUtc()).inHours,
-        isCrash: r[0] == 'crash',
-      );
-      if (sev.severity == 'high') highSeverity++;
-    }
+    final openCount = openRows.length;
+    final highSeverity = openRows.where((r) => _issueSeverity(r).severity == 'high').length;
+    final latest = (await conn.execute(
+      Sql.named('''
+        WITH r AS ($_latestReleaseSql LIMIT 1)
+        SELECT release, (SELECT COUNT(*)::int FROM issues WHERE project_id = @pid AND first_seen_at >= r.since) FROM r
+      '''),
+      parameters: {'pid': projectId},
+    ))
+        .firstOrNull;
 
     final sessions = await conn.execute(
       Sql.named('''
@@ -2465,6 +2639,8 @@ class ScoutStore {
       'uniqueUsers7d': _i(uniqueUserCount),
       'openIssues': openCount,
       'highSeverityIssues': highSeverity,
+      'latestRelease': latest?[0],
+      'newIssuesSinceLatestRelease': latest?[1] ?? 0,
       'topCountries': countries.map((r) => {'country': r[0], 'count': r[1]}).toList(),
       'trendGranularity': trendGranularity(w),
       'dailyTrend': trend,
@@ -2483,25 +2659,54 @@ class ScoutStore {
   Future<List<Map<String, dynamic>>> geoBreakdown(String projectId, {int days = 7, TimeWindow? window}) async {
     final conn = await db.connect();
     final w = window ?? TimeWindow.lastDays(days);
-    final rows = await conn.execute(
-      Sql.named('''
-        SELECT country,
-               COUNT(*)::int,
-               COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int,
-               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' IN ('locale', 'device_locale'))::int,
-               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' IN ('ip', 'local_ip'))::int,
-               COUNT(*) FILTER (WHERE enrichment->'geo'->>'source' = 'profile')::int
-        FROM events
-        WHERE project_id = @pid AND country IS NOT NULL
-          AND $sqlHideSessionHeartbeat
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        GROUP BY country
-        ORDER BY COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} ) DESC,
-                 COUNT(*) DESC
-      '''),
-      parameters: {'pid': projectId, ...timeParams(w)},
-    );
+    // Day+ windows read rollups; logged-in users count under each user's current
+    // country there, so someone who moved shows only under the latest one.
+    final rows = preferIdentityRollups(w)
+        ? await conn.execute(
+            Sql.named('''
+              WITH c AS (
+                SELECT country, SUM(events_total)::int AS n,
+                       SUM(geo_locale)::int AS loc, SUM(geo_ip)::int AS ip, SUM(geo_profile)::int AS prof
+                FROM daily_stats
+                WHERE project_id = @pid AND country <> ''
+                  AND (@fromDate::date IS NULL OR date >= @fromDate::date)
+                  AND (@untilDate::date IS NULL OR date < @untilDate::date)
+                GROUP BY country
+              ), u AS (
+                SELECT s.country, COUNT(*)::int AS users
+                FROM user_stats s
+                WHERE s.project_id = @pid AND EXISTS (
+                  SELECT 1 FROM user_daily_stats d
+                  WHERE d.project_id = s.project_id AND d.user_id = s.user_id
+                    AND (@fromDate::date IS NULL OR d.date >= @fromDate::date)
+                    AND (@untilDate::date IS NULL OR d.date < @untilDate::date)
+                )
+                GROUP BY s.country
+              )
+              SELECT c.country, c.n, COALESCE(u.users, 0), c.loc, c.ip, c.prof
+              FROM c LEFT JOIN u ON u.country = c.country
+              ORDER BY 3 DESC, 2 DESC, 1
+            '''),
+            parameters: {'pid': projectId, ...dateParams(w)},
+          )
+        : await conn.execute(
+            Sql.named('''
+              SELECT country,
+                     COUNT(*)::int,
+                     COUNT(DISTINCT user_id) FILTER (WHERE ${identifiedUserSql()} )::int,
+                     COUNT(*) FILTER (WHERE ${sqlGeoSourceIn('locale')})::int,
+                     COUNT(*) FILTER (WHERE ${sqlGeoSourceIn('ip')})::int,
+                     COUNT(*) FILTER (WHERE ${sqlGeoSourceIn('profile')})::int
+              FROM events
+              WHERE project_id = @pid AND country IS NOT NULL
+                AND $sqlHideSessionHeartbeat
+                AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+                AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+              GROUP BY country
+              ORDER BY 3 DESC, 2 DESC, 1
+            '''),
+            parameters: {'pid': projectId, ...timeParams(w)},
+          );
     return rows
         .map((r) {
           final localeEvents = r[3] as int;
@@ -2665,6 +2870,7 @@ class ScoutStore {
             last_seen_at = @at,
             user_id = COALESCE(user_id, @uid)
           WHERE id = @id AND project_id = @pid AND ended_at IS NULL
+            AND COALESCE(last_seen_at, started_at) >= (now() AT TIME ZONE 'utc') - make_interval(mins => $_sessionIdleMinutes)
         '''),
         parameters: {'id': sid, 'pid': projectId, 'uid': userId, 'at': occurredAt},
       );
@@ -2706,6 +2912,7 @@ class ScoutStore {
       ...remote.toClientResponse(),
       'retention': retentionFromSettings(settings).toClientJson(),
       'waf': waf.resolved().toJson(),
+      'issueRules': IssueRules.fromSettings(settings).toJson(),
     };
   }
 
@@ -2719,16 +2926,6 @@ class ScoutStore {
     final raw = rows.first[0];
     final settings = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
     return ProjectRemoteConfig.fromSettings(settings).toClientResponse();
-  }
-
-  Future<int> getConfigVersion(String projectId) async {
-    final conn = await db.connect();
-    final rows = await conn.execute(
-      Sql.named("SELECT COALESCE((settings->>'configVersion')::int, 1) FROM projects WHERE id = @id"),
-      parameters: {'id': projectId},
-    );
-    if (rows.isEmpty) return 1;
-    return rows.first[0] as int? ?? 1;
   }
 
   Future<Map<String, dynamic>> updateProjectSettings(String projectId, Map<String, dynamic> patch) async {
@@ -2755,6 +2952,11 @@ class ScoutStore {
       waf = prevWaf.mergePatch(Map<String, dynamic>.from(patch['waf'] as Map));
     }
 
+    final rulesPatch = patch['issueRules'];
+    if (rulesPatch != null && rulesPatch is! Map) throw const FormatException('issueRules must be an object');
+    final issueRules = IssueRules.fromSettings(settings);
+    final nextRules = rulesPatch is Map ? issueRules.mergePatch(rulesPatch) : issueRules;
+
     var next = prev;
     if (patch.containsKey('sdk') || patch.containsKey('retention') || patch.containsKey('waf')) {
       next = ProjectRemoteConfig(
@@ -2769,6 +2971,7 @@ class ScoutStore {
       ...next.toSettingsJson(),
       'retention': retention.toJson(),
       'waf': waf.resolved().toJson(),
+      'issueRules': nextRules.toJson(),
     };
     await conn.execute(
       Sql.named('''
@@ -2782,15 +2985,36 @@ class ScoutStore {
     if (patch.containsKey('sdk') &&
         patch['sdk'] is Map &&
         (patch['sdk'] as Map).containsKey('expectedNetworkResponses')) {
-      // Re-stamp recent matching network events so Errors/Issues drop them.
-      await reclassifyExpectedNetworkEvents(projectId, conn: conn);
+      // Re-stamp recent matching network events so Errors/Issues drop them — after the response.
+      _reclassifyInBackground(projectId);
     }
 
     return {
       ...next.toClientResponse(),
       'retention': retention.toClientJson(),
       'waf': waf.resolved().toJson(),
+      'issueRules': nextRules.toJson(),
     };
+  }
+
+  /// One run per project at a time; a request during a run queues one more run
+  /// (it may carry newer rules). In-process only: a restart drops a pending run.
+  void _reclassifyInBackground(String projectId) {
+    if (_reclassifyAgain.containsKey(projectId)) {
+      _reclassifyAgain[projectId] = true;
+      return;
+    }
+    lastReclassify = () async {
+      do {
+        _reclassifyAgain[projectId] = false;
+        try {
+          await reclassifyExpectedNetworkEvents(projectId);
+        } catch (e) {
+          stderr.writeln('reclassify expected network events failed (project $projectId): $e');
+        }
+      } while (_reclassifyAgain[projectId]!);
+      _reclassifyAgain.remove(projectId);
+    }();
   }
 
   /// Apply expected-network rules across events, issues, and error rollups
@@ -2839,8 +3063,7 @@ class ScoutStore {
       if (hit == null) continue;
 
       final readable = n['readable'];
-      final already =
-          readable is Map && (readable['faultKind'] == 'expected' || readable['operationalError'] == false);
+      final already = readable is Map && isExpectedOrNonOperationalNetwork(readable);
       if (!already) {
         final nextPayload = _payloadWithNetworkReadable(
           payload,
@@ -2940,7 +3163,7 @@ class ScoutStore {
     // 404 rule still drops that route from Top issues even when the latest title
     // is a timeout.
     for (final rule in rules) {
-      final path = normalizeExpectedNetworkPath(rule.path);
+      final path = normalizeRoute(rule.path);
       if (path.isEmpty) continue;
       final method = rule.method == '*' ? null : rule.method;
       final open = await c.execute(
@@ -2963,7 +3186,7 @@ class ScoutStore {
           '',
         );
         rest = rest.split(RegExp(r'\s+[—–-]\s+')).first.trim();
-        final titlePath = normalizeExpectedNetworkPath(rest);
+        final titlePath = normalizeRoute(rest);
         if (!_issueTitleMatchesExpectedPath(titlePath, path)) continue;
         await c.execute(
           Sql.named('''
@@ -2994,6 +3217,16 @@ class ScoutStore {
     String projectId, {
     required DateTime since,
   }) async {
+    // One UTC day per round keeps each statement well under statement_timeout.
+    final end = DateTime.now().toUtc().add(const Duration(days: 1));
+    for (var from = since.toUtc(); from.isBefore(end);) {
+      final until = DateTime.utc(from.year, from.month, from.day + 1);
+      await _rebuildErrorRollupsBetween(conn, {'pid': projectId, 'since': from, 'until': until});
+      from = until;
+    }
+  }
+
+  Future<void> _rebuildErrorRollupsBetween(Session conn, Map<String, Object> params) async {
     await conn.execute(
       Sql.named('''
         WITH agg AS (
@@ -3007,7 +3240,7 @@ class ScoutStore {
           FROM events
           WHERE project_id = @pid
             AND $sqlHideSessionHeartbeat
-            AND occurred_at >= @since
+            AND occurred_at >= @since AND occurred_at < @until
           GROUP BY 1, 2
         )
         UPDATE daily_stats ds SET
@@ -3020,7 +3253,7 @@ class ScoutStore {
           AND ds.date = agg.day
           AND ds.country = agg.country
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: params,
     );
 
     await conn.execute(
@@ -3034,7 +3267,7 @@ class ScoutStore {
           FROM events
           WHERE project_id = @pid
             AND $sqlHideSessionHeartbeat
-            AND occurred_at >= @since
+            AND occurred_at >= @since AND occurred_at < @until
             AND user_id IS NOT NULL
             AND user_id <> ''
           GROUP BY 1, 2
@@ -3047,7 +3280,7 @@ class ScoutStore {
           AND u.user_id = agg.user_id
           AND u.date = agg.day
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: params,
     );
 
     await conn.execute(
@@ -3061,7 +3294,7 @@ class ScoutStore {
           FROM events
           WHERE project_id = @pid
             AND $sqlHideSessionHeartbeat
-            AND occurred_at >= @since
+            AND occurred_at >= @since AND occurred_at < @until
             AND install_id IS NOT NULL
             AND install_id <> ''
           GROUP BY 1, 2
@@ -3074,8 +3307,194 @@ class ScoutStore {
           AND d.install_id = agg.install_id
           AND d.date = agg.day
       '''),
-      parameters: {'pid': projectId, 'since': since},
+      parameters: params,
     );
+  }
+
+  /// Recompute priority / spike / noise (insights.dart [issueSignals]) for issues
+  /// active in the last 8 days, spiking, or due to turn stale, and apply the
+  /// project's [IssueRules] (auto-resolve / ignore, once per issue so a manual
+  /// reopen sticks). Writes only changed rows, locked in ingest's fingerprint order.
+  Future<int> refreshIssueSignals() async {
+    final pool = db.pool;
+    var changed = 0;
+    for (final p in await pool.execute('SELECT id, settings FROM projects ORDER BY id')) {
+      final params = {'pid': p[0] as String};
+      final rules = IssueRules.fromSettings(p[1] is Map ? Map<String, dynamic>.from(p[1] as Map) : const {});
+      final quiet = rules.autoResolveQuietDays;
+      final rel = (await pool.execute(Sql.named('$_latestReleaseSql LIMIT 1'), parameters: params)).firstOrNull;
+      final release = rel == null ? null : (name: rel[0] as String, since: rel[1] as DateTime);
+      final issues = await pool.execute(
+        Sql.named('''
+          SELECT id, type, status, affected_users, event_count, first_seen_at, last_seen_at,
+                 priority, priority_reasons, spike, noise_reason, title, culprit, auto_status_at, auto_status_reason,
+                 suspects
+          FROM issues WHERE project_id = @pid
+            AND (last_seen_at >= now() - interval '8 days' OR spike
+                 OR (status = 'open' AND noise_reason IS DISTINCT FROM 'stale' AND last_seen_at < now() - make_interval(days => ${staleAfter.inDays}))
+                 ${quiet == 0 ? '' : '''OR (status = 'open' AND last_seen_at < now() - make_interval(days => $quiet)
+                     AND (auto_status_at IS NULL OR auto_status_at < last_seen_at))'''})
+        '''),
+        parameters: params,
+      );
+      if (issues.isEmpty) continue;
+      final window = {...params, 'ids': [for (final r in issues) r[0] as String]};
+      final hourly = <String, List<int>>{};
+      for (final r in await pool.execute(
+        Sql.named('''
+          SELECT issue_id, GREATEST(0, floor(extract(epoch FROM now() - occurred_at) / 3600))::int, COUNT(*)::int
+          FROM events WHERE project_id = @pid AND issue_id = ANY(@ids) AND occurred_at >= now() - interval '192 hours'
+          GROUP BY 1, 2
+        '''),
+        parameters: window,
+      )) {
+        (hourly[r[0] as String] ??= List.filled(192, 0))[(r[1] as int).clamp(0, 191)] += r[2] as int;
+      }
+      final traits = {
+        for (final r in await pool.execute(
+          Sql.named('''
+            SELECT issue_id, COUNT(DISTINCT COALESCE(NULLIF(user_id, ''), install_id))::int,
+                   bool_and(COALESCE(payload->'device'->>'isSimulator' = 'true', false)),
+                   bool_and(COALESCE(payload->'network'->'readable'->>'faultClass' = 'auth', false))
+            FROM events WHERE project_id = @pid AND issue_id = ANY(@ids) AND occurred_at >= now() - interval '192 hours'
+            GROUP BY 1
+          '''),
+          parameters: window,
+        ))
+          r[0] as String: (actors: r[1] as int, sim: r[2] as bool, auth: r[3] as bool),
+      };
+      final messages = rules.ignoreMessageRegexes.isEmpty
+          ? const <String, String?>{}
+          : {
+              for (final r in await pool.execute(
+                Sql.named('''
+                  SELECT DISTINCT ON (issue_id) issue_id, message
+                  FROM events WHERE project_id = @pid AND issue_id = ANY(@ids) AND occurred_at >= now() - interval '192 hours'
+                  ORDER BY issue_id, occurred_at DESC
+                '''),
+                parameters: window,
+              ))
+                r[0] as String: r[1] as String?,
+            };
+      // Same rule as issue insights correlations, over the job's 8-day window.
+      final suspects = <String, List<Map<String, Object>>>{};
+      for (final r in await pool.execute(
+        Sql.named('''
+          SELECT DISTINCT ON (e.issue_id, x.col) e.issue_id, x.col,
+                 COALESCE(NULLIF(x.raw, ''), 'unknown') AS v,
+                 COUNT(*)::int AS c,
+                 SUM(COUNT(*)) OVER (PARTITION BY e.issue_id, x.col)::int AS total
+          FROM events e
+          CROSS JOIN LATERAL (VALUES
+            ('app_version', e.app_version), ('platform', e.platform),
+            ('country', e.country), ('environment', e.environment)
+          ) x(col, raw)
+          WHERE e.project_id = @pid AND e.issue_id = ANY(@ids) AND e.occurred_at >= now() - interval '192 hours'
+            AND ${sqlIsErrorEvent(alias: 'e')}
+          GROUP BY e.issue_id, x.col, v ORDER BY e.issue_id, x.col, c DESC
+        '''),
+        parameters: window,
+      )) {
+        final list = suspects[r[0] as String] ??= [];
+        final share = (r[3] as int) / (r[4] as int);
+        if (share >= _suspectShare && r[2] != 'unknown') {
+          list.add({'dimension': r[1] as String, 'value': r[2] as String, 'share': (share * 1000).round() / 1000});
+        }
+      }
+      String suspectKey(List<Object?> list) =>
+          [for (final m in list.cast<Map>()) '${m['dimension']}=${m['value']}=${m['share']}'].join('\n');
+      final now = DateTime.now().toUtc();
+      final rows = <Map<String, Object?>>[];
+      for (final r in issues) {
+        final id = r[0] as String;
+        final t = traits[id];
+        final lastSeen = (r[6] as DateTime).toUtc();
+        final autoAt = r[13] as DateTime?;
+        var status = r[2] as String? ?? 'open';
+        String? auto;
+        if (status == 'open') {
+          final wasIgnored = (r[14] as String?)?.startsWith('ignored') ?? false;
+          final why = rules.ignoresAnything && !wasIgnored
+              ? rules.ignoreReason(texts: [r[11] as String?, messages[id]], culprit: r[12] as String?)
+              : null;
+          if (why != null) {
+            (status, auto) = ('ignored', 'ignored: $why');
+          } else if (quiet > 0 && now.difference(lastSeen).inDays >= quiet && (autoAt == null || autoAt.isBefore(lastSeen))) {
+            (status, auto) = ('resolved', 'resolved: quiet for $quiet days');
+          }
+        }
+        final s = issueSignals(
+          type: r[1] as String,
+          status: status,
+          affectedUsers: r[3] as int,
+          eventCount: r[4] as int,
+          firstSeenAt: (r[5] as DateTime).toUtc(),
+          lastSeenAt: lastSeen,
+          hourly: hourly[id] ?? const [],
+          actors: t?.actors ?? 0,
+          simulatorOnly: t?.sim ?? false,
+          authOnly: t?.auth ?? false,
+          release: release,
+          now: now,
+        );
+        final found = suspects[id];
+        final newSuspects = found != null && suspectKey(found) != suspectKey(r[15] as List) ? found : null;
+        if (auto == null &&
+            newSuspects == null &&
+            s.priority == r[7] &&
+            s.spike == r[9] &&
+            s.noise == r[10] &&
+            s.reasons.join('\n') == (r[8] as List).join('\n')) {
+          continue;
+        }
+        rows.add({
+          'id': id,
+          'priority': s.priority,
+          'reasons': s.reasons,
+          'spike': s.spike,
+          'noise': s.noise,
+          'status': auto == null ? null : status,
+          'auto': auto,
+          'seen': lastSeen.toIso8601String(),
+          'suspects': newSuspects,
+        });
+      }
+      for (var i = 0; i < rows.length; i += 500) {
+        final chunk = rows.sublist(i, (i + 500).clamp(0, rows.length));
+        await pool.runTx((tx) async {
+          await tx.execute(
+            Sql.named('SELECT 1 FROM issues WHERE id = ANY(@ids) ORDER BY fingerprint COLLATE "C" FOR UPDATE'),
+            parameters: {'ids': [for (final c in chunk) c['id'] as String]},
+          );
+          await tx.execute(
+            Sql.named('''
+              UPDATE issues i SET
+                priority = s.priority,
+                priority_reasons = ARRAY(SELECT jsonb_array_elements_text(s.reasons)),
+                spike = s.spike,
+                spike_at = CASE WHEN s.spike AND NOT i.spike THEN now() ELSE i.spike_at END,
+                noise_reason = s.noise,
+                status = CASE WHEN s.apply THEN s.status ELSE i.status END,
+                resolved_at = CASE WHEN s.apply THEN (CASE WHEN s.status = 'resolved' THEN now() END) ELSE i.resolved_at END,
+                auto_status_at = CASE WHEN s.apply THEN now() ELSE i.auto_status_at END,
+                auto_status_reason = CASE WHEN s.apply THEN s.auto ELSE i.auto_status_reason END,
+                suspects = COALESCE(s.suspects, i.suspects)
+              FROM (
+                SELECT r.*, i.status = 'open' AND r.status IS NOT NULL AND i.last_seen_at <= r.seen AS apply
+                FROM jsonb_to_recordset(@rows::jsonb)
+                  AS r(id text, priority int, reasons jsonb, spike boolean, noise text, status text, auto text, seen timestamptz,
+                     suspects jsonb)
+                JOIN issues i ON i.id = r.id
+              ) s
+              WHERE i.project_id = @pid AND i.id = s.id
+            '''),
+            parameters: {...params, 'rows': jsonEncode(chunk)},
+          );
+        });
+      }
+      changed += rows.length;
+    }
+    return changed;
   }
 
   /// Delete expired raw events for every project. Rollups and issue counts are kept.

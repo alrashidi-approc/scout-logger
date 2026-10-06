@@ -37,6 +37,7 @@ class _DashboardShellState extends State<DashboardShell> {
         (Icons.devices_outlined, Icons.devices, 'Devices', '/devices'),
         (Icons.play_circle_outline, Icons.play_circle, 'Sessions', '/sessions'),
         (Icons.insights_outlined, Icons.insights, 'Analytics', '/analytics'),
+        (Icons.inbox_outlined, Icons.inbox, 'Triage inbox', '/triage'),
         (Icons.bug_report_outlined, Icons.bug_report, 'Issues', '/issues'),
         (Icons.list_alt_outlined, Icons.list_alt, 'Events', '/events'),
         if (_wafVisible) (Icons.security_outlined, Icons.security, 'WAF rejects', '/waf'),

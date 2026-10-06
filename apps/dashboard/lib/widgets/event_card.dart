@@ -35,7 +35,7 @@ class EventCard extends StatelessWidget {
         : null;
     final env = event['environment']?.toString() ?? '—';
     final guest = event['isGuest'] == true || isGuestEvent(event);
-    final expectedNet = event['faultKind']?.toString() == 'expected' || event['operationalError'] == false;
+    final expectedNet = isExpectedOrNonOperationalNetwork(event);
     final isCriticalNet = !expectedNet && networkFault?.faultClass == NetworkFaultClass.critical;
     final errorFocus = !expectedNet && (effectiveLevel == 'error' || type == 'crash' || isCriticalNet);
     final compact = MediaQuery.sizeOf(context).width < 720;
@@ -178,15 +178,22 @@ class EventCard extends StatelessWidget {
 }
 
 class IssueCard extends StatelessWidget {
-  const IssueCard({super.key, required this.issue, required this.onTap});
+  const IssueCard({super.key, required this.issue, required this.onTap, this.sinceLastVisit = false});
 
   final Map<String, dynamic> issue;
   final VoidCallback onTap;
+
+  /// Triage inbox: first seen / regressed / spiking after the user's previous visit.
+  final bool sinceLastVisit;
 
   @override
   Widget build(BuildContext context) {
     final type = issue['type'] as String? ?? 'error';
     final level = issueLevel(issue);
+    final priority = issue['priority'] as int?;
+    final reasons = (issue['priorityReasons'] as List?)?.cast<String>() ?? const [];
+    final noise = issue['noiseReason'] as String?;
+    final subtitle = issue['summary'] as String? ?? issue['likelyCause'] as String?;
     final last = DateTime.tryParse(issue['lastSeenAt'] as String? ?? '');
     final lastLabel = last != null ? DateFormat.yMMMd().add_jm().format(last.toLocal()) : '—';
     final status = issue['status'] as String? ?? 'open';
@@ -234,6 +241,13 @@ class IssueCard extends StatelessWidget {
                     if (type == 'network') LevelBadge(type: type, compact: compact, transportOnly: true),
                     if (!resolved && (issue['severity'] == 'high' || issue['severity'] == 'medium'))
                       _severityBadge(issue['severity'] as String),
+                    if (priority != null && priority > 0)
+                      Tooltip(
+                        message: reasons.isEmpty ? 'Priority $priority' : reasons.join('\n'),
+                        child: _badge('P$priority', priorityColor(priority)),
+                      ),
+                    if (issue['spike'] == true) _badge('SPIKE', AppTheme.error),
+                    if (sinceLastVisit) _badge('SINCE LAST VISIT', AppTheme.primary),
                   ],
                 ),
                 SizedBox(width: compact ? 10 : 12),
@@ -249,6 +263,10 @@ class IssueCard extends StatelessWidget {
                         color: errorFocus ? AppTheme.error : AppTheme.text,
                       ),
                     ),
+                    if (subtitle != null && subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+                    ],
                     SizedBox(height: compact ? 6 : 8),
                     Wrap(spacing: 12, runSpacing: 4, children: [
                       _meta(Icons.repeat, _eventCountLabel(issue)),
@@ -259,6 +277,8 @@ class IssueCard extends StatelessWidget {
                       _meta(Icons.public, issue['topCountry'] as String? ?? '—'),
                       _meta(Icons.schedule, lastLabel),
                       _meta(Icons.flag_outlined, status, color: resolved ? AppTheme.success : AppTheme.muted),
+                      if (noise != null) _badge('noise · ${noise.replaceAll('_', ' ')}', AppTheme.muted),
+                      for (final s in suspectLabels(issue)) _badge(s, AppTheme.muted),
                     ]),
                   ]),
                 ),
@@ -282,15 +302,14 @@ class IssueCard extends StatelessWidget {
     return '$count events';
   }
 
-  Widget _severityBadge(String severity) {
-    final color = severity == 'high' ? AppTheme.error : AppTheme.warning;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(6)),
-      child: Text(severity.toUpperCase(),
-          style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 10, letterSpacing: 0.4)),
-    );
-  }
+  Widget _severityBadge(String severity) =>
+      _badge(severity.toUpperCase(), severity == 'high' ? AppTheme.error : AppTheme.warning);
+
+  Widget _badge(String label, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(6)),
+        child: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 10, letterSpacing: 0.4)),
+      );
 
   Widget _meta(IconData icon, String text, {Color? color}) => Row(
         mainAxisSize: MainAxisSize.min,

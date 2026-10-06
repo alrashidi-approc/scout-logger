@@ -6,7 +6,6 @@ import '../store/scout_store.dart';
 import '../util/dates.dart';
 import '../util/dashboard_links.dart';
 import '../config/server_config.dart';
-import '../util/ids.dart';
 
 /// Assembles audience-tailored reports from existing analytics queries.
 class ReportService {
@@ -322,7 +321,7 @@ class ReportService {
       case ReportAudience.engineering:
         if (digest.regressions > 0) add('${digest.regressions} resolved issue${digest.regressions == 1 ? '' : 's'} reopened', severity: 'warning');
         final top = digest.issues.isNotEmpty ? digest.issues.first : null;
-        if (top != null) add('Top issue: ${displayIssueTitle('${top['type']}', '${top['title']}')} (${top['count']} events)', severity: 'warning');
+        if (top != null) add('Top issue: ${_withCause(displayIssueTitle('${top['type']}', '${top['title']}'), top['likelyCause'])} (${top['count']} events)', severity: 'warning');
         if (errorsDelta.abs() >= 10) add('Errors ${errorsDelta >= 0 ? 'up' : 'down'} ${errorsDelta.abs().toStringAsFixed(0)}%');
         if (digest.newIssues > 0) add('${digest.newIssues} new issues in period');
       case ReportAudience.client:
@@ -476,7 +475,7 @@ class ReportService {
   }
 
   static List<ReportTableRow> balancedTopIssues(List<Map<String, dynamic>> issues, {int limit = 8}) {
-    final agg = <String, ({String? id, String title, String type, int count, String version, int bestSingle})>{};
+    final agg = <String, ({String? id, String title, String? cause, String type, int count, String version, int bestSingle})>{};
     for (final i in issues) {
       final type = '${i['type']}';
       final title = displayIssueTitle(type, '${i['title']}');
@@ -490,6 +489,7 @@ class ReportService {
       agg[key] = (
         id: prev?.id ?? i['id']?.toString(),
         title: title,
+        cause: prev?.cause ?? i['likelyCause'] as String?,
         type: type,
         count: (prev?.count ?? 0) + count,
         version: version,
@@ -512,11 +512,13 @@ class ReportService {
         .where((e) => pickedKeys.contains(e.key))
         .take(limit)
         .map((e) => ReportTableRow(
-              cells: [e.value.title, e.value.type, e.value.version, '${e.value.count}'],
+              cells: [_withCause(e.value.title, e.value.cause), e.value.type, e.value.version, '${e.value.count}'],
               issueId: e.value.id,
             ))
         .toList();
   }
+
+  static String _withCause(String title, Object? cause) => cause == null ? title : '$title — likely cause: $cause';
 
   static String displayIssueTitle(String type, String title) {
     if (type != 'network') return title;

@@ -1,3 +1,8 @@
+/// SQL ↔ Dart duals: edit both sides (+ a migration if it backs a generated column).
+library;
+
+import 'package:scout_models/scout_models.dart' show isExpectedOrNonOperationalNetwork;
+
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
 /// Matches the `WHERE NOT is_heartbeat` partial indexes (016) verbatim.
 const sqlHideSessionHeartbeat = 'NOT is_heartbeat';
@@ -138,6 +143,41 @@ String sqlDeviceNameExpr({String alias = ''}) {
   return "COALESCE(NULLIF(${p}payload->'device'->>'deviceName', ''), NULLIF(${p}payload->'device'->>'deviceModel', ''), NULLIF(${p}payload->'device'->>'model', ''))";
 }
 
+/// Text matched by event search. Must stay identical to the `events_search_trgm`
+/// index expression (026) or search falls back to scanning events.
+String sqlEventSearchText({String alias = ''}) {
+  final p = alias.isEmpty ? '' : '$alias.';
+  return _searchText([
+    '${p}message',
+    '${p}user_id',
+    '${p}session_id',
+    '${p}install_id',
+    "${p}payload->'network'->>'url'",
+    "${p}payload->'network'->>'traceId'",
+    sqlDeviceNameExpr(alias: alias),
+    "${p}payload->'user'->>'email'",
+    "${p}payload->'user'->>'name'",
+    "left(${p}payload->>'stack', 2000)",
+    "left(${p}payload->>'stackTrace', 2000)",
+  ]);
+}
+
+/// Matches the `user_stats_search_trgm` index (028).
+String sqlUserStatsSearchText(String alias) => _searchText([
+      for (final c in ['user_id', 'email', 'display_name', 'phone', 'username', 'device_name', 'country', 'install_id'])
+        '$alias.$c',
+    ]);
+
+/// Matches the `device_stats_search_trgm` index (029).
+String sqlDeviceStatsSearchText(String alias) => _searchText([
+      for (final c in ['install_id', 'device_name', 'platform', 'country']) '$alias.$c',
+    ]);
+
+/// Fields joined by a unit separator so a query can't match across two fields.
+String _searchText(List<String> fields) => '(${fields.map((f) => "COALESCE($f, '')").join(r" || E'\x1f' || ")})';
+
+String sqlSearchMatch(String text) => "$text ILIKE '%' || @q::text || '%'";
+
 String sqlAppVersionExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
   return "COALESCE(NULLIF(${p}app_version, ''), NULLIF(${p}payload->'device'->>'appVersion', ''), NULLIF(${p}payload->'device'->>'version', ''))";
@@ -250,8 +290,7 @@ bool isErrorEvent(String type, Map<String, dynamic> payload) {
   final network = payload['network'];
   if (network is! Map) return eff == 'error' || eff == 'warning';
   final readable = network['readable'];
-  if (readable is Map && readable['operationalError'] == false) return false;
-  if (readable is Map && readable['faultKind'] == 'expected') return false;
+  if (readable is Map && isExpectedOrNonOperationalNetwork(readable)) return false;
   final err = network['error'];
   if (err != null && err.toString().isNotEmpty) return true;
   final codeStr = network['statusCode']?.toString() ?? '';

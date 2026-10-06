@@ -108,7 +108,26 @@ class SmartIssueSummary {
     return _heuristicBrief(v);
   }
 
-  static _Brief _diagnosisBrief(EventView v) {
+  static _Brief _diagnosisBrief(EventView v) => _contextBrief(
+        v,
+        why: (c) => _diagnosisWhy(v, c.contributing, c.storm, c.appVersionOk),
+        next: (c) => v.diagnosisNextSteps.isNotEmpty
+            ? v.diagnosisNextSteps.take(2).toList()
+            : _next(c.layer, c.storm, v.context),
+      );
+
+  static _Brief _heuristicBrief(EventView v) => _contextBrief(
+        v,
+        why: (c) =>
+            _heuristicWhy(c.layer, c.platformCode, v.message, c.contributing, c.storm, c.appVersionOk, v.context),
+        next: (c) => _next(c.layer, c.storm, v.context),
+      );
+
+  static _Brief _contextBrief(
+    EventView v, {
+    required String Function(_Signals) why,
+    required List<String> Function(_Signals) next,
+  }) {
     final ctx = v.context;
     final crumbs = v.breadcrumbs;
     final message = v.message;
@@ -126,10 +145,15 @@ class SmartIssueSummary {
     final layer = structuredLayer ??
         (v.diagnosisStage != null ? _layerFromStage(v.diagnosisStage!) : null) ??
         (layers.isEmpty ? 'unknown' : layers.first);
-    final contributing = layers.where((l) => l != layer).toSet().toList();
     final storm = _isStorm(crumbs, attempt, outcome) ||
         (attempt == 'retry' && (outcome == 'failed_final' || layers.length >= 2));
-    final appVersionOk = _appVersionOk(crumbs);
+    final signals = (
+      layer: layer,
+      platformCode: platformCode,
+      contributing: layers.where((l) => l != layer).toSet().toList(),
+      storm: storm,
+      appVersionOk: _appVersionOk(crumbs),
+    );
     final netCall = v.network.isNotEmpty ? _networkCallLabel(v) : null;
     final whereBits = <String>[
       if (v.route != '—') v.route,
@@ -146,10 +170,8 @@ class SmartIssueSummary {
     return _Brief(
       where: whereBits.isEmpty ? 'unknown' : whereBits.join(' · '),
       failedAt: failedBits.join(' · '),
-      why: _diagnosisWhy(v, contributing, storm, appVersionOk),
-      next: v.diagnosisNextSteps.isNotEmpty
-          ? v.diagnosisNextSteps.take(2).toList()
-          : _next(layer, storm, ctx),
+      why: why(signals),
+      next: next(signals),
       app: _appLabel(v),
       platform: _platformLabel(v),
       env: v.environment == '—' ? 'unknown' : v.environment,
@@ -195,60 +217,6 @@ class SmartIssueSummary {
       release: v.release == '—' ? 'unknown' : v.release,
       storm: false,
       layer: 'network',
-    );
-  }
-
-  static _Brief _heuristicBrief(EventView v) {
-    final ctx = v.context;
-    final crumbs = v.breadcrumbs;
-    final message = v.message;
-    final operation = _pick(ctx, 'operation') ??
-        _pick(v.custom, 'operation') ??
-        v.diagnosisOperation ??
-        _matchOp(message);
-    final stage = v.diagnosisStage ?? _pick(ctx, 'step') ?? _pick(ctx, 'stage');
-    final entrypoint = _pick(ctx, 'entrypoint') ?? _entrypoint(operation);
-    final platformCode = _pick(ctx, 'platform_code') ?? _platformCode(message);
-    final structuredLayer = _pick(ctx, 'failure_layer');
-    final attempt = _pick(ctx, 'attempt');
-    final outcome = _pick(ctx, 'outcome');
-
-    final layers = _layers(crumbs, message, platformCode, structuredLayer);
-    final layer = structuredLayer ??
-        (v.diagnosisStage != null ? _layerFromStage(v.diagnosisStage!) : null) ??
-        (layers.isEmpty ? 'unknown' : layers.first);
-    final contributing = layers.where((l) => l != layer).toSet().toList();
-    final storm = _isStorm(crumbs, attempt, outcome) ||
-        (attempt == 'retry' && (outcome == 'failed_final' || layers.length >= 2));
-    final appVersionOk = _appVersionOk(crumbs);
-
-    final why = _heuristicWhy(layer, platformCode, message, contributing, storm, appVersionOk, ctx);
-    final next = _next(layer, storm, ctx);
-
-    final whereBits = <String>[
-      if (v.route != '—') v.route,
-      if (operation != null) prettyProductScalar(operation),
-      if (entrypoint != null && !(operation?.contains(entrypoint) ?? false))
-        prettyProductScalar(entrypoint),
-    ];
-
-    final failedBits = <String>[
-      prettyProductScalar(layer),
-      if (stage != null && stage != layer) prettyProductScalar(stage),
-      if (platformCode != null) prettyProductScalar(platformCode),
-    ];
-
-    return _Brief(
-      where: whereBits.isEmpty ? 'unknown' : whereBits.join(' · '),
-      failedAt: failedBits.join(' · '),
-      why: why,
-      next: next,
-      app: _appLabel(v),
-      platform: _platformLabel(v),
-      env: v.environment == '—' ? 'unknown' : v.environment,
-      release: v.release == '—' ? 'unknown' : v.release,
-      storm: storm,
-      layer: layer,
     );
   }
 
@@ -582,6 +550,14 @@ class SmartIssueSummary {
     return false;
   }
 }
+
+typedef _Signals = ({
+  String layer,
+  String? platformCode,
+  List<String> contributing,
+  bool storm,
+  bool appVersionOk,
+});
 
 class _Brief {
   const _Brief({

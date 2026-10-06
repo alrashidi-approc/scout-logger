@@ -23,6 +23,7 @@ import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/waf_rejects_screen.dart';
 import '../screens/session_detail_screen.dart';
+import '../screens/triage_screen.dart';
 import '../screens/sessions_screen.dart';
 import '../screens/device_detail_screen.dart';
 import '../screens/devices_screen.dart';
@@ -244,6 +245,10 @@ GoRouter createRouter() {
             ],
           ),
           GoRoute(
+            path: '/p/:projectId/triage',
+            pageBuilder: (c, s) => scoutPage(s, TriageScreen(projectId: s.pathParameters['projectId']!)),
+          ),
+          GoRoute(
             path: '/p/:projectId/issues',
             pageBuilder: (c, s) {
               final q = s.uri.queryParameters;
@@ -258,6 +263,9 @@ GoRouter createRouter() {
                   initialEnvironment: q['environment'],
                   initialAppVersion: q['appVersion'],
                   initialDeviceName: q['device'] ?? q['deviceName'],
+                  initialHideNoise: q['noise'] == 'hide',
+                  initialByPriority: q['sort'] == 'priority',
+                  initialFirstRelease: q['firstRelease'],
                 ),
               );
             },

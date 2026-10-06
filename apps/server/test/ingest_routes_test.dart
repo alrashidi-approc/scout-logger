@@ -22,11 +22,8 @@ class _FakeStore implements ScoutStore {
     required Map<String, dynamic> enrichment,
   }) async {
     ingested = events;
-    return {'accepted': events.length};
+    return {'accepted': events.length, 'configVersion': 1};
   }
-
-  @override
-  Future<int> getConfigVersion(String projectId) async => 1;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

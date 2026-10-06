@@ -14,9 +14,8 @@ Set<String> notificationCategoriesFor({
   final n = Map<String, dynamic>.from(network);
   final readable = n['readable'];
   if (readable is Map) {
-    if (readable['operationalError'] == false ||
+    if (isExpectedOrNonOperationalNetwork(readable) ||
         readable['issueWorthy'] == false ||
-        readable['faultKind'] == 'expected' ||
         readable['alertWorthy'] == false) {
       return cats; // expected / non-incident network — not an alert category
     }

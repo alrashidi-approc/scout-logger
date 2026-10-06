@@ -8,10 +8,12 @@ import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../widgets/event_card.dart';
 import '../widgets/level_badge.dart';
+import '../utils/issue_view.dart';
 import '../utils/nav.dart';
 import '../utils/responsive.dart';
 import '../utils/share_link.dart';
 import '../widgets/notify_team_sheet.dart';
+import '../widgets/similar_issues_panel.dart';
 import '../widgets/smart_summary_card.dart';
 import '../utils/screen_load.dart';
 import '../utils/smart_issue_summary.dart';
@@ -360,6 +362,10 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
             _statTile('Status', issue['status'] as String? ?? 'open', Icons.flag_outlined),
           ],
         ),
+        if (_signalsCard(issue) case final card?) ...[
+          const SizedBox(height: 20),
+          card,
+        ],
         const SizedBox(height: 20),
         SmartSummaryCard(summary: SmartIssueSummary.fromIssue(issue, events)),
         if (issue['insights'] is Map) ...[
@@ -371,6 +377,11 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
           _assigneeCard(issue),
           const SizedBox(height: 20),
           _notesCard(issue),
+          const SizedBox(height: 20),
+          SimilarIssuesPanel(
+            load: () => _api.fetchSimilarIssues(widget.projectId, widget.issueId),
+            onOpen: (i) => context.push('/p/${widget.projectId}/issues/${i['id']}'),
+          ),
         ],
         if (devices.isNotEmpty) ...[
           const SizedBox(height: 20),
@@ -435,24 +446,43 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
   Widget _assigneeCard(Map<String, dynamic> issue) {
     final current = issue['assigneeUserId'] as String?;
     final hasCurrent = current != null && _members.any((m) => m['userId'] == current);
+    final suggested = issue['suggestedAssignee'] as String?;
+    final suggestedId = suggested == null
+        ? null
+        : _members
+            .where((m) => m['userId'] == suggested || '${m['email']}'.toLowerCase() == suggested.toLowerCase())
+            .firstOrNull?['userId'] as String?;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
-        child: Row(children: [
-          const Icon(Icons.person_outline, size: 20, color: AppTheme.muted),
-          const SizedBox(width: 12),
-          const Text('Assignee', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-          const Spacer(),
-          DropdownButton<String?>(
-            value: hasCurrent ? current : null,
-            hint: const Text('Unassigned'),
-            onChanged: _updating ? null : _assign,
-            items: [
-              const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
-              for (final m in _members)
-                DropdownMenuItem<String?>(value: m['userId'] as String, child: Text(_memberLabel(m))),
-            ],
-          ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.person_outline, size: 20, color: AppTheme.muted),
+            const SizedBox(width: 12),
+            const Text('Assignee', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Spacer(),
+            DropdownButton<String?>(
+              value: hasCurrent ? current : null,
+              hint: const Text('Unassigned'),
+              onChanged: _updating ? null : _assign,
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+                for (final m in _members)
+                  DropdownMenuItem<String?>(value: m['userId'] as String, child: Text(_memberLabel(m))),
+              ],
+            ),
+          ]),
+          if (suggested != null && (suggestedId == null || suggestedId != current))
+            Row(children: [
+              Expanded(
+                child: Text(
+                  'Suggested: $suggested${issue['suggestedOwnerPrefix'] != null ? ' (matches ${issue['suggestedOwnerPrefix']})' : ''}',
+                  style: const TextStyle(fontSize: 12, color: AppTheme.muted),
+                ),
+              ),
+              if (suggestedId != null)
+                TextButton(onPressed: _updating ? null : () => _assign(suggestedId), child: const Text('Assign')),
+            ]),
         ]),
       ),
     );
@@ -560,6 +590,56 @@ class _IssueDetailScreenState extends State<IssueDetailScreen> {
                       style: const TextStyle(fontSize: 12)),
                 ),
             ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  /// Server triage signals (priority, spike, noise, first release, diagnosis brief); null when none are set.
+  Widget? _signalsCard(Map<String, dynamic> issue) {
+    final priority = issue['priority'] as int?;
+    final reasons = (issue['priorityReasons'] as List?)?.cast<String>() ?? const [];
+    final spikeAt = DateTime.tryParse(issue['spikeAt'] as String? ?? '');
+    final noise = issue['noiseReason'] as String?;
+    final release = issue['firstRelease'] as String?;
+    final summary = issue['summary'] as String?;
+    final cause = issue['likelyCause'] as String?;
+    final culprit = issue['culprit'] as String?;
+    final autoReason = issue['autoStatusReason'] as String?;
+    final autoAt = DateTime.tryParse(issue['autoStatusAt'] as String? ?? '');
+    final rows = <(String, String)>[
+      if (autoReason != null)
+        ('Auto status', [autoReason, if (autoAt != null) DateFormat.yMMMd().add_jm().format(autoAt.toLocal())].join(' · ')),
+      if (culprit != null) ('Culprit', culprit),
+      if (spikeAt != null) ('Spike', DateFormat.yMMMd().add_jm().format(spikeAt.toLocal())),
+      if (noise != null) ('Noise', noise.replaceAll('_', ' ')),
+      if (release != null) ('First release', release),
+      if (summary != null) ('Summary', summary),
+      if (cause != null) ('Likely cause', cause),
+    ];
+    if (priority == null && rows.isEmpty) return null;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.low_priority, size: 18, color: AppTheme.muted),
+            const SizedBox(width: 8),
+            const Text('Triage', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            const Spacer(),
+            if (priority != null)
+              Text('Priority $priority',
+                  style: TextStyle(color: priorityColor(priority), fontWeight: FontWeight.w700, fontSize: 12)),
+          ]),
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(reasons.join(' · '), style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+          ],
+          for (final (label, value) in rows) ...[
+            const SizedBox(height: 10),
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            SelectableText(value, style: const TextStyle(fontSize: 13)),
           ],
         ]),
       ),

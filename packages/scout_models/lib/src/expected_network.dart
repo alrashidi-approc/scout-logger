@@ -1,4 +1,5 @@
 import 'network_fault.dart';
+import 'route.dart';
 
 /// Per-route rules: treat matching HTTP responses as expected business outcomes
 /// (not engineering incidents). Example: POST …/empCardImageM → 404 = no image.
@@ -48,7 +49,7 @@ class ExpectedNetworkResponse {
         if (note.isNotEmpty) 'note': note,
       };
 
-  bool get isValid => normalizeExpectedNetworkPath(path).isNotEmpty;
+  bool get isValid => normalizeRoute(path).isNotEmpty;
 }
 
 List<ExpectedNetworkResponse> normalizeExpectedNetworkResponses(dynamic raw) {
@@ -65,10 +66,10 @@ List<ExpectedNetworkResponse> normalizeExpectedNetworkResponses(dynamic raw) {
       continue;
     }
     if (!rule.isValid) continue;
-    final key = '${rule.method}|${normalizeExpectedNetworkPath(rule.path)}|${rule.statusCodes.join(',')}';
+    final key = '${rule.method}|${normalizeRoute(rule.path)}|${rule.statusCodes.join(',')}';
     if (!seen.add(key)) continue;
     out.add(ExpectedNetworkResponse(
-      path: normalizeExpectedNetworkPath(rule.path),
+      path: normalizeRoute(rule.path),
       method: rule.method,
       statusCodes: rule.statusCodes,
       note: rule.note,
@@ -77,20 +78,6 @@ List<ExpectedNetworkResponse> normalizeExpectedNetworkResponses(dynamic raw) {
   return out;
 }
 
-/// Same idea as server [normalizeRoute]: drop query/host and collapse id segments.
-String normalizeExpectedNetworkPath(String url) {
-  if (url.isEmpty) return '';
-  var path = Uri.tryParse(url)?.path ?? url.split('?').first.split('#').first;
-  if (path.isEmpty) path = url.split('?').first.split('#').first;
-  if (path.isEmpty) return '';
-  return path.split('/').map((s) => _isDynamicSegment(s) ? ':id' : s).join('/');
-}
-
-bool _isDynamicSegment(String s) =>
-    RegExp(r'^\d+$').hasMatch(s) ||
-    RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(s) ||
-    RegExp(r'^[0-9a-fA-F]{16,}$').hasMatch(s);
-
 ExpectedNetworkResponse? matchExpectedNetworkResponse({
   required List<ExpectedNetworkResponse> rules,
   required String? method,
@@ -98,11 +85,11 @@ ExpectedNetworkResponse? matchExpectedNetworkResponse({
   required int? statusCode,
 }) {
   if (rules.isEmpty) return null;
-  final route = normalizeExpectedNetworkPath(url ?? '');
+  final route = normalizeRoute(url ?? '');
   if (route.isEmpty) return null;
   final m = (method ?? '*').trim().toUpperCase();
   for (final rule in rules) {
-    final rulePath = normalizeExpectedNetworkPath(rule.path);
+    final rulePath = normalizeRoute(rule.path);
     if (rulePath.isEmpty || !_expectedPathsMatch(route, rulePath)) continue;
     if (rule.method != '*' && rule.method != m) continue;
     if (rule.statusCodes.isNotEmpty) {
@@ -145,7 +132,7 @@ List<ExpectedNetworkResponse> upsertExpectedNetworkResponse(
 ) {
   if (!rule.isValid) return existing;
   final normalized = ExpectedNetworkResponse(
-    path: normalizeExpectedNetworkPath(rule.path),
+    path: normalizeRoute(rule.path),
     method: rule.method.trim().isEmpty ? '*' : rule.method.trim().toUpperCase(),
     statusCodes: List<int>.from(rule.statusCodes)..sort(),
     note: rule.note,
@@ -154,7 +141,7 @@ List<ExpectedNetworkResponse> upsertExpectedNetworkResponse(
   final out = <ExpectedNetworkResponse>[];
   var replaced = false;
   for (final e in existing) {
-    final ek = '${e.method}|${normalizeExpectedNetworkPath(e.path)}|${e.statusCodes.join(',')}';
+    final ek = '${e.method}|${normalizeRoute(e.path)}|${e.statusCodes.join(',')}';
     if (ek == key) {
       out.add(normalized);
       replaced = true;

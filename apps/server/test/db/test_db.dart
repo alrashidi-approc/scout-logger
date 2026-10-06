@@ -32,7 +32,7 @@ Future<ScoutDb?> openTestDb() async {
   }
 
   try {
-    await runMigrations(db);
+    await runMigrations(db, concurrent: true);
   } catch (_) {
     await drop();
     rethrow;

@@ -4,6 +4,7 @@ library;
 import 'dart:convert';
 
 import 'package:postgres/postgres.dart';
+import 'package:scout_server/util/event_filters.dart';
 import 'package:test/test.dart';
 
 import 'test_db.dart';
@@ -122,5 +123,33 @@ Future<void> main() async {
     ];
     expect(rows, hasLength(_fixtures.length));
     expect(mismatches, isEmpty);
+  });
+
+  test('Dart isSessionHeartbeat / isErrorEvent / isSuccessEvent match the generated columns', () async {
+    final conn = await db.connect();
+    final rows = await conn.execute('SELECT id, is_heartbeat, is_error, is_success FROM events ORDER BY id');
+    final byId = {for (final r in rows) r[0]: r};
+    final mismatches = [
+      for (final (i, (type, payload)) in _fixtures.indexed)
+        if (byId['e$i'] case final r?)
+          if ((isSessionHeartbeat(type, payload), isErrorEvent(type, payload), isSuccessEvent(type, payload)) !=
+              (r[1], r[2], r[3]))
+            '$type ${jsonEncode(payload)}: '
+                'heartbeat ${isSessionHeartbeat(type, payload)}/${r[1]} '
+                'error ${isErrorEvent(type, payload)}/${r[2]} '
+                'success ${isSuccessEvent(type, payload)}/${r[3]}',
+    ];
+    expect(rows, hasLength(_fixtures.length));
+    // Known drift (pinned so new drift fails): is_success is NULL, not false, without a
+    // statusCode; SQL counts a network-less debug event as an error; SQL honors the
+    // string "false" for operationalError, Dart only the bool.
+    expect(mismatches, [
+      'network {}: heartbeat false/false error true/true success false/null',
+      'network {"level":"debug"}: heartbeat false/false error false/true success false/null',
+      'network {"network":null}: heartbeat false/false error true/true success false/null',
+      'network {"network":{}}: heartbeat false/false error true/true success false/null',
+      'network {"network":{"statusCode":500,"readable":{"operationalError":"false"}}}: '
+          'heartbeat false/false error true/false success false/false',
+    ]);
   });
 }

@@ -10,6 +10,8 @@ if ! command -v dart >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "==> Building server binary (linux/$ARCH)..."
-(cd "${ROOT}/apps/server" && dart pub get && dart compile exe bin/server.dart -o server --target-os=linux --target-arch="$ARCH")
-echo "==> ${ROOT}/apps/server/server"
+echo "==> Building server + migrate binaries (linux/$ARCH)..."
+(cd "${ROOT}/apps/server" && dart pub get \
+  && dart compile exe bin/server.dart -o server --target-os=linux --target-arch="$ARCH" \
+  && dart compile exe bin/migrate.dart -o migrate --target-os=linux --target-arch="$ARCH")
+echo "==> ${ROOT}/apps/server/server, ${ROOT}/apps/server/migrate"

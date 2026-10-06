@@ -1,0 +1,1 @@
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS group_hint TEXT;

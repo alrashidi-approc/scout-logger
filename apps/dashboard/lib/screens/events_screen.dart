@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../services/dashboard_log_service.dart';
 import '../services/api_client.dart';
-import '../services/facets_cache.dart';
 import '../services/screen_cache.dart';
 import '../widgets/event_card.dart';
 import '../widgets/event_group_card.dart';
 import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
 import '../theme/app_theme.dart';
-import '../utils/screen_load.dart';
+import '../utils/project_list_filters.dart';
 import '../widgets/page_header.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -52,50 +50,40 @@ class EventsScreen extends StatefulWidget {
   State<EventsScreen> createState() => _EventsScreenState();
 }
 
-class _EventsScreenState extends State<EventsScreen> {
+class _EventsScreenState extends State<EventsScreen> with ProjectListFilters {
   static const _pageSize = 50;
 
-  final _api = ScoutApi();
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _events = [];
   List<Map<String, dynamic>> _groups = [];
-  List<String> _environments = [];
-  List<String> _appVersions = [];
-  List<String> _deviceNames = [];
-  bool _loading = true;
-  bool _refreshing = false;
-  bool _hasData = false;
-  Object? _error;
   int _offset = 0;
   int _total = 0;
   bool _hasMore = false;
   late String? _kindFilter;
   late String? _levelFilter;
   late String? _categoryFilter;
-  late PeriodFilter _period;
-  late String _search;
   String? _country;
-  String? _environment;
-  String? _appVersion;
-  String? _deviceName;
   late String _view;
   String? _groupKey;
+
+  @override
+  String get projectId => widget.projectId;
 
   bool get _isGrouped => _view == 'grouped' && (_groupKey == null || _groupKey!.isEmpty);
 
   String get _cacheKey => screenCacheKey(
         'events',
         projectId: widget.projectId,
-        period: _period,
+        period: period,
         extra: {
           'type': _kindFilter,
           'level': _levelFilter,
           'category': _categoryFilter,
-          'q': _search.isEmpty ? null : _search,
+          'q': search.isEmpty ? null : search,
           'country': _country,
-          'environment': _environment,
-          'appVersion': _appVersion,
-          'device': _deviceName,
+          'environment': environment,
+          'appVersion': appVersion,
+          'device': deviceName,
           'view': _view,
           'group': _groupKey,
         },
@@ -111,12 +99,12 @@ class _EventsScreenState extends State<EventsScreen> {
     _kindFilter = widget.initialType;
     _levelFilter = widget.initialLevel;
     _categoryFilter = widget.initialCategory;
-    _period = widget.initialPeriod;
-    _search = widget.initialQuery ?? '';
+    period = widget.initialPeriod;
+    search = widget.initialQuery ?? '';
     _country = widget.initialCountry;
-    _environment = widget.initialEnvironment;
-    _appVersion = widget.initialAppVersion;
-    _deviceName = widget.initialDeviceName;
+    environment = widget.initialEnvironment;
+    appVersion = widget.initialAppVersion;
+    deviceName = widget.initialDeviceName;
     _offset = widget.initialOffset;
     _view = switch (widget.initialView) {
       'all' || 'grouped' || 'focus' => widget.initialView,
@@ -137,26 +125,19 @@ class _EventsScreenState extends State<EventsScreen> {
     _offset = cached['offset'] as int? ?? 0;
     _total = cached['total'] as int? ?? (_isGrouped ? _groups.length : _events.length);
     _hasMore = cached['hasMore'] == true;
-    _environments = (cached['environments'] as List?)?.cast<String>() ?? [];
-    _appVersions = (cached['appVersions'] as List?)?.cast<String>() ?? [];
-    _deviceNames = (cached['deviceNames'] as List?)?.cast<String>() ?? [];
-    _hasData = true;
-    _loading = false;
-    _refreshing = false;
-    _error = null;
+    restoreFacets(cached);
     return true;
   }
 
-  void _writeCache() {
+  @override
+  void writeCache() {
     ScreenCache.instance.write(_cacheKey, {
       'events': _events,
       'groups': _groups,
       'offset': _offset,
       'total': _total,
       'hasMore': _hasMore,
-      'environments': _environments,
-      'appVersions': _appVersions,
-      'deviceNames': _deviceNames,
+      ...facetCache,
     });
   }
 
@@ -171,12 +152,10 @@ class _EventsScreenState extends State<EventsScreen> {
     if (_kindFilter != null) q['type'] = _kindFilter!;
     if (_levelFilter != null) q['level'] = _levelFilter!;
     if (_categoryFilter != null) q['category'] = _categoryFilter!;
-    q.addAll(_period.toQuery());
-    if (_search.isNotEmpty) q['q'] = _search;
+    q.addAll(period.toQuery());
+    if (search.isNotEmpty) q['q'] = search;
     if (_country != null) q['country'] = _country!;
-    if (_environment != null) q['environment'] = _environment!;
-    if (_appVersion != null) q['appVersion'] = _appVersion!;
-    if (_deviceName != null) q['device'] = _deviceName!;
+    q.addAll(facetQuery);
     if (_view != 'focus' || _groupKey != null) q['view'] = _groupKey != null ? 'all' : _view;
     if (_groupKey != null) q['group'] = _groupKey!;
     if (_offset > 0) q['offset'] = '$_offset';
@@ -184,79 +163,33 @@ class _EventsScreenState extends State<EventsScreen> {
     context.go(uri.toString());
   }
 
-  Future<void> _load({bool resetOffset = false}) async {
+  Future<void> _load({bool resetOffset = false}) {
     if (resetOffset) _offset = 0;
-    setState(() {
-      _error = null;
-      beginScreenLoad(
-        hasData: _hasData,
-        apply: ({required loading, required refreshing, error}) {
-          _loading = loading;
-          _refreshing = refreshing;
-          _error = error;
-        },
-      );
-    });
-    try {
-      final page = await _api.fetchEvents(
+    return loadList(
+      () => api.fetchEvents(
         widget.projectId,
         type: _kindFilter,
         level: _levelFilter,
         category: _categoryFilter,
-        period: _period,
-        q: _search.isEmpty ? null : _search,
+        period: period,
+        q: search.isEmpty ? null : search,
         country: _country,
-        environment: _environment,
-        appVersion: _appVersion,
-        deviceName: _deviceName,
+        environment: environment,
+        appVersion: appVersion,
+        deviceName: deviceName,
         limit: _pageSize,
         offset: _offset,
         view: _groupKey != null ? 'all' : _view,
         groupKey: _groupKey,
-      );
-      if (!mounted) return;
-      setState(() {
+      ),
+      (page) {
         _events = jsonListMaps(page['events']);
         _groups = jsonListMaps(page['groups']);
         _total = page['total'] as int? ?? (_isGrouped ? _groups.length : _events.length);
         _hasMore = page['hasMore'] == true;
         _offset = page['offset'] as int? ?? _offset;
-        _hasData = true;
-        _loading = false;
-        _refreshing = false;
-      });
-      _writeCache();
-      _loadFacets();
-    } catch (e) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
-      if (mounted) {
-        setState(() {
-          _error = e;
-          _loading = false;
-          _refreshing = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _loadFacets() async {
-    try {
-      final facets = await FacetsCache.get(
-        _api,
-        widget.projectId,
-        period: _period,
-        environment: _environment,
-        appVersion: _appVersion,
-        deviceName: _deviceName,
-      );
-      if (!mounted) return;
-      setState(() {
-        _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
-        _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
-        _deviceNames = (facets['deviceNames'] as List?)?.map((e) => e.toString()).toList() ?? [];
-      });
-      _writeCache();
-    } catch (_) {}
+      },
+    );
   }
 
   void _apply({
@@ -287,16 +220,16 @@ class _EventsScreenState extends State<EventsScreen> {
       if (setKind) _kindFilter = kind;
       if (setLevel) _levelFilter = level;
       if (setCategory) _categoryFilter = category;
-      if (period != null) _period = period;
-      if (search != null) _search = search;
+      if (period != null) this.period = period;
+      if (search != null) this.search = search;
       if (country != null) _country = country;
       if (clearCountry) _country = null;
-      if (setEnvironment) _environment = environment;
-      if (clearEnvironment) _environment = null;
-      if (setAppVersion) _appVersion = appVersion;
-      if (clearAppVersion) _appVersion = null;
-      if (setDeviceName) _deviceName = deviceName;
-      if (clearDeviceName) _deviceName = null;
+      if (setEnvironment) this.environment = environment;
+      if (clearEnvironment) this.environment = null;
+      if (setAppVersion) this.appVersion = appVersion;
+      if (clearAppVersion) this.appVersion = null;
+      if (setDeviceName) this.deviceName = deviceName;
+      if (clearDeviceName) this.deviceName = null;
       if (view != null) {
         _view = view;
         if (view == 'grouped') _groupKey = null;
@@ -324,7 +257,7 @@ class _EventsScreenState extends State<EventsScreen> {
   }
 
   String _filterSummary() {
-    final parts = <String>[_period.label()];
+    final parts = <String>[period.label()];
     parts.add(switch (_groupKey != null ? 'members' : _view) {
       'all' => 'all',
       'grouped' => 'grouped',
@@ -334,9 +267,9 @@ class _EventsScreenState extends State<EventsScreen> {
     if (_levelFilter != null) parts.add('level $_levelFilter');
     if (_kindFilter != null) parts.add('kind $_kindFilter');
     if (_categoryFilter != null) parts.add('category $_categoryFilter');
-    if (_environment != null) parts.add(_environment!);
-    if (_appVersion != null) parts.add('v$_appVersion');
-    if (_deviceName != null) parts.add(_deviceName!);
+    if (environment != null) parts.add(environment!);
+    if (appVersion != null) parts.add('v$appVersion');
+    if (deviceName != null) parts.add(deviceName!);
     final shown = _isGrouped ? _groups.length : _events.length;
     if (_total == 0) return '${parts.join(' · ')} · 0 ${_isGrouped ? 'groups' : 'events'}';
     final from = _offset + 1;
@@ -344,7 +277,7 @@ class _EventsScreenState extends State<EventsScreen> {
     return '${parts.join(' · ')} · showing $from–$to of $_total';
   }
 
-  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: (p) => _apply(period: p));
+  void _openPeriodPicker() => showPeriodPicker(context, current: period, onSelected: (p) => _apply(period: p));
 
   void _openGroup(Map<String, dynamic> group) {
     final key = group['key']?.toString();
@@ -387,7 +320,7 @@ class _EventsScreenState extends State<EventsScreen> {
                   child: PageHeader(
                     title: 'Events',
                     subtitle: _filterSummary(),
-                    period: _period,
+                    period: period,
                     onPeriodTap: _openPeriodPicker,
                     actions: [IconButton(onPressed: () => _load(resetOffset: true), icon: const Icon(Icons.refresh))],
                   ),
@@ -439,11 +372,11 @@ class _EventsScreenState extends State<EventsScreen> {
                       ],
                       const SizedBox(height: 12),
                       FilterBar(
-                        period: _period,
+                        period: period,
                         onPeriodChanged: (p) => _apply(period: p),
                         includeHourPresets: true,
                         searchHint: 'Message, URL, device, trace ID, user, session…',
-                        searchValue: _search,
+                        searchValue: search,
                         onSearch: (q) => _apply(search: q),
                         levelOptions: _levelOptions,
                         levelSelected: _levelFilter,
@@ -454,16 +387,16 @@ class _EventsScreenState extends State<EventsScreen> {
                         categoryOptions: _categoryOptions,
                         categorySelected: _categoryFilter,
                         onCategorySelected: (c) => _apply(category: c, setCategory: true),
-                        environmentOptions: _environments,
-                        environmentSelected: _environment,
+                        environmentOptions: environments,
+                        environmentSelected: environment,
                         onEnvironmentSelected: (e) =>
                             _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
-                        appVersionOptions: _appVersions,
-                        appVersionSelected: _appVersion,
+                        appVersionOptions: appVersions,
+                        appVersionSelected: appVersion,
                         onAppVersionSelected: (v) =>
                             _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
-                        deviceNameOptions: _deviceNames,
-                        deviceNameSelected: _deviceName,
+                        deviceNameOptions: deviceNames,
+                        deviceNameSelected: deviceName,
                         onDeviceNameSelected: (v) =>
                             _apply(deviceName: v, setDeviceName: true, clearDeviceName: v == null),
                       ),
@@ -471,12 +404,12 @@ class _EventsScreenState extends State<EventsScreen> {
                   ),
                 ),
               ),
-              if (_loading)
+              if (loading)
                 const SliverFillRemaining(hasScrollBody: false, child: LoadingView(layout: PlaceholderLayout.events))
-              else if (_error != null && !_hasData)
+              else if (error != null && !hasData)
                 SliverFillRemaining(
                   hasScrollBody: false,
-                  child: ErrorPanel(message: formatLoadError(_error!), onRetry: () => _load()),
+                  child: ErrorPanel(message: formatLoadError(error!), onRetry: () => _load()),
                 )
               else if (empty)
                 const SliverFillRemaining(
@@ -525,12 +458,12 @@ class _EventsScreenState extends State<EventsScreen> {
                           ),
                           OutlinedButton(
                             onPressed:
-                                _offset > 0 && !_loading ? () => _page((_offset - _pageSize).clamp(0, _total)) : null,
+                                _offset > 0 && !loading ? () => _page((_offset - _pageSize).clamp(0, _total)) : null,
                             child: const Text('Previous'),
                           ),
                           const SizedBox(width: 8),
                           OutlinedButton(
-                            onPressed: _hasMore && !_loading ? () => _page(_offset + _pageSize) : null,
+                            onPressed: _hasMore && !loading ? () => _page(_offset + _pageSize) : null,
                             child: const Text('Next'),
                           ),
                         ],
@@ -542,7 +475,7 @@ class _EventsScreenState extends State<EventsScreen> {
             ],
           ),
         ),
-        if (_refreshing)
+        if (refreshing)
           Positioned.fill(
             child: ColoredBox(
               color: AppTheme.bg.withValues(alpha: 0.92),

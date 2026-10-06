@@ -6,6 +6,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'package:scout_models/scout_models.dart';
 
 import '../config/server_config.dart';
+import '../db/scout_db.dart';
 import '../middleware/auth_middleware.dart';
 import '../middleware/http_utils.dart';
 import '../store/analytics_store.dart';
@@ -32,9 +33,21 @@ TimeWindow? _optionalWindow(Map<String, String> q) {
   return null;
 }
 
+/// Searches without an explicit period cover 7 days instead of [defaultDays].
+TimeWindow _searchWindow(Map<String, String> q, {required int defaultDays}) =>
+    _optionalWindow(q) ?? _window(q, defaultDays: (q['q'] ?? '').trim().isEmpty ? defaultDays : 7);
+
+/// Shorter searches can't use the trigram indexes and would scan every row.
+Response? _searchTooShort(Map<String, String> q) {
+  final s = (q['q'] ?? '').trim();
+  return s.isNotEmpty && s.length < 3 ? jsonErr('Search needs at least 3 characters') : null;
+}
+
 Future<Response> _api(Future<Response> Function() run) async {
   try {
     return await run();
+  } on SearchTimeoutException catch (e) {
+    return jsonErr('$e', status: 503);
   } catch (e) {
     return jsonErr('$e', status: 500);
   }
@@ -246,6 +259,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
+      if (_searchTooShort(request.url.queryParameters) case final err?) return err;
       final users = await analytics.listUsers(
         id,
         window: _window(request.url.queryParameters, defaultDays: 7),
@@ -270,6 +284,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
+      if (_searchTooShort(request.url.queryParameters) case final err?) return err;
       final devices = await analytics.listDevices(
         id,
         window: _window(request.url.queryParameters, defaultDays: 7),
@@ -345,6 +360,7 @@ Handler apiRoutes(
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
       final q = request.url.queryParameters;
+      if (_searchTooShort(q) case final err?) return err;
       final environment = q['environment'];
       final appVersion = q['appVersion'] ?? q['app_version'];
       final deviceName = q['device'] ?? q['deviceName'];
@@ -362,8 +378,11 @@ Handler apiRoutes(
         appVersion: appVersion,
         deviceName: deviceName,
         limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 200) ?? 100,
-        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        window: _searchWindow(q, defaultDays: 30),
         lite: lite,
+        hideNoise: q['noise'] == 'hide',
+        byPriority: q['sort'] == 'priority',
+        firstRelease: q['firstRelease'],
       );
       return Response.ok(jsonEncode({'ok': true, 'issues': issues}), headers: {'Content-Type': 'application/json'});
     });
@@ -376,6 +395,17 @@ Handler apiRoutes(
       final issue = await store.getIssue(id, issueId);
       if (issue == null) return jsonErr('Issue not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'issue': issue}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
+  router.get('/projects/<id>/issues/<issueId>/similar', (Request request, String id, String issueId) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 10;
+      final similar = await store.similarIssues(id, issueId, limit: limit);
+      if (similar == null) return jsonErr('Issue not found', status: 404);
+      return Response.ok(jsonEncode({'ok': true, 'similar': similar}), headers: {'Content-Type': 'application/json'});
     });
   });
 
@@ -444,6 +474,7 @@ Handler apiRoutes(
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
       final q = request.url.queryParameters;
+      if (_searchTooShort(q) case final err?) return err;
       final page = await store.listEvents(
         id,
         limit: int.tryParse(q['limit'] ?? '') ?? 50,
@@ -456,7 +487,7 @@ Handler apiRoutes(
         environment: q['environment'],
         appVersion: q['appVersion'] ?? q['app_version'],
         deviceName: q['device'] ?? q['deviceName'],
-        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        window: _searchWindow(q, defaultDays: 30),
         view: q['view'] ?? 'all',
         groupKey: q['group'] ?? q['groupKey'],
       );
@@ -498,12 +529,13 @@ Handler apiRoutes(
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
       final q = request.url.queryParameters;
+      if (_searchTooShort(q) case final err?) return err;
       final data = await store.listWafExport(
         id,
         q: q['q'],
         environment: q['environment'],
         appVersion: q['appVersion'] ?? q['app_version'],
-        window: _optionalWindow(q) ?? _window(q, defaultDays: 30),
+        window: _searchWindow(q, defaultDays: 30),
         limit: int.tryParse(q['limit'] ?? '') ?? 500,
       );
       final events = [
@@ -740,6 +772,8 @@ Handler apiRoutes(
         final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
         final settings = await store.updateProjectSettings(id, body);
         return Response.ok(jsonEncode({'ok': true, 'settings': settings}), headers: {'Content-Type': 'application/json'});
+      } on FormatException catch (e) {
+        return jsonErr(e.message, status: 400);
       } on ArgumentError {
         return jsonErr('Project not found', status: 404);
       }

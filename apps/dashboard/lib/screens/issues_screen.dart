@@ -1,15 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../services/dashboard_log_service.dart';
-import '../services/api_client.dart';
-import '../services/facets_cache.dart';
 import '../services/screen_cache.dart';
 import '../widgets/event_card.dart';
 import '../widgets/route_link.dart';
 import '../widgets/filter_bar.dart';
 import '../theme/app_theme.dart';
-import '../utils/screen_load.dart';
+import '../utils/project_list_filters.dart';
 import '../widgets/page_header.dart';
 import '../utils/date_range.dart';
 import '../utils/responsive.dart';
@@ -26,6 +23,9 @@ class IssuesScreen extends StatefulWidget {
     this.initialEnvironment,
     this.initialAppVersion,
     this.initialDeviceName,
+    this.initialHideNoise = false,
+    this.initialByPriority = false,
+    this.initialFirstRelease,
   });
 
   final String projectId;
@@ -36,13 +36,15 @@ class IssuesScreen extends StatefulWidget {
   final String? initialEnvironment;
   final String? initialAppVersion;
   final String? initialDeviceName;
+  final bool initialHideNoise;
+  final bool initialByPriority;
+  final String? initialFirstRelease;
 
   @override
   State<IssuesScreen> createState() => _IssuesScreenState();
 }
 
-class _IssuesScreenState extends State<IssuesScreen> {
-  final _api = ScoutApi();
+class _IssuesScreenState extends State<IssuesScreen> with ProjectListFilters {
   List<Map<String, dynamic>> _issues = [];
   bool _sortBySeverity = false;
 
@@ -55,32 +57,29 @@ class _IssuesScreenState extends State<IssuesScreen> {
         (_sevRank[a['severity']] ?? 3).compareTo(_sevRank[b['severity']] ?? 3));
     return sorted;
   }
-  List<String> _environments = [];
-  List<String> _appVersions = [];
-  List<String> _deviceNames = [];
-  bool _loading = true;
-  bool _refreshing = false;
-  bool _hasData = false;
-  Object? _error;
   late String? _typeFilter;
   late String? _statusFilter;
-  late PeriodFilter _period;
-  late String _search;
-  String? _environment;
-  String? _appVersion;
-  String? _deviceName;
+  late bool _hideNoise = widget.initialHideNoise;
+  late bool _byPriority = widget.initialByPriority;
+  late String? _firstRelease = widget.initialFirstRelease;
+
+  @override
+  String get projectId => widget.projectId;
 
   String get _cacheKey => screenCacheKey(
         'issues',
         projectId: widget.projectId,
-        period: _period,
+        period: period,
         extra: {
           'type': _typeFilter,
           'status': _statusFilter,
-          'q': _search.isEmpty ? null : _search,
-          'environment': _environment,
-          'appVersion': _appVersion,
-          'device': _deviceName,
+          'q': search.isEmpty ? null : search,
+          'environment': environment,
+          'appVersion': appVersion,
+          'device': deviceName,
+          'noise': _hideNoise ? 'hide' : null,
+          'sort': _byPriority ? 'priority' : null,
+          'firstRelease': _firstRelease,
         },
       );
 
@@ -89,11 +88,11 @@ class _IssuesScreenState extends State<IssuesScreen> {
     super.initState();
     _typeFilter = widget.initialType;
     _statusFilter = widget.initialStatus;
-    _period = widget.initialPeriod;
-    _search = widget.initialQuery ?? '';
-    _environment = widget.initialEnvironment;
-    _appVersion = widget.initialAppVersion;
-    _deviceName = widget.initialDeviceName;
+    period = widget.initialPeriod;
+    search = widget.initialQuery ?? '';
+    environment = widget.initialEnvironment;
+    appVersion = widget.initialAppVersion;
+    deviceName = widget.initialDeviceName;
     if (!_restore()) _load();
   }
 
@@ -103,101 +102,42 @@ class _IssuesScreenState extends State<IssuesScreen> {
     final issues = cached['issues'];
     if (issues is! List) return false;
     _issues = issues.cast<Map<String, dynamic>>();
-    _environments = (cached['environments'] as List?)?.cast<String>() ?? [];
-    _appVersions = (cached['appVersions'] as List?)?.cast<String>() ?? [];
-    _deviceNames = (cached['deviceNames'] as List?)?.cast<String>() ?? [];
-    _hasData = true;
-    _loading = false;
-    _refreshing = false;
-    _error = null;
+    restoreFacets(cached);
     return true;
   }
 
-  void _writeCache() {
-    ScreenCache.instance.write(_cacheKey, {
-      'issues': _issues,
-      'environments': _environments,
-      'appVersions': _appVersions,
-      'deviceNames': _deviceNames,
-    });
-  }
+  @override
+  void writeCache() => ScreenCache.instance.write(_cacheKey, {'issues': _issues, ...facetCache});
 
   void _syncUrl() {
     final q = <String, String>{};
     if (_typeFilter != null) q['type'] = _typeFilter!;
     if (_statusFilter != null) q['status'] = _statusFilter!;
-    q.addAll(_period.toQuery());
-    if (_search.isNotEmpty) q['q'] = _search;
-    if (_environment != null) q['environment'] = _environment!;
-    if (_appVersion != null) q['appVersion'] = _appVersion!;
-    if (_deviceName != null) q['device'] = _deviceName!;
+    q.addAll(period.toQuery());
+    if (search.isNotEmpty) q['q'] = search;
+    q.addAll(facetQuery);
+    if (_hideNoise) q['noise'] = 'hide';
+    if (_byPriority) q['sort'] = 'priority';
+    if (_firstRelease case final r?) q['firstRelease'] = r;
     context.go(Uri(path: '/p/${widget.projectId}/issues', queryParameters: q.isEmpty ? null : q).toString());
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _error = null;
-      beginScreenLoad(
-        hasData: _hasData,
-        apply: ({required loading, required refreshing, error}) {
-          _loading = loading;
-          _refreshing = refreshing;
-          _error = error;
-        },
+  Future<void> _load() => loadList(
+        () => api.fetchIssues(
+          widget.projectId,
+          type: _typeFilter,
+          status: _statusFilter,
+          period: period,
+          q: search.isEmpty ? null : search,
+          environment: environment,
+          appVersion: appVersion,
+          deviceName: deviceName,
+          hideNoise: _hideNoise,
+          byPriority: _byPriority,
+          firstRelease: _firstRelease,
+        ),
+        (issues) => _issues = issues,
       );
-    });
-    try {
-      final issues = await _api.fetchIssues(
-        widget.projectId,
-        type: _typeFilter,
-        status: _statusFilter,
-        period: _period,
-        q: _search.isEmpty ? null : _search,
-        environment: _environment,
-        appVersion: _appVersion,
-        deviceName: _deviceName,
-      );
-      if (!mounted) return;
-      setState(() {
-        _issues = issues;
-        _hasData = true;
-        _loading = false;
-        _refreshing = false;
-      });
-      _writeCache();
-      _loadFacets();
-    } catch (e) {
-      DashboardLogService.record(projectId: widget.projectId, message: formatLoadError(e));
-      if (mounted) {
-        setState(() {
-          _error = e;
-          _loading = false;
-
-          _refreshing = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _loadFacets() async {
-    try {
-      final facets = await FacetsCache.get(
-        _api,
-        widget.projectId,
-        period: _period,
-        environment: _environment,
-        appVersion: _appVersion,
-        deviceName: _deviceName,
-      );
-      if (!mounted) return;
-      setState(() {
-        _environments = (facets['environments'] as List?)?.map((e) => e.toString()).toList() ?? [];
-        _appVersions = (facets['appVersions'] as List?)?.map((e) => e.toString()).toList() ?? [];
-        _deviceNames = (facets['deviceNames'] as List?)?.map((e) => e.toString()).toList() ?? [];
-      });
-      _writeCache();
-    } catch (_) {}
-  }
 
   void _apply({
     String? type,
@@ -215,18 +155,27 @@ class _IssuesScreenState extends State<IssuesScreen> {
     String? deviceName,
     bool setDeviceName = false,
     bool clearDeviceName = false,
+    bool? hideNoise,
+    bool? byPriority,
+    String? firstRelease,
   }) {
     setState(() {
+      if (hideNoise != null) _hideNoise = hideNoise;
+      if (byPriority != null) {
+        _byPriority = byPriority;
+        if (byPriority) _sortBySeverity = false;
+      }
+      if (firstRelease != null) _firstRelease = firstRelease.trim().isEmpty ? null : firstRelease.trim();
       if (reloadType) _typeFilter = type;
       if (reloadStatus) _statusFilter = status;
-      if (period != null) _period = period;
-      if (search != null) _search = search;
-      if (setEnvironment) _environment = environment;
-      if (clearEnvironment) _environment = null;
-      if (setAppVersion) _appVersion = appVersion;
-      if (clearAppVersion) _appVersion = null;
-      if (setDeviceName) _deviceName = deviceName;
-      if (clearDeviceName) _deviceName = null;
+      if (period != null) this.period = period;
+      if (search != null) this.search = search;
+      if (setEnvironment) this.environment = environment;
+      if (clearEnvironment) this.environment = null;
+      if (setAppVersion) this.appVersion = appVersion;
+      if (clearAppVersion) this.appVersion = null;
+      if (setDeviceName) this.deviceName = deviceName;
+      if (clearDeviceName) this.deviceName = null;
     });
     _syncUrl();
     if (_restore()) {
@@ -236,7 +185,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
     }
   }
 
-  void _openPeriodPicker() => showPeriodPicker(context, current: _period, onSelected: (p) => _apply(period: p));
+  void _openPeriodPicker() => showPeriodPicker(context, current: period, onSelected: (p) => _apply(period: p));
 
   @override
   Widget build(BuildContext context) {
@@ -257,8 +206,8 @@ class _IssuesScreenState extends State<IssuesScreen> {
             sliver: SliverToBoxAdapter(
               child: PageHeader(
                 title: 'Issues',
-                subtitle: '${_issues.length} issues · $totalEvents events · ${_period.label()}',
-                period: _period,
+                subtitle: '${_issues.length} issues · $totalEvents events · ${period.label()}',
+                period: period,
                 onPeriodTap: _openPeriodPicker,
                 actions: [IconButton(onPressed: _load, icon: const Icon(Icons.refresh))],
               ),
@@ -268,23 +217,23 @@ class _IssuesScreenState extends State<IssuesScreen> {
             padding: insets.copyWith(top: 12),
             sliver: SliverToBoxAdapter(
               child: FilterBar(
-                period: _period,
+                period: period,
                 onPeriodChanged: (p) => _apply(period: p),
                 includeHourPresets: true,
                 searchHint: 'Title, user id, device id, email…',
-                searchValue: _search,
+                searchValue: search,
                 onSearch: (q) => _apply(search: q),
                 typeOptions: const [null, 'error', 'crash', 'network'],
                 typeSelected: _typeFilter,
                 onTypeSelected: (t) => _apply(type: t, reloadType: true),
-                environmentOptions: _environments,
-                environmentSelected: _environment,
+                environmentOptions: environments,
+                environmentSelected: environment,
                 onEnvironmentSelected: (e) => _apply(environment: e, setEnvironment: true, clearEnvironment: e == null),
-                appVersionOptions: _appVersions,
-                appVersionSelected: _appVersion,
+                appVersionOptions: appVersions,
+                appVersionSelected: appVersion,
                 onAppVersionSelected: (v) => _apply(appVersion: v, setAppVersion: true, clearAppVersion: v == null),
-                deviceNameOptions: _deviceNames,
-                deviceNameSelected: _deviceName,
+                deviceNameOptions: deviceNames,
+                deviceNameSelected: deviceName,
                 onDeviceNameSelected: (v) => _apply(deviceName: v, setDeviceName: true, clearDeviceName: v == null),
                 extra: [
                   Wrap(
@@ -300,18 +249,43 @@ class _IssuesScreenState extends State<IssuesScreen> {
                         selected: _sortBySeverity,
                         onSelected: (v) => setState(() => _sortBySeverity = v),
                       ),
+                      FilterChip(
+                        avatar: const Icon(Icons.low_priority, size: 16),
+                        label: const Text('Sort by priority'),
+                        selected: _byPriority && !_sortBySeverity,
+                        onSelected: (v) => _apply(byPriority: v),
+                      ),
+                      FilterChip(
+                        avatar: const Icon(Icons.volume_off_outlined, size: 16),
+                        label: const Text('Hide noise'),
+                        selected: _hideNoise,
+                        onSelected: (v) => _apply(hideNoise: v),
+                      ),
+                      SizedBox(
+                        width: 220,
+                        child: TextFormField(
+                          key: ValueKey(_firstRelease),
+                          initialValue: _firstRelease,
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            hintText: 'New in release…',
+                            prefixIcon: Icon(Icons.new_releases_outlined, size: 16),
+                          ),
+                          onFieldSubmitted: (v) => _apply(firstRelease: v),
+                        ),
+                      ),
                     ],
                   ),
                 ],
               ),
             ),
           ),
-          if (_loading)
+          if (loading)
             const SliverFillRemaining(hasScrollBody: false, child: LoadingView(layout: PlaceholderLayout.issues))
-          else if (_error != null && !_hasData)
+          else if (error != null && !hasData)
             SliverFillRemaining(
               hasScrollBody: false,
-              child: ErrorPanel(message: formatLoadError(_error!), onRetry: _load),
+              child: ErrorPanel(message: formatLoadError(error!), onRetry: _load),
             )
           else if (_issues.isEmpty)
             const SliverFillRemaining(
@@ -341,7 +315,7 @@ class _IssuesScreenState extends State<IssuesScreen> {
         ],
       ),
     ),
-        if (_refreshing)
+        if (refreshing)
           Positioned.fill(
             child: ColoredBox(
               color: AppTheme.bg.withValues(alpha: 0.92),

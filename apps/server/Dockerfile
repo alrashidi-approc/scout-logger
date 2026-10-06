@@ -9,6 +9,7 @@ ENV SSL_CERT_DIR=/etc/ssl/certs
 ENV PATH="/opt/dart/bin:${PATH}"
 WORKDIR /app
 COPY apps/server/server /app/server
+COPY apps/server/migrate /app/migrate
 COPY apps/server/lib/db/migrations /app/lib/db/migrations
 COPY apps/dashboard/build/web /app/dashboard/build/web
 ENV DASHBOARD_WEB_DIR=/app/dashboard/build/web

@@ -9,6 +9,7 @@ import '../services/project_access_service.dart';
 import '../services/screen_cache.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
+import '../utils/issue_rules.dart';
 import '../utils/project_roles.dart';
 import '../utils/responsive.dart';
 import '../utils/screen_load.dart';
@@ -49,6 +50,7 @@ class _ProjectSettingsCache {
     required this.wafAppVersions,
     required this.facetEnvironments,
     required this.facetAppVersions,
+    required this.issueRules,
   });
 
   final String? role;
@@ -74,6 +76,7 @@ class _ProjectSettingsCache {
   final Set<String> wafAppVersions;
   final List<String> facetEnvironments;
   final List<String> facetAppVersions;
+  final IssueRules issueRules;
 }
 
 class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
@@ -122,6 +125,13 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   Set<String> _wafAppVersions = {};
   List<String> _facetEnvironments = [];
   List<String> _facetAppVersions = [];
+  final _quietDaysCtrl = TextEditingController(text: '0');
+  final _ignoreRegexesCtrl = TextEditingController();
+  final _ignorePrefixesCtrl = TextEditingController();
+  final _ownerPrefixCtrl = TextEditingController();
+  final _ownerAssigneeCtrl = TextEditingController();
+  List<OwnerRule> _ownerRules = [];
+  IssueRules _issueRules = const IssueRules();
 
   String get _cacheKey =>
       screenCacheKey('project-settings', projectId: widget.projectId);
@@ -140,7 +150,31 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _memberPasswordCtrl.dispose();
     _wafCodesCtrl.dispose();
     _wafTypesCtrl.dispose();
+    _quietDaysCtrl.dispose();
+    _ignoreRegexesCtrl.dispose();
+    _ignorePrefixesCtrl.dispose();
+    _ownerPrefixCtrl.dispose();
+    _ownerAssigneeCtrl.dispose();
     super.dispose();
+  }
+
+  void _setIssueRules(IssueRules rules) {
+    _issueRules = rules;
+    _quietDaysCtrl.text = '${rules.autoResolveQuietDays}';
+    _ignoreRegexesCtrl.text = rules.ignoreMessageRegexes.join('\n');
+    _ignorePrefixesCtrl.text = rules.ignoreCulpritPrefixes.join('\n');
+    _ownerRules = [...rules.ownerRules];
+  }
+
+  void _addOwnerRule() {
+    final prefix = _ownerPrefixCtrl.text.trim();
+    final assignee = _ownerAssigneeCtrl.text.trim();
+    if (prefix.isEmpty || assignee.isEmpty) return;
+    setState(() {
+      _ownerRules = [..._ownerRules, (prefix: prefix, assignee: assignee)];
+      _ownerPrefixCtrl.clear();
+      _ownerAssigneeCtrl.clear();
+    });
   }
 
   @override
@@ -180,6 +214,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _wafAppVersions = cached.wafAppVersions;
     _facetEnvironments = cached.facetEnvironments;
     _facetAppVersions = cached.facetAppVersions;
+    _setIssueRules(cached.issueRules);
     _hasData = true;
     _loading = false;
     _refreshing = false;
@@ -214,6 +249,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         wafAppVersions: _wafAppVersions,
         facetEnvironments: _facetEnvironments,
         facetAppVersions: _facetAppVersions,
+        issueRules: _issueRules,
       ),
     );
   }
@@ -307,6 +343,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                   .toList() ??
               [];
           _sdkHealth = health;
+          _setIssueRules(IssueRules.fromJson(settings['issueRules']));
           _hasData = true;
           _loading = false;
 
@@ -329,9 +366,21 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   }
 
   Future<void> _save() async {
+    final parsed = IssueRules.parseForm(
+      quietDays: _quietDaysCtrl.text,
+      regexes: _ignoreRegexesCtrl.text,
+      prefixes: _ignorePrefixesCtrl.text,
+      owners: _ownerRules,
+    );
+    final issueRules = parsed.rules;
+    if (issueRules == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Issue rules: ${parsed.error}')));
+      return;
+    }
     setState(() => _saving = true);
     try {
       final settings = await _api.updateProjectSettings(widget.projectId, {
+        'issueRules': issueRules.toJson(),
         'sdk': {
           'enabledLevels': normalizeEnabledLevels(_levels.toList()),
           'enableFlutterHooks': _flutterHooks,
@@ -364,6 +413,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         setState(() {
           _configVersion =
               settings['configVersion'] as int? ?? _configVersion + 1;
+          _setIssueRules(IssueRules.fromJson(settings['issueRules']));
           _saving = false;
         });
         _writeCache();
@@ -377,7 +427,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
       if (mounted) {
         setState(() => _saving = false);
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
+            .showSnackBar(SnackBar(content: Text(formatLoadError(e))));
       }
     }
   }
@@ -1262,6 +1312,91 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
                     ),
                 ],
               ),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Issue rules', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'Auto-resolve quiet issues, ignore known noise, and suggest owners by culprit path. Applied by the server signals job.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: 260,
+                child: TextField(
+                  controller: _quietDaysCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Auto-resolve after quiet days',
+                    helperText: '0 = off, max 365',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _ignoreRegexesCtrl,
+                minLines: 2,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Ignore messages matching (regex)',
+                  helperText: 'One per line, case-insensitive · max ${IssueRules.maxPatterns}',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _ignorePrefixesCtrl,
+                minLines: 2,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Ignore culprits starting with',
+                  helperText: 'One path prefix per line · max ${IssueRules.maxPatterns}',
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('Owner rules', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              const SizedBox(height: 4),
+              const Text(
+                'Longest matching culprit prefix suggests the assignee on the issue page.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                for (final o in _ownerRules)
+                  InputChip(
+                    label: Text('${o.prefix} → ${o.assignee}', style: const TextStyle(fontSize: 12)),
+                    onDeleted: () => setState(() => _ownerRules = [..._ownerRules]..remove(o)),
+                  ),
+              ]),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _ownerPrefixCtrl,
+                    maxLength: IssueRules.maxLength,
+                    decoration: const InputDecoration(labelText: 'Culprit prefix', hintText: 'lib/payments/', counterText: ''),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _ownerAssigneeCtrl,
+                    maxLength: IssueRules.maxLength,
+                    decoration: const InputDecoration(labelText: 'Assignee email', counterText: ''),
+                    onSubmitted: (_) => _addOwnerRule(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton(
+                  onPressed: _ownerRules.length >= IssueRules.maxOwnerRules ? null : _addOwnerRule,
+                  child: const Text('Add'),
+                ),
+              ]),
             ]),
           ),
         ),

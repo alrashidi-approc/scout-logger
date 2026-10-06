@@ -223,6 +223,9 @@ class ScoutApi {
     String? appVersion,
     String? deviceName,
     PeriodFilter? period,
+    bool hideNoise = false,
+    bool byPriority = false,
+    String? firstRelease,
   }) async {
     final params = <String, String>{};
     if (type != null) params['type'] = type;
@@ -231,6 +234,9 @@ class ScoutApi {
     if (environment != null) params['environment'] = environment;
     if (appVersion != null) params['appVersion'] = appVersion;
     if (deviceName != null) params['device'] = deviceName;
+    if (hideNoise) params['noise'] = 'hide';
+    if (byPriority) params['sort'] = 'priority';
+    if (firstRelease != null) params['firstRelease'] = firstRelease;
     params.addAll((period ?? const PeriodFilter.days(30)).toQuery());
     final uri = _uri('/api/projects/$projectId/issues').replace(queryParameters: params);
     final res = await _client.get(uri, headers: _headers);
@@ -242,6 +248,13 @@ class ScoutApi {
     final res = await _client.get(_uri('/api/projects/$projectId/issues/$issueId'), headers: _headers);
     _ok(res);
     return jsonMap((jsonDecode(res.body) as Map)['issue']);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchSimilarIssues(String projectId, String issueId, {int limit = 10}) async {
+    final uri = _uri('/api/projects/$projectId/issues/$issueId/similar').replace(queryParameters: {'limit': '$limit'});
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res);
+    return jsonListMaps((jsonDecode(res.body) as Map)['similar']);
   }
 
   Future<Map<String, dynamic>> fetchEvents(

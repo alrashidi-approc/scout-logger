@@ -81,8 +81,8 @@ if [[ "${SKIP_SERVER_BUILD:-0}" != "1" ]]; then
   "${ROOT}/scripts/build-server.sh"
 else
   echo "==> Skipping local server build (SKIP_SERVER_BUILD=1 — VPS will compile; may hang on pub get)"
-  if [[ ! -f "${ROOT}/apps/server/server" ]]; then
-    echo "Missing apps/server/server — run without SKIP_SERVER_BUILD=1"
+  if [[ ! -f "${ROOT}/apps/server/server" || ! -f "${ROOT}/apps/server/migrate" ]]; then
+    echo "Missing apps/server/server or apps/server/migrate — run without SKIP_SERVER_BUILD=1"
     exit 1
   fi
 fi
@@ -122,14 +122,21 @@ cd '${HETZNER_DIR}'
 bash scripts/server-bootstrap.sh
 if [[ "${RESET_DB:-0}" == "1" ]]; then
   bash scripts/compose.sh down -v 2>/dev/null || true
-else
-  bash scripts/compose.sh down 2>/dev/null || true
 fi
-bash scripts/compose.sh up -d --build
+# Migrate with the new image while the old server keeps serving (CONCURRENTLY
+# index builds don't block it); a failed migration aborts before the swap.
+bash scripts/compose.sh build server
+bash scripts/compose.sh up -d db
+bash scripts/compose.sh run --rm server /app/migrate
+bash scripts/compose.sh down 2>/dev/null || true
+bash scripts/compose.sh up -d
 podman image prune -f >/dev/null 2>&1 || docker image prune -f >/dev/null 2>&1 || true
 for i in \$(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     curl -fsS -o /dev/null -w "dashboard:%{http_code}\n" "http://127.0.0.1:${PORT}/${DASHBOARD_WEB_PATH}/"
+    # One-time backfills need the new server live; idempotent, so a failure only warns.
+    bash scripts/compose.sh run --rm server /app/migrate --backfills \
+      || echo "Warning: backfills failed — rerun: bash scripts/compose.sh run --rm server /app/migrate --backfills"
     exit 0
   fi
   sleep 1
