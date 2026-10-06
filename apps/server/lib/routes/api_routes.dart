@@ -263,7 +263,7 @@ Handler apiRoutes(
       final users = await analytics.listUsers(
         id,
         window: _window(request.url.queryParameters, defaultDays: 7),
-        limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100,
+        limit: int.tryParse(request.url.queryParameters['limit'] ?? '')?.clamp(1, 200) ?? 100,
         q: request.url.queryParameters['q'],
       );
       return Response.ok(jsonEncode({'ok': true, 'users': users}), headers: {'Content-Type': 'application/json'});
@@ -288,7 +288,7 @@ Handler apiRoutes(
       final devices = await analytics.listDevices(
         id,
         window: _window(request.url.queryParameters, defaultDays: 7),
-        limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100,
+        limit: int.tryParse(request.url.queryParameters['limit'] ?? '')?.clamp(1, 200) ?? 100,
         q: request.url.queryParameters['q'],
       );
       return Response.ok(jsonEncode({'ok': true, 'devices': devices}), headers: {'Content-Type': 'application/json'});
@@ -402,7 +402,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
-      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 10;
+      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '')?.clamp(1, 100) ?? 10;
       final similar = await store.similarIssues(id, issueId, limit: limit);
       if (similar == null) return jsonErr('Issue not found', status: 404);
       return Response.ok(jsonEncode({'ok': true, 'similar': similar}), headers: {'Content-Type': 'application/json'});
@@ -477,7 +477,7 @@ Handler apiRoutes(
       if (_searchTooShort(q) case final err?) return err;
       final page = await store.listEvents(
         id,
-        limit: int.tryParse(q['limit'] ?? '') ?? 50,
+        limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 200) ?? 50,
         offset: int.tryParse(q['offset'] ?? '') ?? 0,
         type: q['type'] ?? q['kind'],
         level: q['level'],
@@ -536,7 +536,7 @@ Handler apiRoutes(
         environment: q['environment'],
         appVersion: q['appVersion'] ?? q['app_version'],
         window: _searchWindow(q, defaultDays: 30),
-        limit: int.tryParse(q['limit'] ?? '') ?? 500,
+        limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 5000) ?? 500,
       );
       final events = [
         for (final e in (data['events'] as List? ?? const []))
@@ -713,7 +713,7 @@ Handler apiRoutes(
       final sessions = await analytics.listSessions(
         id,
         window: _window(request.url.queryParameters),
-        limit: int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50,
+        limit: int.tryParse(request.url.queryParameters['limit'] ?? '')?.clamp(1, 200) ?? 50,
       );
       return Response.ok(jsonEncode({'ok': true, 'sessions': sessions}), headers: {'Content-Type': 'application/json'});
     });
@@ -981,7 +981,7 @@ Handler apiRoutes(
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);
       if (guard != null) return guard;
-      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 20;
+      final limit = int.tryParse(request.url.queryParameters['limit'] ?? '')?.clamp(1, 100) ?? 20;
       final runs = await healthCheckStore.listRuns(id, limit: limit);
       return Response.ok(jsonEncode({'ok': true, 'runs': runs}), headers: {'Content-Type': 'application/json'});
     });
@@ -1226,7 +1226,7 @@ Handler apiRoutes(
       final logs = await store.listDashboardLogs(
         id,
         level: q['level'],
-        limit: int.tryParse(q['limit'] ?? '') ?? 100,
+        limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 200) ?? 100,
       );
       return Response.ok(jsonEncode({'ok': true, 'logs': logs}), headers: {'Content-Type': 'application/json'});
     });

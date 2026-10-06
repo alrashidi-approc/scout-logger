@@ -98,8 +98,20 @@ class GeoEnricher {
       return const GeoLookup(country: 'LO', countryName: 'Local');
     }
 
-    return await resolveIp(ip) ?? const GeoLookup(country: '??', countryName: 'Unknown');
+    final hit = _cache[ip];
+    if (hit != null && DateTime.now().isBefore(hit.expires)) return hit.geo;
+
+    final resolved = await resolveIp(ip);
+    final geo = resolved ?? const GeoLookup(country: '??', countryName: 'Unknown');
+    if (_cache.length >= 10000) _cache.remove(_cache.keys.first);
+    _cache[ip] = (
+      geo: geo,
+      expires: DateTime.now().add(resolved == null ? const Duration(minutes: 5) : const Duration(hours: 24)),
+    );
+    return geo;
   }
+
+  final _cache = <String, ({GeoLookup geo, DateTime expires})>{};
 
   String? clientIp(Map<String, String> headers, {String? remoteIp}) {
     final forwarded = headers['x-forwarded-for'];

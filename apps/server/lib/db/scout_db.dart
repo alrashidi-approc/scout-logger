@@ -210,6 +210,7 @@ Future<void> _migrateConcurrently(Connection conn, String name, String sql) asyn
       await conn.execute(sql, queryMode: QueryMode.simple);
     } catch (e) {
       error = e;
+      if (!conn.isOpen) rethrow;
     }
     final valid = await conn.execute(
       Sql.named('SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass(@i)'),
@@ -221,8 +222,10 @@ Future<void> _migrateConcurrently(Connection conn, String name, String sql) asyn
     }
     if (error != null) throw error;
   } finally {
-    await conn.execute('RESET lock_timeout');
-    await conn.execute('RESET statement_timeout');
+    if (conn.isOpen) {
+      await conn.execute('RESET lock_timeout');
+      await conn.execute('RESET statement_timeout');
+    }
   }
 }
 

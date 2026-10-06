@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/scout-logger
 ExecStart=/bin/bash /opt/scout-logger/scripts/watchdog-scout.sh
+# Containers started by `compose up -d` land in this cgroup; don't kill them on exit.
+KillMode=process
 Nice=10
 
 [Install]

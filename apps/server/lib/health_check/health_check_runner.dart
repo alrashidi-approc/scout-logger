@@ -4,7 +4,6 @@ import 'dart:io';
 
 import 'package:scout_models/scout_models.dart';
 
-import '../config/env_file.dart';
 import '../config/server_config.dart';
 import '../notifications/notification_service.dart';
 import '../store/health_check_store.dart';
@@ -158,13 +157,14 @@ class HealthCheckRunner {
       final scriptFile = File('${tempDir.path}/health_check.dart');
       await scriptFile.writeAsString(script);
 
-      final env = EnvFile.load().values;
       process = await Process.start(
         resolveDartExecutable(),
         ['run', scriptFile.path],
         workingDirectory: tempDir.path,
+        includeParentEnvironment: false,
         environment: {
-          ...env,
+          if (Platform.environment['PATH'] case final path?) 'PATH': path,
+          if (Platform.environment['HOME'] case final home?) 'HOME': home,
           'SCOUT_PROJECT_ID': projectId,
           'SCOUT_PUBLIC_URL': config.publicUrl,
         },

@@ -120,22 +120,26 @@ ssh "${SSH_OPTS[@]}" "$HETZNER_HOST" bash -s <<EOF
 set -euo pipefail
 cd '${HETZNER_DIR}'
 bash scripts/server-bootstrap.sh
+# The watchdog would recreate the stack (killing migrations) while /health is down.
+systemctl stop scout-watchdog.timer 2>/dev/null || true
+trap 'systemctl start scout-watchdog.timer 2>/dev/null || true' EXIT
 if [[ "${RESET_DB:-0}" == "1" ]]; then
   bash scripts/compose.sh down -v 2>/dev/null || true
 fi
-# Migrate with the new image while the old server keeps serving (CONCURRENTLY
-# index builds don't block it); a failed migration aborts before the swap.
+# Migrate with the new image; a failed migration aborts before the new server starts.
+# podman-compose can't recreate db while the old server container depends on it, so stop all first.
 bash scripts/compose.sh build server
+bash scripts/compose.sh down 2>/dev/null || true
 bash scripts/compose.sh up -d db
-bash scripts/compose.sh run --rm server /app/migrate
+bash scripts/compose.sh run --rm server /app/migrate </dev/null
 bash scripts/compose.sh down 2>/dev/null || true
 bash scripts/compose.sh up -d
-podman image prune -f >/dev/null 2>&1 || docker image prune -f >/dev/null 2>&1 || true
+podman image prune -af >/dev/null 2>&1 || docker image prune -af >/dev/null 2>&1 || true
 for i in \$(seq 1 60); do
   if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
     curl -fsS -o /dev/null -w "dashboard:%{http_code}\n" "http://127.0.0.1:${PORT}/${DASHBOARD_WEB_PATH}/"
     # One-time backfills need the new server live; idempotent, so a failure only warns.
-    bash scripts/compose.sh run --rm server /app/migrate --backfills \
+    bash scripts/compose.sh run --rm server /app/migrate --backfills </dev/null \
       || echo "Warning: backfills failed — rerun: bash scripts/compose.sh run --rm server /app/migrate --backfills"
     exit 0
   fi
