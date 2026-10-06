@@ -262,11 +262,12 @@ class _ProjectsScreenState extends State<ProjectsScreen> {
                           Text('$events events · $issues issues', style: const TextStyle(color: AppTheme.muted, fontSize: 13)),
                         ]),
                       ),
-                      TextButton.icon(
-                        onPressed: () => _toggleCreds(id),
-                        icon: Icon(expanded ? Icons.expand_less : Icons.key_outlined, size: 18),
-                        label: Text(expanded ? 'Hide DSN' : 'DSN'),
-                      ),
+                      if (AuthService.instance.isAdmin || p['role'] == 'owner' || p['role'] == 'admin')
+                        TextButton.icon(
+                          onPressed: () => _toggleCreds(id),
+                          icon: Icon(expanded ? Icons.expand_less : Icons.key_outlined, size: 18),
+                          label: Text(expanded ? 'Hide DSN' : 'DSN'),
+                        ),
                       const Icon(Icons.chevron_right, color: AppTheme.muted),
                     ]),
                   ),

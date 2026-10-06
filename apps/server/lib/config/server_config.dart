@@ -26,6 +26,8 @@ class ServerConfig {
     required this.encryptionKey,
     required this.platformOwnerEmail,
     required this.slackSigningSecret,
+    this.signupEnabled = false,
+    this.corsOrigins = const {},
   });
 
   factory ServerConfig.load({EnvFile? env}) {
@@ -33,13 +35,18 @@ class ServerConfig {
     final port = int.tryParse(e['PORT'] ?? '') ?? 8080;
     final host = e['HOST'] ?? '0.0.0.0';
     final webPath = _normalizeWebPath(e['DASHBOARD_WEB_PATH'] ?? 'scout/dashboard');
-    final jwtSecret = e['JWT_SECRET'] ?? e['DASHBOARD_API_KEY'] ?? 'dev-jwt-secret-change-me';
+    final jwtSecret = _secret(e, 'JWT_SECRET');
+    final encryptionKey = _secret(e, 'ENCRYPTION_KEY');
+    if (jwtSecret == encryptionKey) throw StateError('JWT_SECRET and ENCRYPTION_KEY must differ');
+    final dashboardApiKey = e['DASHBOARD_API_KEY']?.trim() ?? '';
+    if (dashboardApiKey.isNotEmpty) _secret(e, 'DASHBOARD_API_KEY');
+    final publicUrl = (e['PUBLIC_URL'] ?? 'http://localhost:$port').replaceAll(RegExp(r'/+$'), '');
     return ServerConfig(
       host: host,
       port: port,
       dbConfig: DbConfig.fromEnv(e),
-      dashboardApiKey: e['DASHBOARD_API_KEY'] ?? '',
-      publicUrl: (e['PUBLIC_URL'] ?? 'http://localhost:$port').replaceAll(RegExp(r'/+$'), ''),
+      dashboardApiKey: dashboardApiKey,
+      publicUrl: publicUrl,
       geoEnabled: _bool(e['GEO_ENABLED'], defaultValue: true),
       dashboardWebDir: e['DASHBOARD_WEB_DIR'] ?? _defaultDashboardDir(e),
       dashboardWebPath: webPath,
@@ -52,9 +59,15 @@ class ServerConfig {
       smtpPassword: e['SMTP_PASSWORD'] ?? '',
       smtpFrom: e['SMTP_FROM'] ?? e['SMTP_USER'] ?? 'noreply@scout.local',
       smtpAllowInsecure: _bool(e['SMTP_ALLOW_INSECURE'], defaultValue: false),
-      encryptionKey: e['ENCRYPTION_KEY'] ?? jwtSecret,
+      encryptionKey: encryptionKey,
       platformOwnerEmail: (e['PLATFORM_OWNER_EMAIL'] ?? 'mohaalrashidi4@gmail.com').trim().toLowerCase(),
       slackSigningSecret: (e['SLACK_SIGNING_SECRET'] ?? '').trim(),
+      signupEnabled: _bool(e['SIGNUP_ENABLED'], defaultValue: false),
+      corsOrigins: {
+        Uri.parse(publicUrl).origin,
+        for (final o in (e['CORS_ORIGINS'] ?? '').split(','))
+          if (o.trim().isNotEmpty) o.trim().replaceAll(RegExp(r'/+$'), ''),
+      },
     );
   }
 
@@ -82,9 +95,22 @@ class ServerConfig {
   /// Slack app signing secret for verifying interactive button callbacks.
   final String slackSigningSecret;
 
+  final bool signupEnabled;
+
+  /// Origins allowed to call non-`/v1/*` routes cross-origin: PUBLIC_URL's origin + `CORS_ORIGINS`.
+  final Set<String> corsOrigins;
+
   String get dashboardUrlPath => '/$dashboardWebPath';
 
   String get dashboardPublicUrl => '$publicUrl$dashboardUrlPath/';
+
+  static String _secret(EnvFile e, String key) {
+    final v = e[key]?.trim() ?? '';
+    if (v.length < 32 || v.startsWith('change-me')) {
+      throw StateError('$key must be set to >= 32 random chars (use `openssl rand -hex 32`)');
+    }
+    return v;
+  }
 
   static bool _bool(String? v, {required bool defaultValue}) {
     if (v == null) return defaultValue;

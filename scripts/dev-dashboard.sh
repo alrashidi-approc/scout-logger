@@ -23,4 +23,4 @@ fi
 
 echo "==> API ${BASE}/api/dashboard/config"
 cd "${ROOT}/apps/dashboard"
-flutter run -d chrome
+flutter run -d chrome --web-port "${DASHBOARD_DEV_PORT:-8081}"

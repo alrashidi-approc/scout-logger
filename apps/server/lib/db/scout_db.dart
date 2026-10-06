@@ -52,72 +52,60 @@ class DbConfig {
 }
 
 class ScoutDb {
-  ScoutDb(this.config, {int poolSize = 6}) : _poolSize = poolSize.clamp(2, 16);
+  ScoutDb(this.config);
 
   final DbConfig config;
-  final int _poolSize;
-  late final List<Future<Connection>?> _slots = List.filled(_poolSize, null);
-  int _rr = 0;
 
-  /// Round-robin among a small pool so parallel API handlers don't serialize
-  /// on one Postgres session (was causing 20–50s "Queued" waits in the browser).
-  /// Reopens a slot if Postgres closed the idle connection (idle timeout / restart).
-  Future<Connection> connect() async {
-    final i = _rr++ % _poolSize;
-    final existing = _slots[i];
-    if (existing != null) {
-      try {
-        final conn = await existing;
-        if (conn.isOpen) return conn;
-      } catch (_) {}
-      if (identical(_slots[i], existing)) _slots[i] = null;
-    }
-    final opened = _open();
-    _slots[i] = opened;
-    try {
-      return await opened;
-    } catch (_) {
-      if (identical(_slots[i], opened)) _slots[i] = null;
-      rethrow;
-    }
-  }
+  late final endpoint = Endpoint(
+    host: config.host,
+    port: config.port,
+    database: config.database,
+    username: config.username,
+    password: config.password,
+  );
 
-  Future<Connection> _open() {
-    return Connection.open(
-      Endpoint(
-        host: config.host,
-        port: config.port,
-        database: config.database,
-        username: config.username,
-        password: config.password,
+  /// Dashboard, API and schedulers. Separate from [ingest] so slow dashboard
+  /// queries can't starve event ingest (and vice versa).
+  late final pool = _pool(maxConnections: 8, statementTimeout: '30s');
+  late final ingest = _pool(maxConnections: 4, statementTimeout: '10s');
+
+  /// Each `execute` checks out a pooled connection; use `pool.runTx` when
+  /// statements must share a session.
+  Future<Session> connect() async => pool;
+
+  Pool<void> _pool({required int maxConnections, required String statementTimeout}) {
+    return Pool.withEndpoints(
+      [endpoint],
+      settings: PoolSettings(
+        maxConnectionCount: maxConnections,
+        sslMode: SslMode.disable,
+        onOpen: (conn) async {
+          await conn.execute("SET statement_timeout = '$statementTimeout'");
+          await conn.execute("SET idle_in_transaction_session_timeout = '60s'");
+        },
       ),
-      settings: const ConnectionSettings(sslMode: SslMode.disable),
     );
   }
 
-  Future<void> close() async {
-    for (var i = 0; i < _slots.length; i++) {
-      final fut = _slots[i];
-      _slots[i] = null;
-      if (fut != null) {
-        try {
-          await (await fut).close();
-        } catch (_) {}
-      }
-    }
-  }
+  Future<void> close() => Future.wait([pool.close(), ingest.close()]);
 
-  Future<void> ping() async {
-    final conn = await connect();
-    await conn.execute('SELECT 1');
+  Future<void> ping() => pool.execute('SELECT 1');
+}
+
+/// Runs on a dedicated connection so long migrations aren't cut by the pools'
+/// `statement_timeout`.
+Future<void> runMigrations(ScoutDb db) async {
+  final dir = _migrationsDirectory();
+  if (dir == null) return;
+  final conn = await Connection.open(db.endpoint, settings: const ConnectionSettings(sslMode: SslMode.disable));
+  try {
+    await _migrate(conn, dir);
+  } finally {
+    await conn.close();
   }
 }
 
-Future<void> runMigrations(ScoutDb db) async {
-  final conn = await db.connect();
-  final dir = _migrationsDirectory();
-  if (dir == null) return;
-
+Future<void> _migrate(Connection conn, Directory dir) async {
   await conn.execute('''
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version INT PRIMARY KEY,
@@ -143,20 +131,16 @@ Future<void> runMigrations(ScoutDb db) async {
     );
     if (applied.isNotEmpty) continue;
 
-    await _executeSqlScript(conn, await file.readAsString());
-    await conn.execute(
-      Sql.named('INSERT INTO schema_migrations (version) VALUES (@v)'),
-      parameters: {'v': version},
-    );
+    final sql = await file.readAsString();
+    // Whole file via the simple protocol (handles `DO $$ … $$`), atomic with its version row.
+    await conn.runTx((tx) async {
+      await tx.execute(sql, queryMode: QueryMode.simple);
+      await tx.execute(
+        Sql.named('INSERT INTO schema_migrations (version) VALUES (@v)'),
+        parameters: {'v': version},
+      );
+    });
     stdout.writeln('Applied migration $name');
-  }
-}
-
-Future<void> _executeSqlScript(Connection conn, String sql) async {
-  for (final part in sql.split(';')) {
-    final stmt = part.trim();
-    if (stmt.isEmpty) continue;
-    await conn.execute(stmt);
   }
 }
 

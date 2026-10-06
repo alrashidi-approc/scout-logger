@@ -535,7 +535,8 @@ Handler apiRoutes(
 
   router.post('/projects/<id>/share', (Request request, String id) async {
     return _api(() async {
-      final guard = await _projectGuard(request, id, authStore);
+      final guard = await _projectGuard(request, id, authStore) ??
+          await ensureCredentialsAccess(auth: authFrom(request)!, projectId: id, membership: authStore.membershipRole);
       if (guard != null) return guard;
       final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
       final type = body['type']?.toString();
@@ -877,7 +878,8 @@ Handler apiRoutes(
 
   router.post('/projects/<id>/health-check/uptime/share', (Request request, String id) async {
     return _api(() async {
-      final guard = await _projectGuard(request, id, authStore);
+      final guard = await _projectGuard(request, id, authStore) ??
+          await ensureCredentialsAccess(auth: authFrom(request)!, projectId: id, membership: authStore.membershipRole);
       if (guard != null) return guard;
       final raw = await readBody(request);
       final body = raw.trim().isEmpty ? <String, dynamic>{} : jsonDecode(raw) as Map<String, dynamic>;
@@ -1050,7 +1052,8 @@ Handler apiRoutes(
 
     router.post('/projects/<id>/notifications/share', (Request request, String id) async {
       return _api(() async {
-        final guard = await _projectGuard(request, id, authStore);
+        final guard = await _projectGuard(request, id, authStore) ??
+            await ensureProjectNotificationsManage(auth: authFrom(request)!, projectId: id, membership: authStore.membershipRole);
         if (guard != null) return guard;
         final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
         final resourceType = body['resourceType']?.toString();

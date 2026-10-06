@@ -5,7 +5,12 @@ import 'package:http/http.dart' as http;
 
 /// Loaded at startup from the server (`/api/dashboard/config`).
 class AppConfig {
-  AppConfig._({required this.apiBaseUrl, required this.authRequired, required this.emailVerification});
+  AppConfig._({
+    required this.apiBaseUrl,
+    required this.authRequired,
+    required this.emailVerification,
+    required this.signupEnabled,
+  });
 
   static AppConfig? _instance;
 
@@ -18,6 +23,7 @@ class AppConfig {
   final String apiBaseUrl;
   final bool authRequired;
   final bool emailVerification;
+  final bool signupEnabled;
 
   static Future<void> load() async {
     final origins = <String>[Uri.base.origin];
@@ -40,6 +46,7 @@ class AppConfig {
           apiBaseUrl: base.isNotEmpty ? base.replaceAll(RegExp(r'/+$'), '') : origin,
           authRequired: json['authRequired'] != false,
           emailVerification: json['emailVerification'] == true,
+          signupEnabled: json['signupEnabled'] != false,
         );
         return;
       } catch (e) {

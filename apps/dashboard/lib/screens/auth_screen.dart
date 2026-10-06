@@ -99,8 +99,10 @@ class _LoginScreenState extends State<LoginScreen> {
           onPressed: _loading ? null : _submit,
           child: _loading ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Sign in'),
         ),
-        const SizedBox(height: 16),
-        TextButton(onPressed: () => context.go('/signup'), child: const Text('Create an account')),
+        if (AppConfig.I.signupEnabled) ...[
+          const SizedBox(height: 16),
+          TextButton(onPressed: () => context.go('/signup'), child: const Text('Create an account')),
+        ],
       ]),
     );
   }

@@ -8,31 +8,31 @@ Baseline: `main` @ `77f7a8c`. Severity: Critical > High > Medium > Low > Info.
 ## 1. Security — public ingest API & dashboard auth
 
 ### Critical
-- [ ] **S1. Hardcoded JWT / encryption secret fallbacks** — `apps/server/lib/config/server_config.dart` (`ServerConfig.load`): `jwtSecret = JWT_SECRET ?? DASHBOARD_API_KEY ?? 'dev-jwt-secret-change-me'`; `encryptionKey = ENCRYPTION_KEY ?? jwtSecret`. Missing env → forgeable admin JWTs + decryptable ingest/notification secrets.
+- [x] **S1. Hardcoded JWT / encryption secret fallbacks** — `apps/server/lib/config/server_config.dart` (`ServerConfig.load`): `jwtSecret = JWT_SECRET ?? DASHBOARD_API_KEY ?? 'dev-jwt-secret-change-me'`; `encryptionKey = ENCRYPTION_KEY ?? jwtSecret`. Missing env → forgeable admin JWTs + decryptable ingest/notification secrets.
   **Fix:** fail boot if secrets missing/weak; separate strong `JWT_SECRET` and `ENCRYPTION_KEY`; no fixed-string fallback.
 
 ### High
-- [ ] **S2. Any project member can read live ingest key / DSN** — `auth_principal.dart` `canViewCredentials = membershipRole != null`; `GET /api/projects/<id>/credentials` (`api_routes.dart`) returns decrypted key. `support` role included → can forge events into the project.
+- [x] **S2. Any project member can read live ingest key / DSN** — `auth_principal.dart` `canViewCredentials = membershipRole != null`; `GET /api/projects/<id>/credentials` (`api_routes.dart`) returns decrypted key. `support` role included → can forge events into the project.
   **Fix:** owner/admin only (or a secrets role); one-time reveal + audit log; rotation.
-- [ ] **S3. JWT privileges not revalidated / no revocation** — `resolveAuth` trusts token claims (`role`, `canCreate`); demote / `setUnverified` don't invalidate; remember TTL 30d; `/api/*` doesn't recheck `emailVerified`.
+- [x] **S3. JWT privileges not revalidated / no revocation** — `resolveAuth` trusts token claims (`role`, `canCreate`); demote / `setUnverified` don't invalidate; remember TTL 30d; `/api/*` doesn't recheck `emailVerified`.
   **Fix:** load user per request or add `token_version`; revoke on role/verify/password change; shorter access tokens + refresh.
-- [ ] **S4. No rate limiting on auth or ingest** — nothing in `apps/server`, compose, or `infra`. Affects `/api/auth/login|signup|…`, `/v1/events/batch`, `/v1/client/config`.
+- [x] **S4. No rate limiting on auth or ingest** — nothing in `apps/server`, compose, or `infra`. Affects `/api/auth/login|signup|…`, `/v1/events/batch`, `/v1/client/config`.
   **Fix:** per-IP + per-email on auth; per-key + per-IP on ingest; edge (nginx/Cloudflare) + app layer.
 
 ### Medium
-- [ ] **S5. Open signup + first user becomes admin + auto-verify without SMTP** — `auth_store.dart`, `auth_routes.dart`.
+- [x] **S5. Open signup + first user becomes admin + auto-verify without SMTP** — `auth_store.dart`, `auth_routes.dart`.
   **Fix:** invite-only / disable signup in prod; require verification; lock first-admin bootstrap.
-- [ ] **S6. Unbounded ingest batch / body size** — `ingest_routes.dart`, `BatchIngestRequest`, `readBody`.
+- [x] **S6. Unbounded ingest batch / body size** — `ingest_routes.dart`, `BatchIngestRequest`, `readBody`.
   **Fix:** cap bytes + events per batch; 413 on oversize. (Also DB item D1.)
-- [ ] **S7. Low-privilege members can create public shares / share notifications** — `POST /projects/<id>/share`, `.../notifications/share` use `_projectGuard` without `write: true`.
+- [x] **S7. Low-privilege members can create public shares / share notifications** — `POST /projects/<id>/share`, `.../notifications/share` use `_projectGuard` without `write: true`.
   **Fix:** require write or owner/admin.
-- [ ] **S8. `DASHBOARD_API_KEY` = unscoped full platform admin** — `AuthPrincipal.apiKey()`.
+- [x] **S8. `DASHBOARD_API_KEY` = unscoped full platform admin** — `AuthPrincipal.apiKey()`.
   **Fix:** scope it, rotate, monitor; prefer short-lived service tokens.
 
 ### Low
-- [ ] **S9. Non-constant-time API key compare** — `auth_middleware.dart`, `http_utils.dashboardAuth`. **Fix:** reuse `_constantTimeEquals` from `slack_routes.dart`.
-- [ ] **S10. CORS `*`** — `http_utils.dart` `_corsHeaders`. **Fix:** allowlist dashboard origins in prod.
-- [ ] **S11. `jsonErr` string-interpolated JSON** — `http_utils.dart`. **Fix:** `jsonEncode({'ok': false, 'error': message})`.
+- [x] **S9. Non-constant-time API key compare** — `auth_middleware.dart`, `http_utils.dashboardAuth`. **Fix:** reuse `_constantTimeEquals` from `slack_routes.dart`.
+- [x] **S10. CORS `*`** — `http_utils.dart` `_corsHeaders`. **Fix:** allowlist dashboard origins in prod.
+- [x] **S11. `jsonErr` string-interpolated JSON** — `http_utils.dart`. **Fix:** `jsonEncode({'ok': false, 'error': message})`.
 
 ### Info
 - Share links are public by design (hashed token + expiry) — treat as secrets.
@@ -49,23 +49,24 @@ Baseline: `main` @ `77f7a8c`. Severity: Critical > High > Medium > Low > Info.
 Numbers are from a synthetic 1M-event replay (900k in one project) on PG17, not production.
 
 ### Critical
-- [ ] **D1. Row-at-a-time ingest, no transaction** — `scout_store.dart` `ingestBatch` / `_ingestOne`, `identity_rollups.dart`: ~8–14 auto-committed round trips per event; no multi-row insert; no batch/body cap.
+- [x] **D1. Row-at-a-time ingest, no transaction** — `scout_store.dart` `ingestBatch` / `_ingestOne`, `identity_rollups.dart`: ~8–14 auto-committed round trips per event; no multi-row insert; no batch/body cap.
   **Fix:** one transaction per batch on a checked-out connection; multi-row INSERT events; aggregate rollup increments in memory → one upsert per key, sorted to avoid deadlocks; cap batch size.
+  **Status:** batch tx + per-event fallback + deferred notifications + sorted per-key rollups (`rollup_batch.dart`) done. Multi-row event INSERT not done (small win).
 
 ### High
-- [ ] **D2. "Pool" is round-robin shared connections, not checkout** — `scout_db.dart` `connect()` returns `_rr++ % 6`; postgres 3.x runs one op per connection; no `statement_timeout`. Slow dashboard queries stall ingest and vice versa.
+- [x] **D2. "Pool" is round-robin shared connections, not checkout** — `scout_db.dart` `connect()` returns `_rr++ % 6`; postgres 3.x runs one op per connection; no `statement_timeout`. Slow dashboard queries stall ingest and vice versa.
   **Fix:** package `Pool` with `withConnection` / `runTx`; `statement_timeout`; consider separate ingest/dashboard pools.
-- [ ] **D3. `purgeProjectData` uses raw `BEGIN`/`COMMIT` on a shared connection** — `scout_store.dart` ~256–445; other requests' writes can join/roll back with it; `DELETE … RETURNING id` loads all ids.
+- [x] **D3. `purgeProjectData` uses raw `BEGIN`/`COMMIT` on a shared connection** — `scout_store.dart` ~256–445; other requests' writes can join/roll back with it; `DELETE … RETURNING id` loads all ids.
   **Fix:** `runTx` on checked-out connection; batched deletes returning counts.
-- [ ] **D4. Generated columns & partial indexes unused** — reads use inline JSONB exprs (`sqlIsErrorEvent` ×27, `sqlHideSessionHeartbeat` ×50, `sqlIsSuccessEvent` ×5), so `events_project_error`, `events_project_time_nohb`, `events_project_install_time`, `events_project_user_time_nohb`, `events_project_success` are never chosen. Error list ~88 ms → <1 ms using `is_error`; 30-day error count 0.7–23 s → ~0.23 s.
+- [x] **D4. Generated columns & partial indexes unused** — reads use inline JSONB exprs (`sqlIsErrorEvent` ×27, `sqlHideSessionHeartbeat` ×50, `sqlIsSuccessEvent` ×5), so `events_project_error`, `events_project_time_nohb`, `events_project_install_time`, `events_project_user_time_nohb`, `events_project_success` are never chosen. Error list ~88 ms → <1 ms using `is_error`; 30-day error count 0.7–23 s → ~0.23 s.
   **Fix:** use `is_error` / `is_heartbeat` / `is_success` columns; then check `pg_stat_user_indexes` and drop unused + overlapping (`events_project_install` vs `events_user`).
-- [ ] **D5. `COUNT(*)` of all project events on every project list / overview / dashboard** — `listProjects`, `fetchProjectById` (~210 ms at 900k, per project).
+- [x] **D5. `COUNT(*)` of all project events on every project list / overview / dashboard** — `listProjects`, `fetchProjectById` (~210 ms at 900k, per project).
   **Fix:** sum `daily_stats.events_total` or cached counter; drop heartbeat predicate.
-- [ ] **D6. Issue create race + partial batch commits → duplicates on retry** — `_upsertIssue` SELECT then plain INSERT; unique violation 500s mid-batch; server-generated event ids.
+- [x] **D6. Issue create race + partial batch commits → duplicates on retry** — `_upsertIssue` SELECT then plain INSERT; unique violation 500s mid-batch; server-generated event ids.
   **Fix:** `INSERT … ON CONFLICT (project_id, fingerprint) DO UPDATE … RETURNING`; batch transaction; accept client event id for idempotency.
 
 ### Medium
-- [ ] **D7. Per-event rollup UPDATEs bloat** — `issues`, `user_stats`, `device_stats`, `user_device_links` update indexed `last_seen_at` (no HOT). **Fix:** in-memory aggregation per batch (with D1).
+- [x] **D7. Per-event rollup UPDATEs bloat** — `issues`, `user_stats`, `device_stats`, `user_device_links` update indexed `last_seen_at` (no HOT). **Fix:** in-memory aggregation per batch (with D1).
 - [ ] **D8. Unindexed `ILIKE '%q%'` search** — `listEvents`, `listIssues`, `listUsers`, `listDevices`; 6.6–12.9 s no-match over 900k. **Fix:** `pg_trgm` GIN on chosen columns or search column; shorter default window; timeout.
 - [ ] **D9. Heavy `listIssues` with search/facets** — 5 correlated subqueries per issue + `EXISTS`; facets drop time filter. **Fix:** pre-filter events, join once, keep time bound.
 - [ ] **D10. Issue/event detail over-fetch** — `getIssue` ~9 unbounded queries; `getEvent` calls full `getIssue` for 8 fields. **Fix:** lightweight issue summary for event detail; time-bound analytics.
@@ -74,6 +75,7 @@ Numbers are from a synthetic 1M-event replay (900k in one project) on PG17, not 
 - [ ] **D13. `reclassifyExpectedNetworkEvents` synchronous in settings PATCH** — up to 5k UPDATEs + rollup rebuilds over 90d. **Fix:** background job.
 - [ ] **D14. Migration runner splits on `;` → 016 `DO $$` breaks fresh DBs** — `_executeSqlScript`; migrations at boot, no tx, non-concurrent `CREATE INDEX`, full-table rewrites (007/010/014/018/023) lock `events`.
   **Fix:** dollar-quote-aware runner or per-file execution; `CREATE INDEX CONCURRENTLY`; run migrations outside boot.
+  **Status:** per-file transactional runner done (fresh DBs migrate). Still open: migrations at boot without `lock_timeout`; non-tx path for future `CONCURRENTLY` indexes.
 
 ### Low / Info
 - [ ] **D15.** Every batch runs `closeStaleSessions` + reads `projects.settings` 3–4×; `getConfigVersion` extra read. **Fix:** load once per batch / cache.

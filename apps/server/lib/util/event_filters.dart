@@ -1,7 +1,6 @@
 /// SQL fragment — append as `AND $sqlHideSessionHeartbeat` on events queries.
-/// Inline expression so all screens work before/without migration 014 columns.
-const sqlHideSessionHeartbeat =
-    "NOT (type = 'session' AND COALESCE(payload->>'action', '') = 'heartbeat')";
+/// Matches the `WHERE NOT is_heartbeat` partial indexes (016) verbatim.
+const sqlHideSessionHeartbeat = 'NOT is_heartbeat';
 
 bool isSessionHeartbeat(String type, Map<String, dynamic> payload) =>
     type == 'session' && payload['action']?.toString() == 'heartbeat';
@@ -127,45 +126,12 @@ String eventGroupKey({
   return '$type|${clipped.toLowerCase()}';
 }
 
-/// True failures only — inline expression (works without `is_error` column).
-/// Keep in sync with [isErrorEvent] and 014_event_outcome_columns.sql.
-String sqlIsErrorEvent({String alias = ''}) {
-  final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  ${p}type IN ('error', 'crash')
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), 'error')) NOT IN ('info', 'success')
-    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'operationalError', ''), 'true') <> 'false'
-    AND COALESCE(NULLIF(${p}payload->'network'->'readable'->>'faultKind', ''), '') <> 'expected'
-    AND (
-      NULLIF(${p}payload->'network'->>'error', '') IS NOT NULL
-      OR NULLIF(${p}payload->'network'->>'statusCode', '') IS NULL
-      OR NOT ((${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$' AND (${p}payload->'network'->>'statusCode')::int < 400)
-    )
-  )
-)''';
-}
+/// True failures only — generated column (023), matches `events_project_error`.
+/// Keep 023_is_error_expected_network.sql in sync with [isErrorEvent].
+String sqlIsErrorEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_error';
 
-/// Successful outcomes — inline expression (works without `is_success` column).
-String sqlIsSuccessEvent({String alias = ''}) {
-  final p = alias.isEmpty ? '' : '$alias.';
-  return '''
-(
-  LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) = 'success'
-  OR (
-    ${p}type = 'network'
-    AND LOWER(COALESCE(NULLIF(${p}payload->>'level', ''), '')) IN ('info', 'success')
-  )
-  OR (
-    ${p}type = 'network'
-    AND NULLIF(${p}payload->'network'->>'error', '') IS NULL
-    AND (${p}payload->'network'->>'statusCode') ~ '^[0-9]{1,9}\$'
-    AND (${p}payload->'network'->>'statusCode')::int < 400
-  )
-)''';
-}
+/// Successful outcomes — generated column (014), matches `events_project_success`.
+String sqlIsSuccessEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_success';
 
 String sqlDeviceNameExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';

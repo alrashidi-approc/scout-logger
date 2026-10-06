@@ -6,6 +6,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'config/server_config.dart';
 import 'middleware/auth_middleware.dart';
 import 'middleware/http_utils.dart';
+import 'middleware/rate_limit.dart';
 import 'routes/api_routes.dart';
 import 'routes/auth_routes.dart';
 import 'routes/client_config_routes.dart';
@@ -54,16 +55,19 @@ Handler createApp({
     notificationStore: notificationStore,
   );
   final dash = config.dashboardWebPath;
+  final ipClient = rateLimit(RateLimiter(600, const Duration(minutes: 1)), remoteIp);
+  final keyClient = rateLimit(RateLimiter(20000, const Duration(minutes: 1)), bearerToken);
+  final ipAuth = rateLimit(RateLimiter(30, const Duration(minutes: 1)), remoteIp);
 
   router.get('/health', (_) => Response.ok('{"ok":true}', headers: {'Content-Type': 'application/json'}));
   router.get('/', (_) => Response.found('${config.dashboardUrlPath}/'));
   router.get('/scout', (_) => Response.found('${config.dashboardUrlPath}/'));
-  router.post('/v1/events/batch', ingestRoutes(store, geo));
-  router.get('/v1/client/config', clientConfigRoutes(store));
+  router.post('/v1/events/batch', ipClient(keyClient(ingestRoutes(store, geo))));
+  router.get('/v1/client/config', ipClient(keyClient(clientConfigRoutes(store))));
   router.mount('/v1/share/', shareRoutes(store));
   router.post('/slack/interactions', slackRoutes(config, store));
 
-  router.get('/api/dashboard/config', (_) {
+  router.get('/api/dashboard/config', (_) async {
     return Response.ok(
       jsonEncode({
         'ok': true,
@@ -72,13 +76,14 @@ Handler createApp({
         'dashboardPath': config.dashboardUrlPath,
         'authRequired': true,
         'emailVerification': mail.enabled,
+        'signupEnabled': config.signupEnabled || await auth.userCount() == 0,
       }),
       headers: {'Content-Type': 'application/json'},
     );
   });
 
-  router.mount('/api/auth/', authRoutes(config: config, auth: auth, jwt: tokens, email: mail));
-  router.mount('/api/', requireAuth(config, tokens)(api));
+  router.mount('/api/auth/', ipAuth(authRoutes(config: config, auth: auth, jwt: tokens, email: mail)));
+  router.mount('/api/', requireAuth(config, tokens, auth)(api));
 
   if (web != null) {
     router.get('/$dash', (_) => Response.found('/$dash/'));
@@ -88,5 +93,5 @@ Handler createApp({
     router.get('/$dash/', dashboardFallback(config, null));
   }
 
-  return Pipeline().addMiddleware(corsMiddleware()).addHandler(router.call);
+  return Pipeline().addMiddleware(corsMiddleware(config)).addHandler(router.call);
 }

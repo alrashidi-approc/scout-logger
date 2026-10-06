@@ -1,11 +1,10 @@
-import 'package:postgres/postgres.dart';
-
 import 'event_filters.dart';
+import 'rollup_batch.dart';
 import 'user_identity.dart';
 
-/// Upsert user/device daily rollups after a non-heartbeat event insert.
-Future<void> upsertIdentityRollups(
-  Connection conn, {
+/// Queue user/device rollup upserts for a non-heartbeat event.
+void upsertIdentityRollups(
+  RollupBatch rollups, {
   required String projectId,
   required DateTime occurredAt,
   required String type,
@@ -17,7 +16,7 @@ Future<void> upsertIdentityRollups(
   String? environment,
   String? release,
   String? country,
-}) async {
+}) {
   final day = occurredAt.toIso8601String().substring(0, 10);
   final err = isErrorEvent(type, payload) ? 1 : 0;
   final crash = type == 'crash' ? 1 : 0;
@@ -35,15 +34,15 @@ Future<void> upsertIdentityRollups(
   final route = _trim(_nested(payload, 'screen', 'currentRoute'));
 
   if (identified && userId != null) {
-    await conn.execute(
-      Sql.named('''
+    rollups.add(
+      '''
         INSERT INTO user_stats (
           project_id, user_id, first_seen_at, last_seen_at,
           email, display_name, phone, username,
           platform, app_version, environment, release, country,
           device_name, locale, last_route, install_id
         ) VALUES (
-          @pid, @uid, @at, @at,
+          @pid, @uid, @first, @last,
           @email, @name, @phone, @uname,
           @plat, @aver, @env, @rel, @country,
           @dname, @locale, @route, @iid
@@ -63,11 +62,13 @@ Future<void> upsertIdentityRollups(
           locale = COALESCE(EXCLUDED.locale, user_stats.locale),
           last_route = COALESCE(EXCLUDED.last_route, user_stats.last_route),
           install_id = COALESCE(EXCLUDED.install_id, user_stats.install_id)
-      '''),
-      parameters: {
+      ''',
+      [projectId, userId],
+      {
         'pid': projectId,
         'uid': userId,
-        'at': occurredAt,
+        'first': occurredAt,
+        'last': occurredAt,
         'email': email,
         'name': displayName,
         'phone': phone,
@@ -82,29 +83,33 @@ Future<void> upsertIdentityRollups(
         'route': route,
         'iid': installId,
       },
+      max: {'last'},
+      first: {'first'},
     );
 
-    await conn.execute(
-      Sql.named('''
+    rollups.add(
+      '''
         INSERT INTO user_daily_stats (project_id, user_id, date, event_count, error_count, crash_count)
-        VALUES (@pid, @uid, @day::date, 1, @err, @crash)
+        VALUES (@pid, @uid, @day::date, @n, @err, @crash)
         ON CONFLICT (project_id, user_id, date) DO UPDATE SET
-          event_count = user_daily_stats.event_count + 1,
+          event_count = user_daily_stats.event_count + EXCLUDED.event_count,
           error_count = user_daily_stats.error_count + EXCLUDED.error_count,
           crash_count = user_daily_stats.crash_count + EXCLUDED.crash_count
-      '''),
-      parameters: {'pid': projectId, 'uid': userId, 'day': day, 'err': err, 'crash': crash},
+      ''',
+      [projectId, userId, day],
+      {'pid': projectId, 'uid': userId, 'day': day, 'n': 1, 'err': err, 'crash': crash},
+      sum: {'n', 'err', 'crash'},
     );
   }
 
   if (installId != null && installId.isNotEmpty) {
-    await conn.execute(
-      Sql.named('''
+    rollups.add(
+      '''
         INSERT INTO device_stats (
           project_id, install_id, first_seen_at, last_seen_at,
           device_name, platform, app_version, environment, country, locale
         ) VALUES (
-          @pid, @iid, @at, @at,
+          @pid, @iid, @first, @last,
           @dname, @plat, @aver, @env, @country, @locale
         )
         ON CONFLICT (project_id, install_id) DO UPDATE SET
@@ -115,11 +120,13 @@ Future<void> upsertIdentityRollups(
           environment = COALESCE(EXCLUDED.environment, device_stats.environment),
           country = COALESCE(EXCLUDED.country, device_stats.country),
           locale = COALESCE(EXCLUDED.locale, device_stats.locale)
-      '''),
-      parameters: {
+      ''',
+      [projectId, installId],
+      {
         'pid': projectId,
         'iid': installId,
-        'at': occurredAt,
+        'first': occurredAt,
+        'last': occurredAt,
         'dname': deviceName,
         'plat': platform,
         'aver': appVersion,
@@ -127,39 +134,48 @@ Future<void> upsertIdentityRollups(
         'country': country,
         'locale': locale,
       },
+      max: {'last'},
+      first: {'first'},
     );
 
-    await conn.execute(
-      Sql.named('''
+    rollups.add(
+      '''
         INSERT INTO device_daily_stats (project_id, install_id, date, event_count, error_count, crash_count, guest_event_count)
-        VALUES (@pid, @iid, @day::date, 1, @err, @crash, @guest)
+        VALUES (@pid, @iid, @day::date, @n, @err, @crash, @guest)
         ON CONFLICT (project_id, install_id, date) DO UPDATE SET
-          event_count = device_daily_stats.event_count + 1,
+          event_count = device_daily_stats.event_count + EXCLUDED.event_count,
           error_count = device_daily_stats.error_count + EXCLUDED.error_count,
           crash_count = device_daily_stats.crash_count + EXCLUDED.crash_count,
           guest_event_count = device_daily_stats.guest_event_count + EXCLUDED.guest_event_count
-      '''),
-      parameters: {
+      ''',
+      [projectId, installId, day],
+      {
         'pid': projectId,
         'iid': installId,
         'day': day,
+        'n': 1,
         'err': err,
         'crash': crash,
         'guest': guest ? 1 : 0,
       },
+      sum: {'n', 'err', 'crash', 'guest'},
     );
   }
 
   if (identified && userId != null && installId != null && installId.isNotEmpty) {
-    await conn.execute(
-      Sql.named('''
+    rollups.add(
+      '''
         INSERT INTO user_device_links (project_id, user_id, install_id, first_seen_at, last_seen_at, event_count)
-        VALUES (@pid, @uid, @iid, @at, @at, 1)
+        VALUES (@pid, @uid, @iid, @first, @last, @n)
         ON CONFLICT (project_id, user_id, install_id) DO UPDATE SET
           last_seen_at = GREATEST(user_device_links.last_seen_at, EXCLUDED.last_seen_at),
-          event_count = user_device_links.event_count + 1
-      '''),
-      parameters: {'pid': projectId, 'uid': userId, 'iid': installId, 'at': occurredAt},
+          event_count = user_device_links.event_count + EXCLUDED.event_count
+      ''',
+      [projectId, userId, installId],
+      {'pid': projectId, 'uid': userId, 'iid': installId, 'first': occurredAt, 'last': occurredAt, 'n': 1},
+      sum: {'n'},
+      max: {'last'},
+      first: {'first'},
     );
   }
 }

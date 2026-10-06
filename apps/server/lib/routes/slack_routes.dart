@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:shelf/shelf.dart';
 
 import '../config/server_config.dart';
+import '../middleware/http_utils.dart';
 import '../store/scout_store.dart';
 
 /// Handles Slack interactive button callbacks (Resolve / Mute).
@@ -55,14 +56,5 @@ bool _verify(String secret, Map<String, String> headers, String body) {
   final base = 'v0:$ts:$body';
   final hmac = Hmac(sha256, utf8.encode(secret));
   final expected = 'v0=${hmac.convert(utf8.encode(base))}';
-  return _constantTimeEquals(expected, sig);
-}
-
-bool _constantTimeEquals(String a, String b) {
-  if (a.length != b.length) return false;
-  var diff = 0;
-  for (var i = 0; i < a.length; i++) {
-    diff |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
-  }
-  return diff == 0;
+  return constantTimeEquals(expected, sig);
 }

@@ -59,7 +59,7 @@ Future<void> main(List<String> args) async {
   }
 }
 
-Future<Map<String, Map<int, NetworkFaultClass>>> _loadOverrides(Connection conn) async {
+Future<Map<String, Map<int, NetworkFaultClass>>> _loadOverrides(Session conn) async {
   final rows = await conn.execute('SELECT id, settings FROM projects');
   final out = <String, Map<int, NetworkFaultClass>>{};
   for (final r in rows) {

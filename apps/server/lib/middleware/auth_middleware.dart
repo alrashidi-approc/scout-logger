@@ -3,28 +3,32 @@ import 'package:shelf/shelf.dart';
 import '../auth/auth_principal.dart';
 import '../config/server_config.dart';
 import '../services/jwt_service.dart';
+import '../store/auth_store.dart';
 import 'http_utils.dart';
 
 const authContextKey = 'scout.auth';
 
 AuthPrincipal? authFrom(Request request) => request.context[authContextKey] as AuthPrincipal?;
 
-Future<AuthPrincipal?> resolveAuth(Request request, ServerConfig config, JwtService jwt) async {
+Future<AuthPrincipal?> resolveAuth(Request request, ServerConfig config, JwtService jwt, AuthStore auth) async {
   final bearer = bearerToken(request);
   if (bearer != null && bearer.isNotEmpty && !bearer.startsWith('sk_live_')) {
-    final user = jwt.verify(bearer);
-    if (user != null && user.userId != null) return user;
+    final userId = jwt.verify(bearer)?.userId;
+    if (userId != null) {
+      final user = await auth.findUserById(userId);
+      if (user != null && user['emailVerified'] == true) return auth.toPrincipal(user);
+    }
   }
   if (config.dashboardApiKey.isNotEmpty) {
     final key = request.headers['x-api-key'] ?? request.headers['X-API-Key'];
-    if (key == config.dashboardApiKey) return AuthPrincipal.apiKey();
+    if (key != null && constantTimeEquals(key, config.dashboardApiKey)) return AuthPrincipal.apiKey();
   }
   return null;
 }
 
-Middleware requireAuth(ServerConfig config, JwtService jwt) {
+Middleware requireAuth(ServerConfig config, JwtService jwt, AuthStore store) {
   return (Handler inner) => (Request request) async {
-        final auth = await resolveAuth(request, config, jwt);
+        final auth = await resolveAuth(request, config, jwt, store);
         if (auth == null) {
           return jsonErr('Unauthorized', status: 401);
         }

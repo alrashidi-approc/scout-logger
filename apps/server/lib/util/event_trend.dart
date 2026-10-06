@@ -7,7 +7,7 @@ import 'user_identity.dart';
 String trendGranularity(TimeWindow w) => w.usesHourlyTrend ? 'hour' : 'day';
 
 Future<List<Map<String, dynamic>>> fetchEventTrend(
-  Connection conn,
+  Session conn,
   String projectId,
   TimeWindow w, {
   bool includeUsers = false,
@@ -20,7 +20,7 @@ Future<List<Map<String, dynamic>>> fetchEventTrend(
 }
 
 Future<List<Map<String, dynamic>>> _dailyTrendFromRollups(
-  Connection conn,
+  Session conn,
   String projectId,
   TimeWindow w, {
   required bool includeUsers,
@@ -96,7 +96,7 @@ Future<List<Map<String, dynamic>>> _dailyTrendFromRollups(
 }
 
 Future<List<Map<String, dynamic>>> _hourlyTrend(
-  Connection conn,
+  Session conn,
   String projectId,
   TimeWindow w, {
   required bool includeUsers,
@@ -161,7 +161,7 @@ String _hourBucket(DateTime d) {
 }
 
 Future<List<Map<String, dynamic>>> _dailyTrend(
-  Connection conn,
+  Session conn,
   String projectId,
   TimeWindow w, {
   required bool includeUsers,

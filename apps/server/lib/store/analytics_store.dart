@@ -598,7 +598,7 @@ class AnalyticsStore {
   }
 
   Future<Map<String, dynamic>> _dashboardInsightsFromRollups(
-    Connection conn,
+    Session conn,
     String projectId,
     TimeWindow w,
   ) async {
@@ -670,7 +670,7 @@ class AnalyticsStore {
   }
 
   Future<Map<String, dynamic>> _dashboardInsightsFromEvents(
-    Connection conn,
+    Session conn,
     String projectId,
     TimeWindow w,
   ) async {
@@ -1026,7 +1026,7 @@ class AnalyticsStore {
           WHERE project_id = @pid AND user_id = @uid AND install_id IS NOT NULL AND user_id <> install_id
         ),
         merged AS (
-          SELECT type, occurred_at, country, payload
+          SELECT type, occurred_at, country, payload, is_error
           FROM events
           WHERE project_id = @pid
             AND $sqlHideSessionHeartbeat

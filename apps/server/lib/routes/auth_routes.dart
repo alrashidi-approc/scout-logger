@@ -5,6 +5,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import '../config/server_config.dart';
 import '../middleware/http_utils.dart';
+import '../middleware/rate_limit.dart';
 import '../services/email_service.dart';
 import '../services/jwt_service.dart';
 import '../store/auth_store.dart';
@@ -16,9 +17,12 @@ Handler authRoutes({
   required EmailService email,
 }) {
   final router = Router();
+  final loginFailures = RateLimiter(10, const Duration(minutes: 15));
+  final resends = RateLimiter(3, const Duration(hours: 1));
 
   router.post('/signup', (Request request) async {
     try {
+      if (!config.signupEnabled && await auth.userCount() > 0) return jsonErr('Signup is disabled', status: 403);
       final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
       final emailAddr = body['email']?.toString() ?? '';
       final password = body['password']?.toString() ?? '';
@@ -55,8 +59,11 @@ Handler authRoutes({
       final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
       final emailAddr = body['email']?.toString().trim().toLowerCase() ?? '';
       final password = body['password']?.toString() ?? '';
+      final wait = loginFailures.check(emailAddr);
+      if (wait != null) return tooManyRequests(wait);
       final user = await auth.findUserByEmail(emailAddr);
       if (user == null || !auth.verifyPassword(password, user['passwordHash'] as String)) {
+        loginFailures.hit(emailAddr);
         return jsonErr('Invalid email or password', status: 401);
       }
       if (user['emailVerified'] != true) {
@@ -119,6 +126,8 @@ Handler authRoutes({
     try {
       final body = jsonDecode(await readBody(request)) as Map<String, dynamic>;
       final emailAddr = body['email']?.toString().trim().toLowerCase() ?? '';
+      final wait = resends.hit(emailAddr);
+      if (wait != null) return tooManyRequests(wait);
       final user = await auth.findUserByEmail(emailAddr);
       if (user == null) return jsonOk('{"ok":true}');
       if (user['emailVerified'] == true) return jsonOk('{"ok":true}');

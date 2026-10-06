@@ -57,6 +57,7 @@ case "$cmd" in
     start_db
     export PORT="$DEV_PORT"
     export PUBLIC_URL="http://localhost:${DEV_PORT}"
+    export CORS_ORIGINS="${CORS_ORIGINS:-http://localhost:${DASHBOARD_DEV_PORT:-8081}}"
     export DB_HOST=localhost
     export DB_PORT="$DEV_DB_PORT"
     echo "==> Server http://localhost:${PORT}  dashboard http://localhost:${PORT}/${DASHBOARD_WEB_PATH}/"

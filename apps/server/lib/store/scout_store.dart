@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:postgres/postgres.dart';
 import 'package:scout_models/scout_models.dart';
@@ -13,6 +14,7 @@ import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/identity_rollups.dart';
 import '../util/insights.dart';
+import '../util/rollup_batch.dart';
 import '../util/user_identity.dart';
 
 const _sessionIdleMinutes = 5;
@@ -48,6 +50,37 @@ List<String>? _normalizedEnvFilter(List<String>? environments) {
 }
 
 /// Result of grouping an event into an issue.
+/// One fingerprint's events within an ingest batch, upserted as a single issue row.
+class _IssueEvents {
+  _IssueEvents(this.type, this.firstSeenAt, this.affectedUser);
+
+  final String type;
+  final DateTime firstSeenAt;
+  final bool affectedUser;
+  late DateTime lastSeenAt = firstSeenAt;
+  var count = 0;
+  var title = '';
+  String? country;
+
+  void add(String title, DateTime at, String? country) {
+    count++;
+    if (at.isAfter(lastSeenAt)) lastSeenAt = at;
+    if (title.isNotEmpty) this.title = title;
+    this.country ??= country;
+  }
+}
+
+/// Writes collected by [ScoutStore._ingestOne], applied once per batch.
+class _IngestBatch {
+  final issues = <String, _IssueEvents>{};
+  final events = <({
+    String? fingerprint,
+    Map<String, Object?> params,
+    Future<void> Function(String? issueId, bool regression)? notify,
+  })>[];
+  final rollups = RollupBatch();
+}
+
 class IssueUpsert {
   const IssueUpsert({required this.id, required this.muted, required this.regression});
 
@@ -152,9 +185,9 @@ class ScoutStore {
     if (admin) {
       rows = await conn.execute('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
+               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat),
                NULL::text
         FROM projects p
         ORDER BY p.created_at DESC
@@ -163,9 +196,9 @@ class ScoutStore {
       rows = await conn.execute(
         Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
+               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat),
                m.role
         FROM projects p
         INNER JOIN project_memberships m ON m.project_id = p.id AND m.user_id = @uid
@@ -221,9 +254,9 @@ class ScoutStore {
     final rows = await conn.execute(
       Sql.named('''
         SELECT p.id, p.name, p.slug, p.created_at,
-               (SELECT COUNT(*)::int FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat')),
+               (SELECT COALESCE(SUM(events_total), 0)::int FROM daily_stats d WHERE d.project_id = p.id),
                (SELECT COUNT(*)::int FROM issues i WHERE i.project_id = p.id),
-               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT (e.type = 'session' AND COALESCE(e.payload->>'action', '') = 'heartbeat'))
+               (SELECT MAX(occurred_at) FROM events e WHERE e.project_id = p.id AND NOT e.is_heartbeat)
         FROM projects p WHERE p.id = @id
       '''),
       parameters: {'id': projectId},
@@ -255,20 +288,18 @@ class ScoutStore {
   /// Delete ingest data in [window] — events, sessions, daily stats, and derived rows.
   Future<Map<String, int>> purgeProjectData(String projectId, {required TimeWindow window}) async {
     if (window.since == null) throw ArgumentError('purge window requires since');
-    final conn = await db.connect();
     final tp = timeParams(window);
     final fromDate = window.since!.substring(0, 10);
     final untilDate = trendUntilDate(window);
 
-    await conn.execute('BEGIN');
-    try {
+    return db.pool.runTx((conn) async {
+      await conn.execute("SET LOCAL statement_timeout = '5min'");
       final events = await conn.execute(
         Sql.named('''
           DELETE FROM events
           WHERE project_id = @pid
             AND occurred_at >= @since::timestamptz
             AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-          RETURNING id
         '''),
         parameters: {'pid': projectId, ...tp},
       );
@@ -279,7 +310,6 @@ class ScoutStore {
           WHERE project_id = @pid
             AND started_at >= @since::timestamptz
             AND (@until::timestamptz IS NULL OR started_at < @until::timestamptz)
-          RETURNING id
         '''),
         parameters: {'pid': projectId, ...tp},
       );
@@ -290,7 +320,6 @@ class ScoutStore {
           WHERE project_id = @pid
             AND date >= @fromDate::date
             AND (@untilDate::date IS NULL OR date < @untilDate::date)
-          RETURNING date
         '''),
         parameters: {'pid': projectId, 'fromDate': fromDate, 'untilDate': untilDate},
       );
@@ -320,7 +349,6 @@ class ScoutStore {
           DELETE FROM issues i
           WHERE i.project_id = @pid
             AND NOT EXISTS (SELECT 1 FROM events e WHERE e.issue_id = i.id)
-          RETURNING i.id
         '''),
         parameters: {'pid': projectId},
       );
@@ -355,7 +383,6 @@ class ScoutStore {
               SELECT 1 FROM events e
               WHERE e.project_id = @pid AND e.user_id = ufs.user_id
             )
-          RETURNING ufs.user_id
         '''),
         parameters: {'pid': projectId},
       );
@@ -406,7 +433,6 @@ class ScoutStore {
                 AND e.release = r.release
                 AND COALESCE(e.environment, 'production') = r.environment
             )
-          RETURNING r.release
         '''),
         parameters: {'pid': projectId},
       );
@@ -434,19 +460,15 @@ class ScoutStore {
         parameters: {'pid': projectId},
       );
 
-      await conn.execute('COMMIT');
       return {
-        'deletedEvents': events.length,
-        'deletedSessions': sessions.length,
-        'deletedDailyStats': stats.length,
-        'deletedIssues': issues.length,
-        'deletedUserRows': users.length,
-        'deletedReleases': releases.length,
+        'deletedEvents': events.affectedRows,
+        'deletedSessions': sessions.affectedRows,
+        'deletedDailyStats': stats.affectedRows,
+        'deletedIssues': issues.affectedRows,
+        'deletedUserRows': users.affectedRows,
+        'deletedReleases': releases.affectedRows,
       };
-    } catch (e) {
-      await conn.execute('ROLLBACK');
-      rethrow;
-    }
+    });
   }
 
   Future<Map<String, List<String>>> eventFilterFacets(
@@ -570,7 +592,7 @@ class ScoutStore {
   }
 
   Future<Map<String, List<String>>> _eventFilterFacetsFromEvents(
-    Connection conn,
+    Session conn,
     String projectId, {
     required TimeWindow window,
     String? environment,
@@ -668,36 +690,79 @@ class ScoutStore {
       notifConfig = await notifications.store.getConfig(projectId);
       platformPolicy = await notifications.platformStore.getNotificationPolicy();
     }
-    var accepted = 0;
-    for (final event in events) {
-      if (!isKnownEventType(event.type)) continue;
-      await _ingestOne(
-        conn,
-        projectId: projectId,
-        keyId: keyId,
-        event: event,
-        enrichment: enrichment,
-        faultOverrides: faultOverrides,
-        expectedResponses: expectedResponses,
-        notifConfig: notifConfig,
-        platformPolicy: platformPolicy,
-      );
-      accepted++;
+    final known = events.where((e) => isKnownEventType(e.type)).toList();
+    // Notifications run only after their events commit.
+    final afterCommit = <Future<void> Function()>[];
+    Future<void> ingestTx(List<IngestEvent> batch) async {
+      for (var attempt = 1;; attempt++) {
+        final pending = <Future<void> Function()>[];
+        try {
+          await db.ingest.runTx((tx) async {
+            final writes = _IngestBatch();
+            for (final event in batch) {
+              await _ingestOne(
+                tx,
+                projectId: projectId,
+                keyId: keyId,
+                event: event,
+                enrichment: enrichment,
+                faultOverrides: faultOverrides,
+                expectedResponses: expectedResponses,
+                notifConfig: notifConfig,
+                platformPolicy: platformPolicy,
+                batch: writes,
+              );
+            }
+            await _writeBatch(tx, projectId, writes, pending);
+          });
+          afterCommit.addAll(pending);
+          return;
+        } on ServerException catch (e) {
+          // Concurrent batches can deadlock on shared rollup rows; the rolled-back victim is safe to retry.
+          if (e.code != '40P01' || attempt == 3) rethrow;
+        }
+      }
     }
-    return {'accepted': accepted, 'total': events.length};
+
+    var rejected = 0;
+    try {
+      await ingestTx(known);
+    } on ServerException {
+      // A poison event aborted the batch: replay one transaction per event and
+      // drop data errors — the SDK retries non-2xx batches forever.
+      for (final event in known) {
+        try {
+          await ingestTx([event]);
+        } on ServerException catch (e) {
+          final code = e.code ?? '';
+          if (!code.startsWith('22') && !code.startsWith('23')) rethrow;
+          stderr.writeln('ingest: rejected ${event.type} event (project $projectId): ${e.message}');
+          rejected++;
+        }
+      }
+    }
+
+    for (final notify in afterCommit) {
+      try {
+        await notify();
+      } catch (e) {
+        stderr.writeln('ingest: notification failed (project $projectId): $e');
+      }
+    }
+    return {'accepted': known.length - rejected, 'total': events.length, 'rejected': rejected};
   }
 
-  Future<Map<int, NetworkFaultClass>> _networkFaultOverrides(Connection conn, String projectId) async {
+  Future<Map<int, NetworkFaultClass>> _networkFaultOverrides(Session conn, String projectId) async {
     final sdk = await _projectSdkConfig(conn, projectId);
     return sdk.networkFaultOverrides;
   }
 
-  Future<List<ExpectedNetworkResponse>> _expectedNetworkResponses(Connection conn, String projectId) async {
+  Future<List<ExpectedNetworkResponse>> _expectedNetworkResponses(Session conn, String projectId) async {
     final sdk = await _projectSdkConfig(conn, projectId);
     return sdk.expectedNetworkRules;
   }
 
-  Future<ProjectSdkConfig> _projectSdkConfig(Connection conn, String projectId) async {
+  Future<ProjectSdkConfig> _projectSdkConfig(Session conn, String projectId) async {
     final rows = await conn.execute(
       Sql.named('SELECT settings FROM projects WHERE id = @id'),
       parameters: {'id': projectId},
@@ -710,7 +775,7 @@ class ScoutStore {
   }
 
   Future<void> _ingestOne(
-    Connection conn, {
+    Session conn, {
     required String projectId,
     required String keyId,
     required IngestEvent event,
@@ -719,6 +784,7 @@ class ScoutStore {
     List<ExpectedNetworkResponse>? expectedResponses,
     ProjectNotificationConfig? notifConfig,
     PlatformNotificationPolicy? platformPolicy,
+    required _IngestBatch batch,
   }) async {
     final payload = _payloadWithNetworkReadable(
       event.payload,
@@ -772,45 +838,28 @@ class ScoutStore {
       if (clockAhead) 'deviceOccurredAt': deviceAt.toIso8601String(),
     };
 
-    String? issueId;
     String? fingerprint;
-    var issueMuted = false;
-    var issueRegression = false;
     if (groupsIntoIssue(event.type) && _qualifiesForIssue(event.type, payload)) {
       fingerprint = eventFingerprint(event.type, payload);
-      final upsert = await _upsertIssue(
-        conn,
-        projectId: projectId,
-        fingerprint: fingerprint,
-        type: event.type,
-        title: eventTitle(event.type, payload),
-        occurredAt: occurredAt,
-        userId: userId,
-        installId: installId,
-        country: country,
-      );
-      issueId = upsert.id;
-      issueMuted = upsert.muted;
-      issueRegression = upsert.regression;
+      batch.issues
+          .putIfAbsent(
+            fingerprint,
+            () => _IssueEvents(event.type, occurredAt, isIdentifiedAppUser(userId: userId, installId: installId)),
+          )
+          .add(eventTitle(event.type, payload), occurredAt, country);
     }
 
     final eventId = newId();
-    await conn.execute(
-      Sql.named('''
-        INSERT INTO events (
-          id, project_id, issue_id, type, occurred_at,
-          user_id, session_id, install_id, release, environment, platform, app_version,
-          country, region, city, message, payload, enrichment
-        ) VALUES (
-          @id, @pid, @iid, @type, @at,
-          @uid, @sid, @iid_install, @rel, @env, @plat, @aver,
-          @country, @region, @city, @msg, @payload::jsonb, @enrich::jsonb
-        )
-      '''),
-      parameters: {
+    final notifications = _notifications;
+    final notifyFingerprint = fingerprint ??
+        (event.type == 'error' || event.type == 'crash' || event.type == 'network'
+            ? eventFingerprint(event.type, payload)
+            : null);
+    batch.events.add((
+      fingerprint: fingerprint,
+      params: {
         'id': eventId,
         'pid': projectId,
-        'iid': issueId,
         'type': event.type,
         'at': occurredAt,
         'uid': userId,
@@ -827,27 +876,22 @@ class ScoutStore {
         'payload': jsonEncode(payload),
         'enrich': jsonEncode({...eventEnrichment, 'ingestKeyId': keyId}),
       },
-    );
-
-    final notifications = _notifications;
-    if (notifications != null && notifConfig != null && platformPolicy != null && !issueMuted) {
-      fingerprint ??= (event.type == 'error' || event.type == 'crash' || event.type == 'network')
-          ? eventFingerprint(event.type, payload)
-          : null;
-      await notifications.onEventIngested(
-        projectId: projectId,
-        eventId: eventId,
-        issueId: issueId,
-        type: event.type,
-        environment: environment,
-        message: message,
-        payload: payload,
-        fingerprint: fingerprint,
-        regression: issueRegression,
-        notifications: notifConfig,
-        platform: platformPolicy,
-      );
-    }
+      notify: notifications == null || notifConfig == null || platformPolicy == null
+          ? null
+          : (String? issueId, bool regression) => notifications.onEventIngested(
+                projectId: projectId,
+                eventId: eventId,
+                issueId: issueId,
+                type: event.type,
+                environment: environment,
+                message: message,
+                payload: payload,
+                fingerprint: notifyFingerprint,
+                regression: regression,
+                notifications: notifConfig,
+                platform: platformPolicy,
+              ),
+    ));
 
     if (event.type == 'session') {
       await _trackAppSession(
@@ -860,34 +904,42 @@ class ScoutStore {
     }
 
     if (userId != null && isIdentifiedAppUser(userId: userId, installId: installId)) {
-      await conn.execute(
-        Sql.named('''
+      batch.rollups.add(
+        '''
           INSERT INTO user_first_seen (project_id, user_id, first_seen_at, first_country)
           VALUES (@pid, @uid, @at, @country)
           ON CONFLICT (project_id, user_id) DO NOTHING
-        '''),
-        parameters: {'pid': projectId, 'uid': userId, 'at': occurredAt, 'country': country},
+        ''',
+        [projectId, userId],
+        {'pid': projectId, 'uid': userId, 'at': occurredAt, 'country': country},
+        first: {'at', 'country'},
       );
     }
 
     if (release != null) {
       final isCrash = event.type == 'crash';
-      await conn.execute(
-        Sql.named('''
+      batch.rollups.add(
+        '''
           INSERT INTO releases (project_id, release, environment, first_seen_at, last_seen_at, event_count, crash_count)
-          VALUES (@pid, @rel, @env, @at, @at, 1, @crash)
+          VALUES (@pid, @rel, @env, @first, @last, @n, @crash)
           ON CONFLICT (project_id, release, environment) DO UPDATE SET
             last_seen_at = GREATEST(releases.last_seen_at, EXCLUDED.last_seen_at),
-            event_count = releases.event_count + 1,
+            event_count = releases.event_count + EXCLUDED.event_count,
             crash_count = releases.crash_count + EXCLUDED.crash_count
-        '''),
-        parameters: {
+        ''',
+        [projectId, release, environment],
+        {
           'pid': projectId,
           'rel': release,
           'env': environment,
-          'at': occurredAt,
+          'first': occurredAt,
+          'last': occurredAt,
+          'n': 1,
           'crash': isCrash ? 1 : 0,
         },
+        sum: {'n', 'crash'},
+        max: {'last'},
+        first: {'first'},
       );
     }
 
@@ -900,15 +952,15 @@ class ScoutStore {
     final sessionFlag = event.type == 'session' ? 1 : 0;
     final spanFlag = event.type == 'span' ? 1 : 0;
     final logFlag = event.type == 'log' ? 1 : 0;
-    await conn.execute(
-      Sql.named('''
+    batch.rollups.add(
+      '''
         INSERT INTO daily_stats (
           project_id, date, country, events_total, errors, crashes, unique_users,
           network_total, network_success, network_error, session_total, span_total, log_total
         )
-        VALUES (@pid, @day::date, @country, 1, @err, @crash, @uu, @net, @nets, @nete, @sess, @span, @log)
+        VALUES (@pid, @day::date, @country, @n, @err, @crash, @uu, @net, @nets, @nete, @sess, @span, @log)
         ON CONFLICT (project_id, date, country) DO UPDATE SET
-          events_total = daily_stats.events_total + 1,
+          events_total = daily_stats.events_total + EXCLUDED.events_total,
           errors = daily_stats.errors + EXCLUDED.errors,
           crashes = daily_stats.crashes + EXCLUDED.crashes,
           network_total = daily_stats.network_total + EXCLUDED.network_total,
@@ -917,11 +969,13 @@ class ScoutStore {
           session_total = daily_stats.session_total + EXCLUDED.session_total,
           span_total = daily_stats.span_total + EXCLUDED.span_total,
           log_total = daily_stats.log_total + EXCLUDED.log_total
-      '''),
-      parameters: {
+      ''',
+      [projectId, day, country ?? ''],
+      {
         'pid': projectId,
         'day': day,
         'country': country ?? '',
+        'n': 1,
         'err': errFlag,
         'crash': crashFlag,
         'uu': 0,
@@ -932,10 +986,11 @@ class ScoutStore {
         'span': spanFlag,
         'log': logFlag,
       },
+      sum: {'n', 'err', 'crash', 'net', 'nets', 'nete', 'sess', 'span', 'log'},
     );
 
-    await upsertIdentityRollups(
-      conn,
+    upsertIdentityRollups(
+      batch.rollups,
       projectId: projectId,
       occurredAt: occurredAt,
       type: event.type,
@@ -950,16 +1005,48 @@ class ScoutStore {
     );
   }
 
+  /// Inserts events and applies issue/rollup upserts in sorted key order, so
+  /// concurrent batches lock shared rows in the same order.
+  Future<void> _writeBatch(
+    Session conn,
+    String projectId,
+    _IngestBatch batch,
+    List<Future<void> Function()> afterCommit,
+  ) async {
+    final issues = <String, IssueUpsert>{};
+    for (final fp in batch.issues.keys.toList()..sort()) {
+      issues[fp] = await _upsertIssue(conn, projectId: projectId, fingerprint: fp, issue: batch.issues[fp]!);
+    }
+    final regressed = <String>{};
+    for (final event in batch.events) {
+      final issue = issues[event.fingerprint];
+      await conn.execute(
+        Sql.named('''
+          INSERT INTO events (
+            id, project_id, issue_id, type, occurred_at,
+            user_id, session_id, install_id, release, environment, platform, app_version,
+            country, region, city, message, payload, enrichment
+          ) VALUES (
+            @id, @pid, @iid, @type, @at,
+            @uid, @sid, @iid_install, @rel, @env, @plat, @aver,
+            @country, @region, @city, @msg, @payload::jsonb, @enrich::jsonb
+          )
+        '''),
+        parameters: {...event.params, 'iid': issue?.id},
+      );
+      // Only the issue's first event in the batch reopened it.
+      final regression = issue != null && issue.regression && regressed.add(event.fingerprint!);
+      final notify = event.notify;
+      if (notify != null && !(issue?.muted ?? false)) afterCommit.add(() => notify(issue?.id, regression));
+    }
+    await batch.rollups.apply(conn);
+  }
+
   Future<IssueUpsert> _upsertIssue(
-    Connection conn, {
+    Session conn, {
     required String projectId,
     required String fingerprint,
-    required String type,
-    required String title,
-    required DateTime occurredAt,
-    String? userId,
-    String? installId,
-    String? country,
+    required _IssueEvents issue,
   }) async {
     final existing = await conn.execute(
       Sql.named('SELECT id, status FROM issues WHERE project_id = @pid AND fingerprint = @fp'),
@@ -974,38 +1061,51 @@ class ScoutStore {
       await conn.execute(
         Sql.named('''
           UPDATE issues SET
-            last_seen_at = GREATEST(last_seen_at, @at),
-            event_count = event_count + 1,
+            last_seen_at = GREATEST(last_seen_at, @last),
+            event_count = event_count + @n,
             title = COALESCE(NULLIF(@title, ''), title),
             top_country = COALESCE(top_country, @country),
             status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END,
             regressed_at = CASE WHEN status = 'resolved' THEN @at ELSE regressed_at END
           WHERE id = @id
         '''),
-        parameters: {'id': id, 'at': occurredAt, 'title': title, 'country': country},
+        parameters: {
+          'id': id,
+          'at': issue.firstSeenAt,
+          'last': issue.lastSeenAt,
+          'n': issue.count,
+          'title': issue.title,
+          'country': issue.country,
+        },
       );
       return IssueUpsert(id: id, muted: muted, regression: regression);
     }
 
     final id = newId();
-    await conn.execute(
+    final inserted = await conn.execute(
       Sql.named('''
         INSERT INTO issues (
           id, project_id, fingerprint, type, title, first_seen_at, last_seen_at,
           event_count, affected_users, top_country
-        ) VALUES (@id, @pid, @fp, @type, @title, @at, @at, 1, @au, @country)
+        ) VALUES (@id, @pid, @fp, @type, @title, @at, @last, @n, @au, @country)
+        ON CONFLICT (project_id, fingerprint) DO NOTHING
+        RETURNING id
       '''),
       parameters: {
         'id': id,
         'pid': projectId,
         'fp': fingerprint,
-        'type': type,
-        'title': title,
-        'at': occurredAt,
-        'au': isIdentifiedAppUser(userId: userId, installId: installId) ? 1 : 0,
-        'country': country,
+        'type': issue.type,
+        'title': issue.title,
+        'at': issue.firstSeenAt,
+        'last': issue.lastSeenAt,
+        'n': issue.count,
+        'au': issue.affectedUser ? 1 : 0,
+        'country': issue.country,
       },
     );
+    // Lost the race to a concurrent insert — take the update path instead.
+    if (inserted.isEmpty) return _upsertIssue(conn, projectId: projectId, fingerprint: fingerprint, issue: issue);
     return IssueUpsert(id: id, muted: false, regression: false);
   }
 
@@ -1220,7 +1320,7 @@ class ScoutStore {
 
   /// Zero-cost heuristics: stack culprit, dominant correlations, severity score.
   Future<Map<String, dynamic>> _issueInsights(
-    Connection conn,
+    Session conn,
     String projectId,
     String issueId,
     Map<String, dynamic> issue,
@@ -1257,7 +1357,7 @@ class ScoutStore {
   }
 
   Future<({String value, double ratio, int count})?> _topCorrelation(
-    Connection conn,
+    Session conn,
     String projectId,
     String issueId,
     String column,
@@ -1281,7 +1381,7 @@ class ScoutStore {
     return (value: value, ratio: count / total, count: count);
   }
 
-  Future<String?> _stackCulprit(Connection conn, String projectId, String issueId) async {
+  Future<String?> _stackCulprit(Session conn, String projectId, String issueId) async {
     final rows = await conn.execute(
       Sql.named('''
         SELECT COALESCE(payload->>'stack', payload->>'stackTrace')
@@ -1361,7 +1461,7 @@ class ScoutStore {
   }
 
   Future<void> _appendExpectedNetworkRule(
-    Connection conn,
+    Session conn,
     String projectId,
     ExpectedNetworkResponse rule,
   ) async {
@@ -1675,7 +1775,7 @@ class ScoutStore {
   }
 
   Future<List<Map<String, dynamic>>> _sessionEventsAround(
-    Connection conn, {
+    Session conn, {
     required String projectId,
     required String eventId,
     required DateTime occurredAt,
@@ -2435,7 +2535,7 @@ class ScoutStore {
     return 'mixed';
   }
 
-  Future<List<Map<String, dynamic>>> _issueDevices(Connection conn, String projectId, String issueId) async {
+  Future<List<Map<String, dynamic>>> _issueDevices(Session conn, String projectId, String issueId) async {
     final rows = await conn.execute(
       Sql.named('''
         SELECT ${sqlDeviceNameExpr(alias: 'e')} AS device,
@@ -2451,7 +2551,7 @@ class ScoutStore {
     return rows.map((r) => {'device': r[0], 'count': r[1], 'installs': r[2]}).toList();
   }
 
-  Future<List<Map<String, dynamic>>> _issueGeo(Connection conn, String projectId, String issueId) async {
+  Future<List<Map<String, dynamic>>> _issueGeo(Session conn, String projectId, String issueId) async {
     final rows = await conn.execute(
       Sql.named('''
         SELECT country, COUNT(*)::int FROM events e
@@ -2516,7 +2616,7 @@ class ScoutStore {
 
   int _i(dynamic v) => v == null ? 0 : (v is int ? v : (v as num).toInt());
 
-  Future<int> closeStaleSessions({String? projectId, Connection? conn}) async {
+  Future<int> closeStaleSessions({String? projectId, Session? conn}) async {
     final c = conn ?? await db.connect();
     final rows = await c.execute(
       Sql.named('''
@@ -2534,7 +2634,7 @@ class ScoutStore {
   }
 
   Future<void> _trackAppSession(
-    Connection conn, {
+    Session conn, {
     required String projectId,
     String? userId,
     required Map<String, dynamic> payload,
@@ -2697,7 +2797,7 @@ class ScoutStore {
   /// (overview / reports / error rate use daily_stats).
   Future<int> reclassifyExpectedNetworkEvents(
     String projectId, {
-    Connection? conn,
+    Session? conn,
     int lookbackDays = 90,
     int limit = 5000,
   }) async {
@@ -2890,7 +2990,7 @@ class ScoutStore {
 
   /// Recount error metrics used by overview / reports / stats after reclassify.
   Future<void> _rebuildErrorRollups(
-    Connection conn,
+    Session conn,
     String projectId, {
     required DateTime since,
   }) async {
@@ -3032,7 +3132,7 @@ class ScoutStore {
   }
 
   Future<int> _deleteExpiredEventBatch(
-    Connection conn, {
+    Session conn, {
     required String projectId,
     required DateTime cutoff,
     required String predicate,

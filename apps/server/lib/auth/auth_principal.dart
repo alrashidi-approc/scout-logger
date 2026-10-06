@@ -50,7 +50,7 @@ bool canWriteProject(AuthPrincipal auth, String? membershipRole) =>
     auth.isAdmin || (membershipRole != null && writeProjectRoles.contains(membershipRole));
 
 bool canViewCredentials(AuthPrincipal auth, String? membershipRole) =>
-    auth.isAdmin || membershipRole != null;
+    auth.isAdmin || membershipRole == 'owner' || membershipRole == 'admin';
 
 bool canDeleteProject(AuthPrincipal auth, String? membershipRole) =>
     auth.isAdmin || membershipRole == 'owner';
