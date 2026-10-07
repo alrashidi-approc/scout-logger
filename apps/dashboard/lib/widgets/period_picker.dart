@@ -3,12 +3,15 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../utils/date_range.dart';
 
-/// Bottom sheet: quick ranges, calendar picker, UTC note.
+/// Bottom sheet: quick ranges, calendar picker, time zone note.
+/// [localTime]: dates are browser-local days instead of UTC.
 Future<void> showPeriodPicker(
   BuildContext context, {
   required PeriodFilter current,
   required ValueChanged<PeriodFilter> onSelected,
+  bool localTime = false,
 }) async {
+  final zone = localTime ? 'local time (12 AM – 12 AM)' : 'UTC';
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -24,7 +27,7 @@ Future<void> showPeriodPicker(
             const SizedBox(height: 16),
             const Text('Time range', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
             const SizedBox(height: 4),
-            Text('Dates use UTC · max ${PeriodFilter.maxCustomDays} days', style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
+            Text('Dates use $zone · max ${PeriodFilter.maxCustomDays} days', style: const TextStyle(fontSize: 12, color: AppTheme.muted)),
             const SizedBox(height: 16),
             Wrap(
               spacing: 8,
@@ -44,7 +47,7 @@ Future<void> showPeriodPicker(
             OutlinedButton.icon(
               onPressed: () async {
                 Navigator.pop(ctx);
-                await _pickCalendar(context, current: current, onSelected: onSelected);
+                await _pickCalendar(context, current: current, onSelected: onSelected, zone: zone);
               },
               icon: const Icon(Icons.calendar_month, size: 18),
               label: Text(current.isCustom ? 'Change: ${current.label()}' : 'Pick on calendar…'),
@@ -60,6 +63,7 @@ Future<void> _pickCalendar(
   BuildContext context, {
   required PeriodFilter current,
   required ValueChanged<PeriodFilter> onSelected,
+  required String zone,
 }) async {
   final now = DateTime.now();
   final initial = current.isCustom
@@ -70,7 +74,7 @@ Future<void> _pickCalendar(
     firstDate: DateTime(2020),
     lastDate: now,
     initialDateRange: initial,
-    helpText: 'Select date range (UTC)',
+    helpText: 'Select date range ($zone)',
   );
   if (range == null) return;
   final from = DateTime(range.start.year, range.start.month, range.start.day);

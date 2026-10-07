@@ -48,6 +48,7 @@ class _ProjectSettingsCache {
     required this.wafContentTypes,
     required this.wafEnvironments,
     required this.wafAppVersions,
+    required this.apiHitsVisible,
     required this.facetEnvironments,
     required this.facetAppVersions,
     required this.issueRules,
@@ -74,6 +75,7 @@ class _ProjectSettingsCache {
   final Set<String> wafContentTypes;
   final Set<String> wafEnvironments;
   final Set<String> wafAppVersions;
+  final bool apiHitsVisible;
   final List<String> facetEnvironments;
   final List<String> facetAppVersions;
   final IssueRules issueRules;
@@ -123,6 +125,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
   Set<String> _wafContentTypes = WafRejectConfig.defaultContentTypes.toSet();
   Set<String> _wafEnvironments = {};
   Set<String> _wafAppVersions = {};
+  bool _apiHitsVisible = ApiHitsConfig.defaultVisible;
   List<String> _facetEnvironments = [];
   List<String> _facetAppVersions = [];
   final _quietDaysCtrl = TextEditingController(text: '0');
@@ -212,6 +215,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
     _wafTypesCtrl.text = _wafContentTypes.join(', ');
     _wafEnvironments = cached.wafEnvironments;
     _wafAppVersions = cached.wafAppVersions;
+    _apiHitsVisible = cached.apiHitsVisible;
     _facetEnvironments = cached.facetEnvironments;
     _facetAppVersions = cached.facetAppVersions;
     _setIssueRules(cached.issueRules);
@@ -247,6 +251,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         wafContentTypes: _wafContentTypes,
         wafEnvironments: _wafEnvironments,
         wafAppVersions: _wafAppVersions,
+        apiHitsVisible: _apiHitsVisible,
         facetEnvironments: _facetEnvironments,
         facetAppVersions: _facetAppVersions,
         issueRules: _issueRules,
@@ -334,6 +339,10 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           _wafTypesCtrl.text = _wafContentTypes.join(', ');
           _wafEnvironments = waf.environments!.toSet();
           _wafAppVersions = waf.appVersions!.toSet();
+          _apiHitsVisible = ApiHitsConfig.fromJson(
+                settings['apiHits'] is Map ? Map<String, dynamic>.from(settings['apiHits'] as Map) : null,
+              ).visible ??
+              ApiHitsConfig.defaultVisible;
           _facetEnvironments = (facets['environments'] as List?)
                   ?.map((e) => e.toString())
                   .toList() ??
@@ -408,6 +417,7 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
           'environments': normalizeStringList(_wafEnvironments.toList()),
           'appVersions': normalizeStringList(_wafAppVersions.toList()),
         },
+        'apiHits': {'visible': _apiHitsVisible},
       });
       if (mounted) {
         setState(() {
@@ -835,6 +845,28 @@ class _ProjectSettingsScreenState extends State<ProjectSettingsScreen> {
         ],
         const SizedBox(height: 16),
         SdkHealthCard(health: _sdkHealth),
+        const SizedBox(height: 16),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('API hits', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              const SizedBox(height: 6),
+              const Text(
+                'How many times the app calls each API (query parameters ignored) over 1, 7, or 30 days, with charts.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Show API hits page'),
+                subtitle: const Text('Adds a sidebar item with per-endpoint call counts'),
+                value: _apiHitsVisible,
+                onChanged: (v) => setState(() => _apiHitsVisible = v),
+              ),
+            ]),
+          ),
+        ),
         const SizedBox(height: 16),
         Card(
           child: Padding(

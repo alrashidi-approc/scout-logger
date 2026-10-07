@@ -44,10 +44,18 @@ mirrored in SQL (`regexp_replace`) for server-side grouping. Both are covered by
 
 ## Server API
 
-`GET /projects/:id/api-hits?days=1|7|30&endpoint=<optional key or URL>`
+`GET /projects/:id/api-hits?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=<IANA>&endpoint=<optional key or URL>`
 
-- `days` clamped to {1, 7, 30}; default 7.
+- Days are calendar days, 12 AM to 12 AM in `tz` (the browser's zone, e.g. `Asia/Kuwait`);
+  unknown zones fall back to UTC. `from`..`to` inclusive, max 90 days; default today (UTC).
+- Counts use `occurred_at` (device time of the call, clamped to receive time when the device clock
+  is > 5 min ahead), never `created_at`.
+- One day → hourly buckets; longer → daily. Series points carry local wall-clock `date` plus
+  UTC `start`; future buckets are dropped unless they hold calls, so the series sums to the total.
+- `coverage` reports why counts could be low: SDK `networkLogScope` ≠ `all`, SDK ignored status
+  codes, and retention cutoff when the range starts before it.
 - `endpoint` normalized server-side with the same key rules; when present, filters everything.
+- Known limit: no client event id, so a batch re-sent by the SDK would be counted twice.
 
 Response:
 
@@ -56,15 +64,19 @@ Response:
   "days": 7,
   "bucket": "day",
   "endpoint": "GET falcon.epa.gov.kw/epa_bridge/api/ssn-details",
-  "totals": { "hits": 1234, "success": 1200, "error": 34 },
+  "totals": { "hits": 1234, "success": 1200, "errors": 34 },
   "endpoints": [
     { "key": "GET falcon.epa.gov.kw/epa_bridge/api/ssn-details", "method": "GET",
-      "host": "falcon.epa.gov.kw", "path": "/epa_bridge/api/ssn-details",
-      "hits": 1234, "success": 1200, "error": 34 }
+      "path": "falcon.epa.gov.kw/epa_bridge/api/ssn-details",
+      "hits": 1234, "success": 1200, "errors": 34 }
   ],
-  "series": [ { "t": "2026-10-01T00:00:00Z", "hits": 180, "error": 4 } ]
+  "series": [ { "date": "2026-10-01T00:00:00.000Z", "events": 180, "success": 176, "errors": 4 } ]
 }
 ```
+
+`series` uses the same point shape as the overview trend so `EventOutcomeChart` renders it directly.
+Filter matching: exact `host/path` (plus method when given); a filter starting with `/` matches any host
+whose path ends with it.
 
 - `bucket`: `hour` when `days = 1`, else `day` (UTC). Empty buckets filled with zeros.
 - `endpoints`: ranked by hits, top 100.

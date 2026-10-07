@@ -557,6 +557,23 @@ class ScoutApi {
     return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
   }
 
+  /// [period] must be a calendar range; days run midnight to midnight in [timeZone].
+  Future<Map<String, dynamic>> fetchApiHits(
+    String projectId, {
+    required PeriodFilter period,
+    required String timeZone,
+    String? endpoint,
+  }) async {
+    final uri = _uri('/api/projects/$projectId/api-hits').replace(queryParameters: {
+      ...period.toQuery(),
+      'tz': timeZone,
+      if (endpoint != null && endpoint.isNotEmpty) 'endpoint': endpoint,
+    });
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
   Future<Map<String, dynamic>> updateProjectSettings(String projectId, Map<String, dynamic> body) async {
     final res = await _client.patch(
       _uri('/api/projects/$projectId/settings'),

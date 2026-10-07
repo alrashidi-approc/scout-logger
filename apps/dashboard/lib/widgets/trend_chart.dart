@@ -10,11 +10,14 @@ const chartSuccessColor = AppTheme.success;
 
 /// Total events vs error-level vs success-level outcomes over time.
 class EventOutcomeChart extends StatelessWidget {
-  const EventOutcomeChart({super.key, required this.points, this.height = 240, this.hourly = false});
+  const EventOutcomeChart({super.key, required this.points, this.height = 240, this.hourly = false, this.utc = true});
 
   final List<Map<String, dynamic>> points;
   final double height;
   final bool hourly;
+
+  /// False when point dates are already local wall-clock times (no zone suffix).
+  final bool utc;
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +34,7 @@ class EventOutcomeChart extends StatelessWidget {
       child: LineChart(_lineData(
         points: points,
         hourly: hourly,
+        utc: utc,
         maxY: top,
         series: [
           _Series(events, chartEventsColor, 'All events', fill: 0.14, width: 2.5),
@@ -96,7 +100,9 @@ LineChartData _lineData({
   required bool hourly,
   required double maxY,
   required List<_Series> series,
+  bool utc = true,
 }) {
+  DateTime clock(DateTime d) => utc ? d.toUtc() : d;
   final labelEvery = hourly ? (points.length > 12 ? 4 : 2) : 1;
   final dayFmt = DateFormat.Md();
   final hourFmt = DateFormat('HH:mm');
@@ -131,7 +137,7 @@ LineChartData _lineData({
             if (d == null) return const SizedBox.shrink();
             return Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(hourly ? hourFmt.format(d.toUtc()) : dayFmt.format(d), style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
+              child: Text(hourly ? hourFmt.format(clock(d)) : dayFmt.format(d), style: const TextStyle(fontSize: 10, color: AppTheme.muted)),
             );
           },
         ),
@@ -166,7 +172,7 @@ LineChartData _lineData({
           final when = d == null
               ? ''
               : hourly
-                  ? '${DateFormat('MMM d, HH:mm').format(d.toUtc())} UTC\n'
+                  ? '${DateFormat('MMM d, HH:mm').format(clock(d))}${utc ? ' UTC' : ''}\n'
                   : '${dayFmt.format(d)}\n';
           final ev = i >= 0 && i < points.length ? (points[i]['events'] as num?)?.toDouble() ?? 0 : 0;
           final err = i >= 0 && i < points.length ? (points[i]['errors'] as num?)?.toDouble() ?? 0 : 0;

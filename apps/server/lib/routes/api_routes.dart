@@ -705,6 +705,23 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/api-hits', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      DateTime? date(String? s) => s != null && RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(s) ? DateTime.tryParse('${s}Z') : null;
+      final now = DateTime.now().toUtc();
+      final from = date(q['from']) ?? DateTime.utc(now.year, now.month, now.day);
+      final to = date(q['to']) ?? from;
+      final span = to.difference(from).inDays + 1;
+      if (span < 1) return jsonErr('to must be on or after from');
+      if (span > 90) return jsonErr('Max 90 days per range');
+      final data = await analytics.apiHits(id, from: from, to: to, tz: q['tz'] ?? 'UTC', endpoint: q['endpoint']);
+      return Response.ok(jsonEncode({'ok': true, ...data}), headers: {'Content-Type': 'application/json'});
+    });
+  });
+
   router.get('/projects/<id>/sessions', (Request request, String id) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);

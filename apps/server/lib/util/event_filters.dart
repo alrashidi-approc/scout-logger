@@ -138,6 +138,19 @@ String sqlIsErrorEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'
 /// Successful outcomes — generated column (014), matches `events_project_success`.
 String sqlIsSuccessEvent({String alias = ''}) => '${alias.isEmpty ? '' : '$alias.'}is_success';
 
+/// API hits grouping path — keep in sync with `apiEndpointPath` in scout_models.
+const sqlApiEndpointPath = r'''
+regexp_replace(
+  regexp_replace(
+    regexp_replace(
+      split_part(split_part(btrim(COALESCE(payload->'network'->>'url', payload->'network'->>'path', '')), '?', 1), '#', 1),
+      '^[a-zA-Z][a-zA-Z0-9+.-]*://', ''),
+    '/(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?=/|$)', '/:id', 'g'),
+  '(.)/+$', '\1')''';
+
+/// Keep in sync with `apiEndpointMethod` in scout_models.
+const sqlApiEndpointMethod = "UPPER(COALESCE(NULLIF(btrim(payload->'network'->>'method'), ''), 'REQUEST'))";
+
 String sqlDeviceNameExpr({String alias = ''}) {
   final p = alias.isEmpty ? '' : '$alias.';
   return "COALESCE(NULLIF(${p}payload->'device'->>'deviceName', ''), NULLIF(${p}payload->'device'->>'deviceModel', ''), NULLIF(${p}payload->'device'->>'model', ''))";

@@ -2912,6 +2912,7 @@ class ScoutStore {
       ...remote.toClientResponse(),
       'retention': retentionFromSettings(settings).toClientJson(),
       'waf': waf.resolved().toJson(),
+      'apiHits': _apiHitsConfig(settings).toJson(),
       'issueRules': IssueRules.fromSettings(settings).toJson(),
     };
   }
@@ -2951,6 +2952,9 @@ class ScoutStore {
     if (patch['waf'] is Map) {
       waf = prevWaf.mergePatch(Map<String, dynamic>.from(patch['waf'] as Map));
     }
+    final apiHitsPatch = patch['apiHits'];
+    final apiHits = _apiHitsConfig(settings)
+        .mergePatch(apiHitsPatch is Map ? Map<String, dynamic>.from(apiHitsPatch) : null);
 
     final rulesPatch = patch['issueRules'];
     if (rulesPatch != null && rulesPatch is! Map) throw const FormatException('issueRules must be an object');
@@ -2971,6 +2975,7 @@ class ScoutStore {
       ...next.toSettingsJson(),
       'retention': retention.toJson(),
       'waf': waf.resolved().toJson(),
+      'apiHits': apiHits.toJson(),
       'issueRules': nextRules.toJson(),
     };
     await conn.execute(
@@ -2993,9 +2998,14 @@ class ScoutStore {
       ...next.toClientResponse(),
       'retention': retention.toClientJson(),
       'waf': waf.resolved().toJson(),
+      'apiHits': apiHits.toJson(),
       'issueRules': nextRules.toJson(),
     };
   }
+
+  ApiHitsConfig _apiHitsConfig(Map<String, dynamic> settings) => ApiHitsConfig.fromJson(
+        settings['apiHits'] is Map ? Map<String, dynamic>.from(settings['apiHits'] as Map) : null,
+      );
 
   /// One run per project at a time; a request during a run queues one more run
   /// (it may carry newer rules). In-process only: a restart drops a pending run.

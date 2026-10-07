@@ -29,6 +29,7 @@ class _DashboardShellState extends State<DashboardShell> {
   final _pageBucket = PageStorageBucket();
   String? _projectName;
   bool _wafVisible = true;
+  bool _apiHitsVisible = false;
   String? _lastPath;
 
   List<(IconData, IconData, String, String)> _navItems() => [
@@ -41,6 +42,7 @@ class _DashboardShellState extends State<DashboardShell> {
         (Icons.bug_report_outlined, Icons.bug_report, 'Issues', '/issues'),
         (Icons.list_alt_outlined, Icons.list_alt, 'Events', '/events'),
         if (_wafVisible) (Icons.security_outlined, Icons.security, 'WAF rejects', '/waf'),
+        if (_apiHitsVisible) (Icons.query_stats_outlined, Icons.query_stats, 'API hits', '/api-hits'),
         (Icons.public_outlined, Icons.public, 'Geography', '/geo'),
         (Icons.terminal_outlined, Icons.terminal, 'UI errors', '/logs'),
         (Icons.description_outlined, Icons.description, 'Reports', '/reports'),
@@ -68,6 +70,7 @@ class _DashboardShellState extends State<DashboardShell> {
         setState(() {
           _projectName = null;
           _wafVisible = false;
+          _apiHitsVisible = false;
         });
       }
       return;
@@ -86,11 +89,10 @@ class _DashboardShellState extends State<DashboardShell> {
           break;
         }
       }
-      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
       if (mounted) {
         setState(() {
           _projectName = name ?? id;
-          _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!;
+          _applyNavSettings(settings);
         });
       }
     } catch (_) {
@@ -103,13 +105,19 @@ class _DashboardShellState extends State<DashboardShell> {
     }
   }
 
-  Future<void> _refreshWafVisible() async {
+  void _applyNavSettings(Map<String, dynamic> settings) {
+    Map<String, dynamic>? section(String key) =>
+        settings[key] is Map ? Map<String, dynamic>.from(settings[key] as Map) : null;
+    _wafVisible = WafRejectConfig.fromJson(section('waf')).visible ?? WafRejectConfig.defaultVisible;
+    _apiHitsVisible = ApiHitsConfig.fromJson(section('apiHits')).visible ?? ApiHitsConfig.defaultVisible;
+  }
+
+  Future<void> _refreshNavVisibility() async {
     final id = widget.projectId;
     if (id == null) return;
     try {
       final settings = await _api.fetchProjectSettings(id);
-      final wafJson = settings['waf'] is Map ? Map<String, dynamic>.from(settings['waf'] as Map) : null;
-      if (mounted) setState(() => _wafVisible = WafRejectConfig.fromJson(wafJson).resolved().visible!);
+      if (mounted) setState(() => _applyNavSettings(settings));
     } catch (_) {}
   }
 
@@ -263,7 +271,7 @@ class _DashboardShellState extends State<DashboardShell> {
     final path = GoRouterState.of(context).uri.path;
     DashboardScope.route = path;
     if (_lastPath != null && _lastPath!.contains('/settings') && !path.contains('/settings')) {
-      _refreshWafVisible();
+      _refreshNavVisibility();
     }
     _lastPath = path;
 

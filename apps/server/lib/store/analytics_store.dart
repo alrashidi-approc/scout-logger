@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:postgres/postgres.dart';
+import 'package:scout_models/scout_models.dart';
 
 import '../db/scout_db.dart';
 import '../util/dates.dart';
@@ -1583,6 +1584,123 @@ class AnalyticsStore {
             };
           })
           .toList(),
+    };
+  }
+
+  /// Network call counts per endpoint (`METHOD host/path`, query stripped, ids → `:id`)
+  /// for calendar days [from]..[to] inclusive, midnight to midnight in [tz] (IANA name).
+  /// A single day is bucketed hourly, longer ranges daily. Counts use `occurred_at`
+  /// (when the call happened on the device), not when Scout received it.
+  Future<Map<String, dynamic>> apiHits(
+    String projectId, {
+    required DateTime from,
+    required DateTime to,
+    String tz = 'UTC',
+    String? endpoint,
+  }) async {
+    final conn = await db.connect();
+    String day(DateTime d) => d.toIso8601String().substring(0, 10);
+    final hourly = day(from) == day(to);
+
+    final bounds = await conn.execute(
+      Sql.named('''
+        SELECT z.tz, (@from::date)::timestamp AT TIME ZONE z.tz, (@to::date + 1)::timestamp AT TIME ZONE z.tz, p.settings
+        FROM (SELECT COALESCE((SELECT name FROM pg_timezone_names WHERE name = @tz LIMIT 1), 'UTC') AS tz) z
+        CROSS JOIN (SELECT settings FROM projects WHERE id = @pid) p
+      '''),
+      parameters: {'pid': projectId, 'from': day(from), 'to': day(to), 'tz': tz},
+    );
+    if (bounds.isEmpty) throw ArgumentError('Project not found');
+    final zone = bounds.first[0] as String;
+    final since = (bounds.first[1] as DateTime).toUtc();
+    final until = (bounds.first[2] as DateTime).toUtc();
+    final settings = bounds.first[3] is Map ? Map<String, dynamic>.from(bounds.first[3] as Map) : <String, dynamic>{};
+
+    final filter = parseApiEndpointFilter(endpoint);
+    final params = {'pid': projectId, 'since': since, 'until': until, 'method': filter?.method, 'path': filter?.path};
+    final hits = '''
+      WITH hits AS (
+        SELECT occurred_at, ${sqlIsSuccessEvent()} AS ok, ${sqlIsErrorEvent()} AS err,
+               $sqlApiEndpointMethod AS method, $sqlApiEndpointPath AS path
+        FROM events
+        WHERE project_id = @pid AND type = 'network'
+          AND occurred_at >= @since::timestamptz AND occurred_at < @until::timestamptz
+      ), filtered AS (
+        SELECT * FROM hits
+        WHERE path <> ''
+          AND (@method::text IS NULL OR method = @method::text)
+          AND (@path::text IS NULL OR path = @path::text
+               OR (left(@path::text, 1) = '/' AND right(path, length(@path::text)) = @path::text))
+      )
+    ''';
+
+    final endpointRows = await conn.execute(
+      Sql.named('''
+        $hits
+        SELECT method, path, COUNT(*)::int, COUNT(*) FILTER (WHERE ok)::int, COUNT(*) FILTER (WHERE err)::int
+        FROM filtered GROUP BY 1, 2 ORDER BY 3 DESC, 2 LIMIT 100
+      '''),
+      parameters: params,
+    );
+    // Buckets are local wall-clock slots in the zone; future slots are dropped unless they hold
+    // calls (device clocks up to 5 min ahead), so the series always sums to the exact total.
+    final unit = hourly ? 'hour' : 'day';
+    final seriesRows = await conn.execute(
+      Sql.named('''
+        $hits
+        SELECT to_char(gs, 'YYYY-MM-DD"T"HH24:MI:SS'), gs AT TIME ZONE @tz,
+               COALESCE(c.hits, 0), COALESCE(c.ok, 0), COALESCE(c.err, 0)
+        FROM generate_series((@from::date)::timestamp, (@to::date + 1)::timestamp - interval '1 $unit', interval '1 $unit') gs
+        LEFT JOIN (
+          SELECT date_trunc('$unit', occurred_at AT TIME ZONE @tz) AS b, COUNT(*)::int AS hits,
+                 COUNT(*) FILTER (WHERE ok)::int AS ok, COUNT(*) FILTER (WHERE err)::int AS err
+          FROM filtered GROUP BY 1
+        ) c ON c.b = gs
+        WHERE gs AT TIME ZONE @tz <= now() OR c.hits IS NOT NULL
+        ORDER BY gs
+      '''),
+      parameters: {...params, 'tz': zone, 'from': day(from), 'to': day(to)},
+    );
+    final series = [
+      for (final r in seriesRows)
+        {
+          'date': r[0],
+          'start': (r[1] as DateTime).toUtc().toIso8601String(),
+          'events': r[2],
+          'success': r[3],
+          'errors': r[4],
+        },
+    ];
+    int sum(String key) => series.fold(0, (s, p) => s + (p[key] as int));
+
+    final sdk = ProjectRemoteConfig.fromSettings(settings).sdk.resolved();
+    final retention = retentionFromSettings(settings);
+    final routineCutoff = DateTime.now().toUtc().subtract(Duration(days: retention.routineDays));
+
+    return {
+      'range': {
+        'from': day(from),
+        'to': day(to),
+        'tz': zone,
+        'since': since.toIso8601String(),
+        'until': until.toIso8601String(),
+      },
+      'bucket': unit,
+      'coverage': {
+        'networkLogScope': sdk.networkLogScope,
+        'ignoredStatusCodes': sdk.networkIgnoreStatusCodes,
+        if (retention.enabled && since.isBefore(routineCutoff)) ...{
+          'retentionDays': retention.routineDays,
+          'incompleteBefore': routineCutoff.toIso8601String(),
+        },
+      },
+      if (filter != null) 'endpoint': '${filter.method ?? ''} ${filter.path}'.trim(),
+      'totals': {'hits': sum('events'), 'success': sum('success'), 'errors': sum('errors')},
+      'endpoints': [
+        for (final r in endpointRows)
+          {'key': '${r[0]} ${r[1]}', 'method': r[0], 'path': r[1], 'hits': r[2], 'success': r[3], 'errors': r[4]},
+      ],
+      'series': series,
     };
   }
 }

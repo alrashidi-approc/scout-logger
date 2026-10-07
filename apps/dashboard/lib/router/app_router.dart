@@ -22,6 +22,7 @@ import '../screens/health_check_screen.dart';
 import '../screens/project_settings_screen.dart';
 import '../screens/projects_screen.dart';
 import '../screens/waf_rejects_screen.dart';
+import '../screens/api_hits_screen.dart';
 import '../screens/session_detail_screen.dart';
 import '../screens/triage_screen.dart';
 import '../screens/sessions_screen.dart';
@@ -343,6 +344,17 @@ GoRouter createRouter() {
                 ),
               );
             },
+          ),
+          GoRoute(
+            path: '/p/:projectId/api-hits',
+            pageBuilder: (c, s) => scoutPage(
+              s,
+              ApiHitsScreen(
+                projectId: s.pathParameters['projectId']!,
+                initialPeriod: PeriodFilter.parseOptional(s.uri.queryParameters),
+                initialEndpoint: s.uri.queryParameters['endpoint'],
+              ),
+            ),
           ),
           GoRoute(
             path: '/p/:projectId/logs',
