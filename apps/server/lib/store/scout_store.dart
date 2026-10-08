@@ -2385,8 +2385,9 @@ class ScoutStore {
     };
   }
 
-  /// Search the raw event JSON. No trigram index: a gin index on `payload::text`
-  /// is too large to build during deploy. [ScoutDb.search] caps this at 5s.
+  /// Search raw event JSON without a payload trigram index (that build blocks deploy).
+  /// Walks newest-first on `events_project_time_nohb`, one bounded batch per
+  /// statement, so a busy project stays inside the 5s search timeout.
   Future<Map<String, dynamic>> searchLogs(
     String projectId, {
     required String q,
@@ -2394,52 +2395,51 @@ class ScoutStore {
     int offset = 0,
     TimeWindow? window,
   }) async {
+    const batch = 1000;
+    const maxBatches = 10;
     final query = q.trim();
     final lim = limit.clamp(1, 100);
     final off = offset < 0 ? 0 : offset;
     final w = window ?? TimeWindow.lastDays(7);
-    final rows = await db.search(query, (s) => s.execute(
-      Sql.named('''
-        SELECT id, type, occurred_at, user_id, message,
-               payload->'screen'->>'currentRoute',
-               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model'),
-               payload->'network'->>'url',
-               payload->'network'->>'statusCode',
-               payload->>'level',
-               payload->>'category',
-               platform, environment, app_version,
-               CASE WHEN strpos(lower(payload::text), lower(@q::text)) > 48 THEN '…' ELSE '' END
-               || substring(
-                    payload::text
-                    from greatest(strpos(lower(payload::text), lower(@q::text)) - 48, 1)
-                    for char_length(@q::text) + 96
-                  )
-               || CASE
-                    WHEN strpos(lower(payload::text), lower(@q::text)) + char_length(@q::text) + 47
-                         < char_length(payload::text)
-                    THEN '…' ELSE ''
-                  END
-        FROM events
-        WHERE project_id = @pid
-          AND $sqlHideSessionHeartbeat
-          AND payload::text ILIKE '%' || @q::text || '%'
-          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
-          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
-        ORDER BY occurred_at DESC
-        LIMIT @lim OFFSET @off
-      '''),
-      parameters: {
-        'pid': projectId,
-        'q': query,
-        'lim': lim + 1,
-        'off': off,
-        ...timeParams(w),
-      },
-    ));
-    final hasMore = rows.length > lim;
-    final pageRows = hasMore ? rows.sublist(0, lim) : rows;
+    final since = w.since ?? '1970-01-01T00:00:00.000Z';
+    var upper = w.until ?? '9999-12-31T00:00:00.000Z';
+    var upperId = '';
+    final want = off + lim + 1;
+    final matched = <List<dynamic>>[];
+    var scanned = 0;
+    var partial = false;
+
+    for (var i = 0; i < maxBatches && matched.length < want; i++) {
+      final rows = await _searchLogBatch(
+        projectId: projectId,
+        query: query,
+        since: since,
+        upper: upper,
+        upperId: upperId,
+        batch: batch,
+      );
+      if (rows.isEmpty) break;
+      final n = rows.first[17] as int? ?? 0;
+      scanned += n;
+      for (final r in rows) {
+        if (r[0] == null) continue;
+        matched.add([for (var c = 0; c < 15; c++) r[c]]);
+      }
+      if (n < batch) break;
+      final oldest = rows.first[15];
+      final oldestId = rows.first[16]?.toString();
+      if (oldest is! DateTime || oldestId == null || oldestId.isEmpty) break;
+      final nextUpper = oldest.toUtc().toIso8601String();
+      if (nextUpper == upper && oldestId == upperId) break;
+      upper = nextUpper;
+      upperId = oldestId;
+      if (i == maxBatches - 1) partial = true;
+    }
+
+    final pageRows = matched.skip(off).take(lim + 1).toList();
+    final hasMore = pageRows.length > lim;
     final events = [
-      for (final r in pageRows)
+      for (final r in hasMore ? pageRows.sublist(0, lim) : pageRows)
         {
           'id': r[0],
           'type': r[1],
@@ -2464,7 +2464,71 @@ class ScoutStore {
       'limit': lim,
       'offset': off,
       'hasMore': hasMore,
+      'partial': partial,
+      'scanned': scanned,
     };
+  }
+
+  Future<Result> _searchLogBatch({
+    required String projectId,
+    required String query,
+    required String since,
+    required String upper,
+    required String upperId,
+    required int batch,
+  }) {
+    return db.search(query, (s) => s.execute(
+      Sql.named('''
+        WITH recent AS MATERIALIZED (
+          SELECT id, type, occurred_at, user_id, message, payload,
+                 platform, environment, app_version
+          FROM events
+          WHERE project_id = @pid
+            AND $sqlHideSessionHeartbeat
+            AND occurred_at >= @since::timestamptz
+            AND (occurred_at, id) < (@upper::timestamptz, @upperId::text)
+          ORDER BY occurred_at DESC, id DESC
+          LIMIT @batch
+        ),
+        bound AS (
+          SELECT count(*)::int AS n,
+                 (SELECT occurred_at FROM recent ORDER BY occurred_at ASC, id ASC LIMIT 1) AS oldest,
+                 (SELECT id FROM recent ORDER BY occurred_at ASC, id ASC LIMIT 1) AS oldest_id
+          FROM recent
+        )
+        SELECT r.id, r.type, r.occurred_at, r.user_id, r.message,
+               r.payload->'screen'->>'currentRoute',
+               COALESCE(r.payload->'device'->>'deviceName', r.payload->'device'->>'model'),
+               r.payload->'network'->>'url',
+               r.payload->'network'->>'statusCode',
+               r.payload->>'level',
+               r.payload->>'category',
+               r.platform, r.environment, r.app_version,
+               CASE WHEN strpos(lower(r.payload::text), lower(@q::text)) > 48 THEN '…' ELSE '' END
+               || substring(
+                    r.payload::text
+                    from greatest(strpos(lower(r.payload::text), lower(@q::text)) - 48, 1)
+                    for char_length(@q::text) + 96
+                  )
+               || CASE
+                    WHEN strpos(lower(r.payload::text), lower(@q::text)) + char_length(@q::text) + 47
+                         < char_length(r.payload::text)
+                    THEN '…' ELSE ''
+                  END,
+               b.oldest, b.oldest_id, b.n
+        FROM bound b
+        LEFT JOIN recent r ON r.payload::text ILIKE '%' || @q::text || '%'
+        ORDER BY r.occurred_at DESC NULLS LAST, r.id DESC NULLS LAST
+      '''),
+      parameters: {
+        'pid': projectId,
+        'q': query,
+        'since': since,
+        'upper': upper,
+        'upperId': upperId,
+        'batch': batch,
+      },
+    ));
   }
 
   /// WAF rejects with curl + response body for branded PDF export (max 500).

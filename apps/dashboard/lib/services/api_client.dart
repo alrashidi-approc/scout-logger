@@ -325,6 +325,8 @@ class ScoutApi {
       'limit': pag['limit'] as int? ?? limit,
       'offset': pag['offset'] as int? ?? offset,
       'hasMore': pag['hasMore'] == true,
+      'partial': pag['partial'] == true,
+      'scanned': pag['scanned'] as int? ?? 0,
     };
   }
 

@@ -548,6 +548,8 @@ Handler apiRoutes(
             'limit': page['limit'],
             'offset': page['offset'],
             'hasMore': page['hasMore'],
+            'partial': page['partial'] == true,
+            'scanned': page['scanned'],
           },
         }),
         headers: {'Content-Type': 'application/json'},
