@@ -10,6 +10,7 @@ import '../screens/link_fallback_screen.dart';
 import '../screens/auth_screen.dart';
 import '../screens/event_detail_screen.dart';
 import '../screens/events_screen.dart';
+import '../screens/advanced_search_screen.dart';
 import '../screens/issue_detail_screen.dart';
 import '../screens/issues_screen.dart';
 import '../screens/analytics_screen.dart';
@@ -355,6 +356,20 @@ GoRouter createRouter() {
                 initialEndpoint: s.uri.queryParameters['endpoint'],
               ),
             ),
+          ),
+          GoRoute(
+            path: '/p/:projectId/search',
+            pageBuilder: (c, s) {
+              final q = s.uri.queryParameters;
+              return scoutPage(
+                s,
+                AdvancedSearchScreen(
+                  projectId: s.pathParameters['projectId']!,
+                  initialPeriod: PeriodFilter.parseOptional(q) ?? const PeriodFilter.days(7),
+                  initialQuery: q['q'],
+                ),
+              );
+            },
           ),
           GoRoute(
             path: '/p/:projectId/logs',

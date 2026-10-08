@@ -524,6 +524,37 @@ Handler apiRoutes(
     });
   });
 
+  router.get('/projects/<id>/search', (Request request, String id) async {
+    return _api(() async {
+      final guard = await _projectGuard(request, id, authStore);
+      if (guard != null) return guard;
+      final q = request.url.queryParameters;
+      final query = (q['q'] ?? '').trim();
+      if (query.isEmpty) return jsonErr('q is required');
+      if (_searchTooShort(q) case final err?) return err;
+      final page = await store.searchLogs(
+        id,
+        q: query,
+        limit: int.tryParse(q['limit'] ?? '')?.clamp(1, 100) ?? 50,
+        offset: int.tryParse(q['offset'] ?? '') ?? 0,
+        window: _searchWindow(q, defaultDays: 7),
+      );
+      return Response.ok(
+        jsonEncode({
+          'ok': true,
+          'events': page['events'],
+          'pagination': {
+            'total': page['total'],
+            'limit': page['limit'],
+            'offset': page['offset'],
+            'hasMore': page['hasMore'],
+          },
+        }),
+        headers: {'Content-Type': 'application/json'},
+      );
+    });
+  });
+
   router.get('/projects/<id>/waf/export', (Request request, String id) async {
     return _api(() async {
       final guard = await _projectGuard(request, id, authStore);

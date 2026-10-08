@@ -301,6 +301,33 @@ class ScoutApi {
     };
   }
 
+  Future<Map<String, dynamic>> searchLogs(
+    String projectId, {
+    required String q,
+    PeriodFilter? period,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final params = <String, String>{
+      'q': q,
+      'limit': '$limit',
+      'offset': '$offset',
+      ...(period ?? const PeriodFilter.days(7)).toQuery(),
+    };
+    final uri = _uri('/api/projects/$projectId/search').replace(queryParameters: params);
+    final res = await _client.get(uri, headers: _headers);
+    _ok(res, projectId: projectId);
+    final body = jsonDecode(res.body) as Map;
+    final pag = body['pagination'] is Map ? Map<String, dynamic>.from(body['pagination'] as Map) : <String, dynamic>{};
+    return {
+      'events': jsonListMaps(body['events']),
+      'total': pag['total'] as int? ?? 0,
+      'limit': pag['limit'] as int? ?? limit,
+      'offset': pag['offset'] as int? ?? offset,
+      'hasMore': pag['hasMore'] == true,
+    };
+  }
+
   Future<Map<String, dynamic>> updateIssueStatus(
     String projectId,
     String issueId,

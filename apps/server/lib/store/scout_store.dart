@@ -2385,6 +2385,88 @@ class ScoutStore {
     };
   }
 
+  /// Search the raw event JSON. Kept off [listEvents] so that list keeps the
+  /// smaller `events_search_trgm` index. `payload::text` must match migration 040.
+  Future<Map<String, dynamic>> searchLogs(
+    String projectId, {
+    required String q,
+    int limit = 50,
+    int offset = 0,
+    TimeWindow? window,
+  }) async {
+    final query = q.trim();
+    final lim = limit.clamp(1, 100);
+    final off = offset < 0 ? 0 : offset;
+    final w = window ?? TimeWindow.lastDays(7);
+    final rows = await db.search(query, (s) => s.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, user_id, message,
+               payload->'screen'->>'currentRoute',
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model'),
+               payload->'network'->>'url',
+               payload->'network'->>'statusCode',
+               payload->>'level',
+               payload->>'category',
+               platform, environment, app_version,
+               CASE WHEN strpos(lower(payload::text), lower(@q::text)) > 48 THEN '…' ELSE '' END
+               || substring(
+                    payload::text
+                    from greatest(strpos(lower(payload::text), lower(@q::text)) - 48, 1)
+                    for char_length(@q::text) + 96
+                  )
+               || CASE
+                    WHEN strpos(lower(payload::text), lower(@q::text)) + char_length(@q::text) + 47
+                         < char_length(payload::text)
+                    THEN '…' ELSE ''
+                  END
+        FROM events
+        WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          AND payload::text ILIKE '%' || @q::text || '%'
+          AND (@since::timestamptz IS NULL OR occurred_at >= @since::timestamptz)
+          AND (@until::timestamptz IS NULL OR occurred_at < @until::timestamptz)
+        ORDER BY occurred_at DESC
+        LIMIT @lim OFFSET @off
+      '''),
+      parameters: {
+        'pid': projectId,
+        'q': query,
+        'lim': lim + 1,
+        'off': off,
+        ...timeParams(w),
+      },
+    ));
+    final hasMore = rows.length > lim;
+    final pageRows = hasMore ? rows.sublist(0, lim) : rows;
+    final events = [
+      for (final r in pageRows)
+        {
+          'id': r[0],
+          'type': r[1],
+          'occurredAt': (r[2] as DateTime).toUtc().toIso8601String(),
+          'userId': r[3],
+          'message': r[4],
+          'route': r[5],
+          'deviceName': r[6],
+          'networkUrl': r[7],
+          'statusCode': r[8]?.toString(),
+          'level': r[9],
+          'category': r[10],
+          'platform': r[11],
+          'environment': r[12],
+          'appVersion': r[13],
+          'matchSnippet': r[14]?.toString() ?? '',
+        },
+    ];
+    return {
+      'events': events,
+      'total': off + events.length + (hasMore ? 1 : 0),
+      'limit': lim,
+      'offset': off,
+      'hasMore': hasMore,
+    };
+  }
+
   /// WAF rejects with curl + response body for branded PDF export (max 500).
   Future<Map<String, dynamic>> listWafExport(
     String projectId, {

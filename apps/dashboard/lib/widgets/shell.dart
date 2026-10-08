@@ -41,6 +41,7 @@ class _DashboardShellState extends State<DashboardShell> {
         (Icons.inbox_outlined, Icons.inbox, 'Triage inbox', '/triage'),
         (Icons.bug_report_outlined, Icons.bug_report, 'Issues', '/issues'),
         (Icons.list_alt_outlined, Icons.list_alt, 'Events', '/events'),
+        (Icons.manage_search_outlined, Icons.manage_search, 'Advanced search', '/search'),
         if (_wafVisible) (Icons.security_outlined, Icons.security, 'WAF rejects', '/waf'),
         if (_apiHitsVisible) (Icons.query_stats_outlined, Icons.query_stats, 'API hits', '/api-hits'),
         (Icons.public_outlined, Icons.public, 'Geography', '/geo'),
