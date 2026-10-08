@@ -21,6 +21,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
   bool _slack = true;
   bool _whatsapp = true;
   bool _email = true;
+  bool _telegram = true;
 
   @override
   void initState() {
@@ -40,6 +41,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
           _slack = policy['slack'] != false;
           _whatsapp = policy['whatsapp'] != false;
           _email = policy['email'] != false;
+          _telegram = policy['telegram'] != false;
           _loading = false;
         });
       }
@@ -56,7 +58,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
-      await _api.updateNotificationPolicy({'slack': _slack, 'whatsapp': _whatsapp, 'email': _email});
+      await _api.updateNotificationPolicy({'slack': _slack, 'whatsapp': _whatsapp, 'email': _email, 'telegram': _telegram});
       if (mounted) {
         setState(() => _saving = false);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Platform notification policy saved')));
@@ -124,6 +126,12 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                   title: const Text('Email (Gmail SMTP per project)'),
                   value: _email,
                   onChanged: (v) => setState(() => _email = v),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Telegram'),
+                  value: _telegram,
+                  onChanged: (v) => setState(() => _telegram = v),
                 ),
               ]),
             ),

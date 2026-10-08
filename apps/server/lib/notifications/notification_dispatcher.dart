@@ -7,6 +7,8 @@ import 'package:scout_models/scout_models.dart';
 
 import '../services/key_cipher.dart';
 import 'notification_router.dart';
+import 'telegram_client.dart';
+import 'telegram_commands.dart';
 
 class NotificationDispatcher {
   NotificationDispatcher({
@@ -14,9 +16,13 @@ class NotificationDispatcher {
     this.maxAttempts = 3,
     this.baseDelay = const Duration(seconds: 2),
     this.slackInteractive = false,
-  }) : _cipher = cipher;
+    String telegramBotToken = '',
+    TelegramClient? telegram,
+  })  : _cipher = cipher,
+        _telegram = telegram ?? TelegramClient(telegramBotToken);
 
   final KeyCipher? _cipher;
+  final TelegramClient _telegram;
 
   /// When true, Slack messages include Resolve/Mute action buttons.
   final bool slackInteractive;
@@ -75,6 +81,8 @@ class NotificationDispatcher {
         await _sendWhatsapp(job, config);
       case 'email':
         await _sendEmail(job, config, projectName);
+      case 'telegram':
+        await _sendTelegram(job, config);
       default:
         throw _PermanentSendError('Unknown channel ${job.channel}');
     }
@@ -157,6 +165,23 @@ class NotificationDispatcher {
     } finally {
       client.close(force: true);
     }
+  }
+
+  Future<void> _sendTelegram(NotificationJob job, ProjectNotificationConfig config) async {
+    if (_telegram.token.isEmpty) throw _PermanentSendError('Telegram bot is not configured');
+    final chatId = _decrypt(config.telegram.chatIdEnc);
+    if (chatId == null || chatId.isEmpty) throw _PermanentSendError('Telegram chat not connected');
+
+    final urgency = job.isEmergency ? '🚨 ' : '';
+    var text = '$urgency${job.title}\n\n${job.body}\n\n${job.eventUrl}';
+    if (text.length > 4000) text = '${text.substring(0, 4000)}…';
+
+    final status = await _telegram.sendMessage(
+      chatId: chatId,
+      text: text,
+      replyMarkup: telegramAlertKeyboard(job.issueId),
+    );
+    _checkHttp('Telegram', status);
   }
 
   /// 4xx is a permanent config error (bad token/URL); 5xx and network errors retry.

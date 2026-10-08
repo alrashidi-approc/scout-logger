@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:scout_models/scout_models.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../services/api_client.dart';
 import '../services/facets_cache.dart';
@@ -72,6 +73,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _digestOn = false;
   String _digestFreq = 'daily';
   int _digestHour = 8;
+  String _digestChannel = 'email';
   Set<String> _channels = {'slack', 'email', 'whatsapp'};
   final Map<String, _EnvNotifyPrefs> _envPrefs = {};
   List<String> _knownEnvs = const ['production', 'release', 'prod'];
@@ -85,11 +87,25 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
   bool _slackOn = false;
   bool _waOn = false;
   bool _emailOn = false;
+  bool _telegramOn = false;
   bool _slackConfigured = false;
   bool _waConfigured = false;
   bool _emailConfigured = false;
+  bool _telegramConfigured = false;
+  bool _telegramBotReady = false;
+  String? _telegramChatTitle;
+  String? _telegramPausedLabel;
+  bool _telegramConnecting = false;
+  Timer? _telegramPoll;
   String? _emailUserHint;
-  Map<String, bool> _platform = {'slack': true, 'whatsapp': true, 'email': true};
+  Map<String, bool> _platform = {'slack': true, 'whatsapp': true, 'email': true, 'telegram': true};
+
+  bool _channelVisible(String ch) => _platform[ch] != false && (ch != 'telegram' || _telegramBotReady);
+
+  List<String> get _digestChoices => [
+        for (final ch in kNotificationChannels)
+          if (_channelVisible(ch)) ch,
+      ];
 
   final _slackWebhookCtrl = TextEditingController();
   final _waPhoneCtrl = TextEditingController();
@@ -113,6 +129,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     _smtpPassCtrl.dispose();
     _smtpFromCtrl.dispose();
     _recipientsCtrl.dispose();
+    _telegramPoll?.cancel();
     super.dispose();
   }
 
@@ -288,19 +305,29 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
       'slack': platform['slack'] != false,
       'whatsapp': platform['whatsapp'] != false,
       'email': platform['email'] != false,
+      'telegram': platform['telegram'] != false,
     };
 
     final ch = cfg['channels'] is Map ? Map<String, dynamic>.from(cfg['channels'] as Map) : <String, dynamic>{};
     final slack = ch['slack'] is Map ? Map<String, dynamic>.from(ch['slack'] as Map) : <String, dynamic>{};
     final wa = ch['whatsapp'] is Map ? Map<String, dynamic>.from(ch['whatsapp'] as Map) : <String, dynamic>{};
     final email = ch['email'] is Map ? Map<String, dynamic>.from(ch['email'] as Map) : <String, dynamic>{};
+    final telegram = ch['telegram'] is Map ? Map<String, dynamic>.from(ch['telegram'] as Map) : <String, dynamic>{};
 
     _slackOn = slack['enabled'] == true;
     _waOn = wa['enabled'] == true;
     _emailOn = email['enabled'] == true;
+    _telegramOn = telegram['enabled'] == true;
     _slackConfigured = slack['configured'] == true;
     _waConfigured = wa['configured'] == true;
     _emailConfigured = email['configured'] == true;
+    _telegramConfigured = telegram['configured'] == true;
+    _telegramBotReady = telegram['botConfigured'] == true;
+    _telegramChatTitle = telegram['chatTitle']?.toString();
+    final pausedUntil = DateTime.tryParse(telegram['pausedUntil']?.toString() ?? '');
+    _telegramPausedLabel = pausedUntil != null && pausedUntil.isAfter(DateTime.now())
+        ? 'Alerts paused until ${pausedUntil.toLocal()}'
+        : null;
     _emailUserHint = email['smtpUserHint'] as String?;
     _recipientsCtrl.text = (email['recipients'] as List?)?.join(', ') ?? '';
 
@@ -318,6 +345,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     _digestOn = dg['enabled'] == true;
     _digestFreq = dg['frequency'] == 'weekly' ? 'weekly' : 'daily';
     _digestHour = dg['hourUtc'] as int? ?? 8;
+    final digestChannel = dg['channel']?.toString() ?? '';
+    _digestChannel = kNotificationChannels.contains(digestChannel) ? digestChannel : 'email';
   }
 
   Map<String, dynamic> _buildPatch() {
@@ -355,6 +384,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
           if (_smtpFromCtrl.text.trim().isNotEmpty) 'from': _smtpFromCtrl.text.trim(),
           'recipients': _recipientsCtrl.text.split(RegExp(r'[,\s]+')).where((s) => s.contains('@')).toList(),
         },
+        'telegram': {'enabled': _telegramOn},
       },
       'threshold': {
         'enabled': _thresholdOn,
@@ -370,7 +400,7 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         'enabled': _digestOn,
         'frequency': _digestFreq,
         'hourUtc': _digestHour,
-        'channel': 'email',
+        'channel': _digestChannel,
       },
     };
     return patch;
@@ -463,6 +493,60 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
         setState(() => _saving = false);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
       }
+    }
+  }
+
+  Future<void> _connectTelegram() async {
+    setState(() => _telegramConnecting = true);
+    try {
+      final link = await _api.connectTelegram(widget.projectId);
+      final url = link['url']?.toString() ?? '';
+      final uri = Uri.tryParse(url);
+      if (uri == null || !uri.hasScheme) throw Exception('Connect link missing');
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(opened ? 'Press Start in Telegram. This page updates when the chat connects.' : url),
+      ));
+      _telegramPoll?.cancel();
+      var tries = 0;
+      _telegramPoll = Timer.periodic(const Duration(seconds: 2), (timer) async {
+        tries++;
+        if (tries > 15 || !mounted) {
+          timer.cancel();
+          return;
+        }
+        try {
+          final cfg = await _api.fetchProjectNotifications(widget.projectId);
+          final channels = cfg['channels'];
+          final telegram = channels is Map ? channels['telegram'] : null;
+          final configured = telegram is Map && telegram['configured'] == true;
+          if (!configured || !mounted) return;
+          timer.cancel();
+          setState(() => _applyConfig(cfg));
+          _writeCache(cfg);
+          final title = _telegramChatTitle;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(title == null ? 'Telegram connected' : 'Telegram connected to $title'),
+          ));
+        } catch (_) {}
+      });
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+    } finally {
+      if (mounted) setState(() => _telegramConnecting = false);
+    }
+  }
+
+  Future<void> _disconnectTelegram() async {
+    try {
+      final cfg = await _api.disconnectTelegram(widget.projectId);
+      if (!mounted) return;
+      setState(() => _applyConfig(cfg));
+      _writeCache(cfg);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Telegram disconnected')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
     }
   }
 
@@ -613,13 +697,14 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               runSpacing: 8,
               children: [
                 for (final ch in kNotificationChannels)
-                  if (_platform[ch] != false)
+                  if (_channelVisible(ch))
                     FilterChip(
                       label: Text(ch[0].toUpperCase() + ch.substring(1)),
                       selected: switch (ch) {
                         'slack' => _slackOn,
                         'whatsapp' => _waOn,
                         'email' => _emailOn,
+                        'telegram' => _telegramOn,
                         _ => false,
                       },
                       onSelected: (on) => setState(() {
@@ -630,6 +715,8 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                             _waOn = on;
                           case 'email':
                             _emailOn = on;
+                          case 'telegram':
+                            _telegramOn = on;
                         }
                         if (on) {
                           _channels.add(ch);
@@ -819,15 +906,15 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
     final body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Digest email', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-              subtitle: const Text('Scheduled summary of top issues + regressions (email channel)'),
+              title: const Text('Digest', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+              subtitle: const Text('Scheduled summary of top issues and regressions'),
               value: _digestOn,
               onChanged: (v) => setState(() {
                 _digestOn = v;
                 _markCustom();
               }),
             ),
-            if (_digestOn) ...[
+              if (_digestOn) ...[
               const SizedBox(height: 8),
               Row(children: [
                 const Text('Frequency', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -844,6 +931,24 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                   ],
                 ),
               ]),
+              if (_digestChoices.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Row(children: [
+                  const Text('Channel', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(width: 16),
+                  DropdownButton<String>(
+                    value: _digestChoices.contains(_digestChannel) ? _digestChannel : _digestChoices.first,
+                    onChanged: (v) => setState(() {
+                      _digestChannel = v ?? 'email';
+                      _markCustom();
+                    }),
+                    items: [
+                      for (final ch in _digestChoices)
+                        DropdownMenuItem(value: ch, child: Text(ch[0].toUpperCase() + ch.substring(1))),
+                    ],
+                  ),
+                ]),
+              ],
               const SizedBox(height: 8),
               Text('Send hour: ${_digestHour.toString().padLeft(2, '0')}:00 UTC', style: const TextStyle(fontWeight: FontWeight.w600)),
               Slider(
@@ -880,20 +985,19 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               spacing: 8,
               children: [
                 for (final ch in kNotificationChannels)
-                  FilterChip(
-                    label: Text(ch[0].toUpperCase() + ch.substring(1)),
-                    selected: _channels.contains(ch) && (_platform[ch] ?? true),
-                    onSelected: (_platform[ch] ?? true)
-                        ? (on) => setState(() {
-                              if (on) {
-                                _channels.add(ch);
-                              } else if (_channels.length > 1) {
-                                _channels.remove(ch);
-                              }
-                              _markCustom();
-                            })
-                        : null,
-                  ),
+                  if (_channelVisible(ch))
+                    FilterChip(
+                      label: Text(ch[0].toUpperCase() + ch.substring(1)),
+                      selected: _channels.contains(ch),
+                      onSelected: (on) => setState(() {
+                        if (on) {
+                          _channels.add(ch);
+                        } else if (_channels.length > 1) {
+                          _channels.remove(ch);
+                        }
+                        _markCustom();
+                      }),
+                    ),
               ],
             ),
             if (_platform.values.contains(false))
@@ -999,6 +1103,19 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
                 'Add recipient addresses (comma-separated) for your on-call team.',
               ],
             ),
+            if (_platform['telegram'] == true && _telegramBotReady) ...[
+              const Divider(height: 24),
+              _guideSection(
+                'Telegram',
+                const [
+                  'Tap Connect Telegram below. Scout opens its bot with a one-time link.',
+                  'In a private chat, press Start.',
+                  'In a group, add the bot to the group, then send the /start command from that link in the group.',
+                  'Turn Telegram on under Where, save, then Send test.',
+                  'In the chat, use /health, /up, /stats, /release, /issues, /report, or /pause. Alerts include Resolve, Mute, and Pause.',
+                ],
+              ),
+            ],
           ]),
         ),
       );
@@ -1110,6 +1227,33 @@ class _ProjectNotificationsScreenState extends State<ProjectNotificationsScreen>
               Align(
                 alignment: Alignment.centerLeft,
                 child: TextButton(onPressed: _emailOn ? () => _test('email') : null, child: const Text('Send test')),
+              ),
+            ],
+            if (_platform['telegram'] == true && _telegramBotReady) ...[
+              const Divider(),
+              _channelHeader('Telegram', _telegramConfigured),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Enabled'),
+                subtitle: Text(_telegramPausedLabel ??
+                    (_telegramConfigured
+                        ? 'Connected to ${_telegramChatTitle ?? 'a Telegram chat'}. Use /up, /report, or the buttons on an alert.'
+                        : 'Open the bot and press Start. In a group, add the bot, then send the connect command there.')),
+                value: _telegramOn,
+                onChanged: (v) => setState(() => _telegramOn = v),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(spacing: 8, children: [
+                  TextButton(
+                    onPressed: _telegramConnecting ? null : _connectTelegram,
+                    child: Text(_telegramConfigured ? 'Connect a different chat' : 'Connect Telegram'),
+                  ),
+                  if (_telegramConfigured)
+                    TextButton(onPressed: _telegramOn ? () => _test('telegram') : null, child: const Text('Send test')),
+                  if (_telegramConfigured)
+                    TextButton(onPressed: _disconnectTelegram, child: const Text('Disconnect')),
+                ]),
               ),
             ],
           ]),

@@ -26,6 +26,9 @@ class ServerConfig {
     required this.encryptionKey,
     required this.platformOwnerEmail,
     required this.slackSigningSecret,
+    this.telegramBotToken = '',
+    this.telegramBotUsername = '',
+    this.telegramWebhookSecret = '',
     this.signupEnabled = false,
     this.corsOrigins = const {},
   });
@@ -62,6 +65,9 @@ class ServerConfig {
       encryptionKey: encryptionKey,
       platformOwnerEmail: (e['PLATFORM_OWNER_EMAIL'] ?? 'mohaalrashidi4@gmail.com').trim().toLowerCase(),
       slackSigningSecret: (e['SLACK_SIGNING_SECRET'] ?? '').trim(),
+      telegramBotToken: (e['TELEGRAM_BOT_TOKEN'] ?? '').trim(),
+      telegramBotUsername: (e['TELEGRAM_BOT_USERNAME'] ?? '').trim().replaceFirst(RegExp(r'^@'), ''),
+      telegramWebhookSecret: (e['TELEGRAM_WEBHOOK_SECRET'] ?? '').trim(),
       signupEnabled: _bool(e['SIGNUP_ENABLED'], defaultValue: false),
       corsOrigins: {
         Uri.parse(publicUrl).origin,
@@ -94,6 +100,13 @@ class ServerConfig {
 
   /// Slack app signing secret for verifying interactive button callbacks.
   final String slackSigningSecret;
+
+  /// Platform Telegram bot. Empty hides the channel and disables the webhook.
+  final String telegramBotToken;
+  final String telegramBotUsername;
+  final String telegramWebhookSecret;
+
+  bool get telegramBotConfigured => telegramBotToken.isNotEmpty && telegramBotUsername.isNotEmpty;
 
   final bool signupEnabled;
 

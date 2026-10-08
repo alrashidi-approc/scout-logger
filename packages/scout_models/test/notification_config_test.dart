@@ -77,4 +77,35 @@ void main() {
     expect(again.healthCheckNotify, isTrue);
     expect(again.toClientJson(platform: const PlatformNotificationPolicy())['preset'], 'urgent');
   });
+
+  test('telegram client json hides the chat id', () {
+    const cfg = ProjectNotificationConfig(
+      telegram: TelegramChannelConfig(enabled: true, chatIdEnc: 'secret', chatTitle: 'Ops'),
+    );
+    final again = ProjectNotificationConfig.fromJson(cfg.toJson());
+    expect(again.telegram.chatIdEnc, 'secret');
+    expect(again.telegram.chatTitle, 'Ops');
+
+    final client = cfg.toClientJson(
+      platform: const PlatformNotificationPolicy(),
+      telegramConfigured: true,
+      telegramBotConfigured: true,
+    );
+    final telegram = ((client['channels'] as Map)['telegram'] as Map);
+    expect(telegram['configured'], isTrue);
+    expect(telegram['botConfigured'], isTrue);
+    expect(telegram['chatTitle'], 'Ops');
+    expect(telegram.containsKey('chatIdEnc'), isFalse);
+
+    final until = DateTime.now().toUtc().add(const Duration(hours: 1));
+    final paused = ProjectNotificationConfig(
+      telegram: TelegramChannelConfig(enabled: true, chatIdEnc: 'secret', pausedUntil: until),
+    );
+    final pausedJson = ((paused.toClientJson(platform: const PlatformNotificationPolicy())['channels'] as Map)['telegram'] as Map);
+    expect(paused.telegram.alertsPaused, isTrue);
+    expect(pausedJson['pausedUntil'], isNotNull);
+    expect(pausedJson.containsKey('chatIdEnc'), isFalse);
+    expect(const PlatformNotificationPolicy().channelAllowed('telegram'), isTrue);
+    expect(const PlatformNotificationPolicy(telegramAllowed: false).channelAllowed('telegram'), isFalse);
+  });
 }

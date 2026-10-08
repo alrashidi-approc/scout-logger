@@ -13,6 +13,7 @@ import 'routes/client_config_routes.dart';
 import 'routes/ingest_routes.dart';
 import 'routes/share_routes.dart';
 import 'routes/slack_routes.dart';
+import 'routes/telegram_routes.dart';
 import 'routes/web_routes.dart';
 import 'services/email_service.dart';
 import 'services/geo_enricher.dart';
@@ -66,6 +67,7 @@ Handler createApp({
   router.get('/v1/client/config', ipClient(keyClient(clientConfigRoutes(store))));
   router.mount('/v1/share/', shareRoutes(store));
   router.post('/slack/interactions', slackRoutes(config, store));
+  router.post('/telegram/webhook', telegramWebhook(config, notificationStore, store, analytics ?? AnalyticsStore(store.db)));
 
   router.get('/api/dashboard/config', (_) async {
     return Response.ok(

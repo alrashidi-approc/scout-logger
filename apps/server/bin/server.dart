@@ -9,6 +9,7 @@ import 'package:scout_server/store/health_check_store.dart';
 import 'package:scout_server/store/notification_store.dart';
 import 'package:scout_server/store/platform_store.dart';
 import 'package:scout_server/notifications/notification_dispatcher.dart';
+import 'package:scout_server/notifications/telegram_client.dart';
 import 'package:scout_server/notifications/notification_service.dart';
 import 'package:scout_server/notifications/monitor_scheduler.dart';
 import 'package:scout_server/health_check/uptime_monitor.dart';
@@ -28,7 +29,11 @@ Future<void> main() async {
     final cipher = KeyCipher(config.encryptionKey);
     final platformStore = PlatformStore(db);
     final notificationStore = NotificationStore(db, cipher: cipher);
-    final dispatcher = NotificationDispatcher(cipher: cipher, slackInteractive: config.slackSigningSecret.isNotEmpty);
+    final dispatcher = NotificationDispatcher(
+      cipher: cipher,
+      slackInteractive: config.slackSigningSecret.isNotEmpty,
+      telegramBotToken: config.telegramBotToken,
+    );
     final notificationService = NotificationService(
       store: notificationStore,
       platformStore: platformStore,
@@ -64,6 +69,7 @@ Future<void> main() async {
       notifications: notificationService,
       notificationStore: notificationStore,
     );
+    await _registerTelegramWebhook(config);
     stdout.writeln('scout-logger listening on ${config.publicUrl}');
     stdout.writeln('Dashboard: ${config.dashboardPublicUrl}');
     if (config.smtpUser.isEmpty || config.smtpPassword.isEmpty) {
@@ -75,4 +81,23 @@ Future<void> main() async {
     stderr.writeln(st);
     exitCode = 1;
   }
+}
+
+Future<void> _registerTelegramWebhook(ServerConfig config) async {
+  if (config.telegramBotToken.isEmpty) return;
+  if (!config.publicUrl.startsWith('https://') || config.telegramWebhookSecret.isEmpty) {
+    stdout.writeln('Telegram: webhook not registered — set an https PUBLIC_URL and TELEGRAM_WEBHOOK_SECRET');
+    return;
+  }
+    try {
+      final client = TelegramClient(config.telegramBotToken);
+      await client.setMyCommands();
+      await client.setWebhook(
+        url: '${config.publicUrl}/telegram/webhook',
+        secret: config.telegramWebhookSecret,
+      );
+      stdout.writeln('Telegram: webhook registered');
+    } catch (e) {
+      stderr.writeln('Telegram: setWebhook failed: $e');
+    }
 }

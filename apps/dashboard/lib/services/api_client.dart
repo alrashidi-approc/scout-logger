@@ -636,6 +636,18 @@ class ScoutApi {
     return jsonMap((jsonDecode(res.body) as Map)['notifications']);
   }
 
+  Future<Map<String, dynamic>> connectTelegram(String projectId) async {
+    final res = await _client.post(_uri('/api/projects/$projectId/notifications/telegram/connect'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonMap(jsonDecode(res.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> disconnectTelegram(String projectId) async {
+    final res = await _client.post(_uri('/api/projects/$projectId/notifications/telegram/disconnect'), headers: _headers);
+    _ok(res, projectId: projectId);
+    return jsonMap((jsonDecode(res.body) as Map)['notifications']);
+  }
+
   Future<void> testProjectNotification(String projectId, String channel) async {
     final res = await _client.post(
       _uri('/api/projects/$projectId/notifications/test'),

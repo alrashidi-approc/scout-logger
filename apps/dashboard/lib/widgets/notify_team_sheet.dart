@@ -8,6 +8,7 @@ String _channelLabel(String ch) => switch (ch) {
       'slack' => 'Slack',
       'whatsapp' => 'WhatsApp',
       'email' => 'Email',
+      'telegram' => 'Telegram',
       _ => ch,
     };
 
@@ -36,7 +37,7 @@ Future<void> showNotifyTeamSheet(
       builder: (ctx) => AlertDialog(
         title: const Text('No channels ready'),
         content: const Text(
-          'Enable and configure Slack, WhatsApp, or email under Settings → Notifications, then try again.',
+          'Enable and configure Slack, WhatsApp, email, or Telegram under Settings → Notifications, then try again.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),

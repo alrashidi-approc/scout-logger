@@ -1040,6 +1040,7 @@ Handler apiRoutes(
         final configJson = await notificationStore.getClientConfig(
           id,
           platform: await notifications.platformStore.getNotificationPolicy(),
+          telegramBotConfigured: config.telegramBotConfigured,
         );
         return Response.ok(jsonEncode({'ok': true, 'notifications': configJson}), headers: {'Content-Type': 'application/json'});
       });
@@ -1059,11 +1060,56 @@ Handler apiRoutes(
           final configJson = await notificationStore.getClientConfig(
             id,
             platform: await notifications.platformStore.getNotificationPolicy(),
+            telegramBotConfigured: config.telegramBotConfigured,
           );
           return Response.ok(jsonEncode({'ok': true, 'notifications': configJson}), headers: {'Content-Type': 'application/json'});
         } on ArgumentError {
           return jsonErr('Project not found', status: 404);
         }
+      });
+    });
+
+    router.post('/projects/<id>/notifications/telegram/connect', (Request request, String id) async {
+      return _api(() async {
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        if (!config.telegramBotConfigured) return jsonErr('Telegram bot is not configured', status: 400);
+        final token = await notificationStore.createTelegramLink(id);
+        final expiresAt = DateTime.now().toUtc().add(const Duration(minutes: 15)).toIso8601String();
+        return Response.ok(
+          jsonEncode({
+            'ok': true,
+            'url': 'https://t.me/${config.telegramBotUsername}?start=$token',
+            'expiresAt': expiresAt,
+          }),
+          headers: {'Content-Type': 'application/json'},
+        );
+      });
+    });
+
+    router.post('/projects/<id>/notifications/telegram/disconnect', (Request request, String id) async {
+      return _api(() async {
+        final denied = await ensureProjectNotificationsManage(
+          auth: authFrom(request)!,
+          projectId: id,
+          membership: authStore.membershipRole,
+        );
+        if (denied != null) return denied;
+        try {
+          await notificationStore.clearTelegramChat(id);
+        } on ArgumentError {
+          return jsonErr('Project not found', status: 404);
+        }
+        final configJson = await notificationStore.getClientConfig(
+          id,
+          platform: await notifications.platformStore.getNotificationPolicy(),
+          telegramBotConfigured: config.telegramBotConfigured,
+        );
+        return Response.ok(jsonEncode({'ok': true, 'notifications': configJson}), headers: {'Content-Type': 'application/json'});
       });
     });
 

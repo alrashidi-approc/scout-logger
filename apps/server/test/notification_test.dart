@@ -1,9 +1,14 @@
 import 'package:scout_models/scout_models.dart';
+import 'package:scout_server/db/scout_db.dart';
 import 'package:scout_server/notifications/notification_categories.dart';
+import 'package:scout_server/notifications/notification_dispatcher.dart';
 import 'package:scout_server/notifications/notification_group.dart';
 import 'package:scout_server/notifications/notification_router.dart';
 import 'package:scout_server/notifications/notification_service.dart';
 import 'package:scout_server/notifications/notification_share.dart';
+import 'package:scout_server/notifications/telegram_client.dart';
+import 'package:scout_server/notifications/telegram_link.dart';
+import 'package:scout_server/store/notification_store.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -276,5 +281,125 @@ void main() {
     expect(healthCheckNeedsAlert(status: 'success', report: {'verdict': 'healthy'}), isFalse);
     expect(healthCheckNeedsAlert(status: 'success', report: {'verdict': 'unhealthy'}), isTrue);
     expect(healthCheckNeedsAlert(status: 'success', report: {'verdict': 'degraded'}), isFalse);
+  });
+
+  test('telegram is ready only when enabled and a chat is stored', () {
+    expect(
+      channelReady(const ProjectNotificationConfig(telegram: TelegramChannelConfig(enabled: true)), 'telegram'),
+      isFalse,
+    );
+    expect(
+      channelReady(const ProjectNotificationConfig(telegram: TelegramChannelConfig(chatIdEnc: 'enc')), 'telegram'),
+      isFalse,
+    );
+    expect(
+      channelReady(
+        const ProjectNotificationConfig(telegram: TelegramChannelConfig(enabled: true, chatIdEnc: 'enc')),
+        'telegram',
+      ),
+      isTrue,
+    );
+    expect(
+      channelReady(
+        ProjectNotificationConfig(
+          telegram: TelegramChannelConfig(
+            enabled: true,
+            chatIdEnc: 'enc',
+            pausedUntil: DateTime.now().toUtc().add(const Duration(hours: 1)),
+          ),
+        ),
+        'telegram',
+      ),
+      isFalse,
+    );
+  });
+
+  test('telegram sendMessage treats HTTP 403 as permanent', () async {
+    Uri? seen;
+    Map<String, dynamic>? body;
+    final dispatcher = NotificationDispatcher(
+      maxAttempts: 1,
+      telegramBotToken: 'tok',
+      telegram: TelegramClient('tok', postJson: (uri, json) async {
+        seen = uri;
+        body = json;
+        return 403;
+      }),
+    );
+    await expectLater(
+      dispatcher.send(
+        job: NotificationJob(
+          channel: 'telegram',
+          category: 'error',
+          dedupKey: 'd',
+          title: 'Title',
+          body: 'Body',
+          eventUrl: 'http://x',
+        ),
+        config: const ProjectNotificationConfig(
+          telegram: TelegramChannelConfig(enabled: true, chatIdEnc: '42'),
+        ),
+        projectName: 'Demo',
+      ),
+      throwsA(predicate<Object>((e) => '$e'.contains('Telegram HTTP 403'))),
+    );
+    expect(seen?.path, '/bottok/sendMessage');
+    expect(body?['chat_id'], '42');
+    expect(body?['text'], contains('Title'));
+  });
+
+  test('connect token binds a chat once', () async {
+    final links = {'abc': 'p1'};
+    final bound = <String>[];
+    Future<String?> consume(String token) async => links.remove(token);
+    Future<void> bind(String projectId, String chatId, String chatTitle) async {
+      bound.add('$projectId:$chatId:$chatTitle');
+    }
+
+    final update = {
+      'message': {
+        'text': '/start abc',
+        'chat': {'id': -100, 'type': 'supergroup', 'title': 'Ops'},
+      },
+    };
+    final first = await handleTelegramUpdate(
+      update: update,
+      consumeLink: consume,
+      bind: bind,
+      projectName: (_) async => 'Demo',
+    );
+    final second = await handleTelegramUpdate(
+      update: update,
+      consumeLink: consume,
+      bind: bind,
+      projectName: (_) async => 'Demo',
+    );
+    expect(first, contains('Connected to Demo'));
+    expect(first, contains('/health'));
+    expect(second, contains('expired'));
+    expect(bound, ['p1:-100:Ops']);
+  });
+
+  test('merge keeps an existing telegram chat id when the patch omits it', () {
+    final store = NotificationStore(ScoutDb(DbConfig(
+      host: 'localhost',
+      port: 5432,
+      database: 'scout',
+      username: 'scout',
+      password: 'scout',
+    )));
+    final paused = DateTime.utc(2030, 1, 1);
+    final current = ProjectNotificationConfig(
+      telegram: TelegramChannelConfig(enabled: true, chatIdEnc: 'enc-id', chatTitle: 'Ops', pausedUntil: paused),
+    );
+    final next = store.merge(current, {
+      'channels': {
+        'telegram': {'enabled': false},
+      },
+    });
+    expect(next.telegram.enabled, isFalse);
+    expect(next.telegram.chatIdEnc, 'enc-id');
+    expect(next.telegram.chatTitle, 'Ops');
+    expect(next.telegram.pausedUntil, paused);
   });
 }

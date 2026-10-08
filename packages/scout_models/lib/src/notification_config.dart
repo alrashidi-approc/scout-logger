@@ -8,7 +8,7 @@ const kNotificationCategories = {
   'network_auth',
 };
 
-const kNotificationChannels = {'slack', 'whatsapp', 'email'};
+const kNotificationChannels = {'slack', 'whatsapp', 'email', 'telegram'};
 
 /// Named loudness modes — map onto rules / dedup / spikes via [applyNotificationPreset].
 const kNotificationPresets = {'quiet', 'normal', 'urgent', 'custom'};
@@ -39,11 +39,13 @@ class PlatformNotificationPolicy {
     this.slackAllowed = true,
     this.whatsappAllowed = true,
     this.emailAllowed = true,
+    this.telegramAllowed = true,
   });
 
   final bool slackAllowed;
   final bool whatsappAllowed;
   final bool emailAllowed;
+  final bool telegramAllowed;
 
   factory PlatformNotificationPolicy.fromJson(Map<String, dynamic>? json) {
     if (json == null || json.isEmpty) return const PlatformNotificationPolicy();
@@ -51,6 +53,7 @@ class PlatformNotificationPolicy {
       slackAllowed: json['slack'] != false,
       whatsappAllowed: json['whatsapp'] != false,
       emailAllowed: json['email'] != false,
+      telegramAllowed: json['telegram'] != false,
     );
   }
 
@@ -58,12 +61,14 @@ class PlatformNotificationPolicy {
         'slack': slackAllowed,
         'whatsapp': whatsappAllowed,
         'email': emailAllowed,
+        'telegram': telegramAllowed,
       };
 
   bool channelAllowed(String channel) => switch (channel) {
         'slack' => slackAllowed,
         'whatsapp' => whatsappAllowed,
         'email' => emailAllowed,
+        'telegram' => telegramAllowed,
         _ => false,
       };
 }
@@ -157,6 +162,52 @@ class WhatsappChannelConfig {
         'enabled': enabled,
         'configured': configured,
       };
+}
+
+class TelegramChannelConfig {
+  const TelegramChannelConfig({this.enabled = false, this.chatIdEnc, this.chatTitle, this.pausedUntil});
+
+  final bool enabled;
+
+  /// Encrypted Telegram chat id. Never sent to the dashboard.
+  final String? chatIdEnc;
+
+  /// Display name of the linked private chat or group.
+  final String? chatTitle;
+
+  /// Alerts are skipped until this instant. Commands still work.
+  final DateTime? pausedUntil;
+
+  bool get alertsPaused {
+    final until = pausedUntil;
+    return until != null && until.isAfter(DateTime.now().toUtc());
+  }
+
+  factory TelegramChannelConfig.fromJson(Map<String, dynamic>? json) => TelegramChannelConfig(
+        enabled: json?['enabled'] == true,
+        chatIdEnc: json?['chatIdEnc']?.toString(),
+        chatTitle: json?['chatTitle']?.toString(),
+        pausedUntil: DateTime.tryParse(json?['pausedUntil']?.toString() ?? '')?.toUtc(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        if (chatIdEnc != null) 'chatIdEnc': chatIdEnc,
+        if (chatTitle != null) 'chatTitle': chatTitle,
+        if (pausedUntil != null) 'pausedUntil': pausedUntil?.toUtc().toIso8601String(),
+      };
+
+  Map<String, dynamic> toClientJson({bool configured = false, bool botConfigured = false}) {
+    final title = chatTitle?.trim();
+    final paused = alertsPaused ? pausedUntil?.toUtc().toIso8601String() : null;
+    return {
+      'enabled': enabled,
+      'configured': configured,
+      'botConfigured': botConfigured,
+      if (title != null && title.isNotEmpty) 'chatTitle': title,
+      if (paused != null) 'pausedUntil': paused,
+    };
+  }
 }
 
 class EmailChannelConfig {
@@ -305,6 +356,7 @@ class ProjectNotificationConfig {
     this.slack = const SlackChannelConfig(),
     this.whatsapp = const WhatsappChannelConfig(),
     this.email = const EmailChannelConfig(),
+    this.telegram = const TelegramChannelConfig(),
     this.threshold = const ThresholdConfig(),
     this.digest = const DigestConfig(),
   });
@@ -327,6 +379,7 @@ class ProjectNotificationConfig {
   final SlackChannelConfig slack;
   final WhatsappChannelConfig whatsapp;
   final EmailChannelConfig email;
+  final TelegramChannelConfig telegram;
   final ThresholdConfig threshold;
   final DigestConfig digest;
 
@@ -350,6 +403,7 @@ class ProjectNotificationConfig {
       slack: SlackChannelConfig.fromJson(channels['slack'] is Map ? Map<String, dynamic>.from(channels['slack'] as Map) : null),
       whatsapp: WhatsappChannelConfig.fromJson(channels['whatsapp'] is Map ? Map<String, dynamic>.from(channels['whatsapp'] as Map) : null),
       email: EmailChannelConfig.fromJson(channels['email'] is Map ? Map<String, dynamic>.from(channels['email'] as Map) : null),
+      telegram: TelegramChannelConfig.fromJson(channels['telegram'] is Map ? Map<String, dynamic>.from(channels['telegram'] as Map) : null),
       threshold: ThresholdConfig.fromJson(json['threshold'] is Map ? Map<String, dynamic>.from(json['threshold'] as Map) : null),
       digest: DigestConfig.fromJson(json['digest'] is Map ? Map<String, dynamic>.from(json['digest'] as Map) : null),
     );
@@ -367,6 +421,7 @@ class ProjectNotificationConfig {
           'slack': slack.toJson(),
           'whatsapp': whatsapp.toJson(),
           'email': email.toJson(),
+          'telegram': telegram.toJson(),
         },
         'threshold': threshold.toJson(),
         'digest': digest.toJson(),
@@ -377,6 +432,8 @@ class ProjectNotificationConfig {
     bool slackConfigured = false,
     bool whatsappConfigured = false,
     bool emailConfigured = false,
+    bool telegramConfigured = false,
+    bool telegramBotConfigured = false,
     String? emailUserHint,
   }) =>
       {
@@ -392,6 +449,7 @@ class ProjectNotificationConfig {
           'slack': slack.toClientJson(configured: slackConfigured),
           'whatsapp': whatsapp.toClientJson(configured: whatsappConfigured),
           'email': email.toClientJson(configured: emailConfigured, smtpUserHint: emailUserHint),
+          'telegram': telegram.toClientJson(configured: telegramConfigured, botConfigured: telegramBotConfigured),
         },
         'threshold': threshold.toJson(),
         'digest': digest.toJson(),
@@ -408,6 +466,7 @@ class ProjectNotificationConfig {
     SlackChannelConfig? slack,
     WhatsappChannelConfig? whatsapp,
     EmailChannelConfig? email,
+    TelegramChannelConfig? telegram,
     ThresholdConfig? threshold,
     DigestConfig? digest,
   }) =>
@@ -422,6 +481,7 @@ class ProjectNotificationConfig {
         slack: slack ?? this.slack,
         whatsapp: whatsapp ?? this.whatsapp,
         email: email ?? this.email,
+        telegram: telegram ?? this.telegram,
         threshold: threshold ?? this.threshold,
         digest: digest ?? this.digest,
       );

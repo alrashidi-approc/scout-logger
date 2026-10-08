@@ -198,6 +198,9 @@ bool channelReady(ProjectNotificationConfig config, String channel) => switch (c
           (config.email.smtpUserEnc?.isNotEmpty ?? false) &&
           (config.email.smtpPasswordEnc?.isNotEmpty ?? false) &&
           config.email.recipients.isNotEmpty,
+      'telegram' => config.telegram.enabled &&
+          (config.telegram.chatIdEnc?.isNotEmpty ?? false) &&
+          !config.telegram.alertsPaused,
       _ => false,
     };
 

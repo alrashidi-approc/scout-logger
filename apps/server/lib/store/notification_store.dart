@@ -30,6 +30,7 @@ class NotificationStore {
   Future<Map<String, dynamic>> getClientConfig(
     String projectId, {
     required PlatformNotificationPolicy platform,
+    bool telegramBotConfigured = false,
   }) async {
     final config = await getConfig(projectId);
     return config.toClientJson(
@@ -37,6 +38,8 @@ class NotificationStore {
       slackConfigured: config.slack.webhookUrlEnc?.isNotEmpty ?? false,
       whatsappConfigured: (config.whatsapp.phoneEnc?.isNotEmpty ?? false) && (config.whatsapp.apiKeyEnc?.isNotEmpty ?? false),
       emailConfigured: (config.email.smtpUserEnc?.isNotEmpty ?? false) && (config.email.smtpPasswordEnc?.isNotEmpty ?? false),
+      telegramConfigured: config.telegram.chatIdEnc?.isNotEmpty ?? false,
+      telegramBotConfigured: telegramBotConfigured,
       emailUserHint: _hint(_cipher?.decrypt(config.email.smtpUserEnc)),
     );
   }
@@ -53,7 +56,7 @@ class NotificationStore {
     final current = ProjectNotificationConfig.fromJson(
       settings['notifications'] is Map ? Map<String, dynamic>.from(settings['notifications'] as Map) : null,
     );
-    final next = _merge(current, patch);
+    final next = merge(current, patch);
     await conn.execute(
       Sql.named('''
         UPDATE projects SET settings = jsonb_set(
@@ -69,7 +72,7 @@ class NotificationStore {
     return next;
   }
 
-  ProjectNotificationConfig _merge(ProjectNotificationConfig current, Map<String, dynamic> patch) {
+  ProjectNotificationConfig merge(ProjectNotificationConfig current, Map<String, dynamic> patch) {
     var rules = current.rules;
     if (patch['rules'] is List) {
       rules = (patch['rules'] as List)
@@ -83,6 +86,7 @@ class NotificationStore {
     final slackPatch = channels['slack'] is Map ? Map<String, dynamic>.from(channels['slack'] as Map) : null;
     final waPatch = channels['whatsapp'] is Map ? Map<String, dynamic>.from(channels['whatsapp'] as Map) : null;
     final emailPatch = channels['email'] is Map ? Map<String, dynamic>.from(channels['email'] as Map) : null;
+    final telegramPatch = channels['telegram'] is Map ? Map<String, dynamic>.from(channels['telegram'] as Map) : null;
 
     var next = ProjectNotificationConfig(
       enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
@@ -97,6 +101,7 @@ class NotificationStore {
       slack: _mergeSlack(current.slack, slackPatch),
       whatsapp: _mergeWhatsapp(current.whatsapp, waPatch),
       email: _mergeEmail(current.email, emailPatch),
+      telegram: _mergeTelegram(current.telegram, telegramPatch),
       threshold: patch['threshold'] is Map
           ? ThresholdConfig.fromJson(Map<String, dynamic>.from(patch['threshold'] as Map))
           : current.threshold,
@@ -132,6 +137,17 @@ class NotificationStore {
       enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
       phoneEnc: _encField(patch, 'phone', current.phoneEnc),
       apiKeyEnc: _encField(patch, 'apiKey', current.apiKeyEnc),
+    );
+  }
+
+  /// Client patches may toggle [TelegramChannelConfig.enabled]. The chat id is set only by [bindTelegramChat].
+  TelegramChannelConfig _mergeTelegram(TelegramChannelConfig current, Map<String, dynamic>? patch) {
+    if (patch == null) return current;
+    return TelegramChannelConfig(
+      enabled: patch.containsKey('enabled') ? patch['enabled'] == true : current.enabled,
+      chatIdEnc: current.chatIdEnc,
+      chatTitle: current.chatTitle,
+      pausedUntil: current.pausedUntil,
     );
   }
 
@@ -400,5 +416,144 @@ class NotificationStore {
     );
     if (rows.isEmpty) return null;
     return rows.first[0] as String?;
+  }
+
+  Future<String?> projectIdForTelegramChat(String chatId) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('SELECT project_id FROM telegram_chats WHERE chat_id = @chat'),
+      parameters: {'chat': chatId},
+    );
+    if (rows.isEmpty) return null;
+    return rows.first[0] as String?;
+  }
+
+  Future<DateTime> pauseTelegramAlerts(String projectId, {Duration duration = const Duration(hours: 1)}) async {
+    final current = await getConfig(projectId);
+    final until = DateTime.now().toUtc().add(duration);
+    await _writeConfig(
+      projectId,
+      current.copyWith(
+        telegram: TelegramChannelConfig(
+          enabled: current.telegram.enabled,
+          chatIdEnc: current.telegram.chatIdEnc,
+          chatTitle: current.telegram.chatTitle,
+          pausedUntil: until,
+        ),
+      ),
+    );
+    return until;
+  }
+
+  /// Single-use connect token (15 minutes). Replaces any outstanding link for the project.
+  Future<String> createTelegramLink(String projectId) async {
+    final token = newToken();
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('DELETE FROM telegram_link_tokens WHERE project_id = @pid'),
+      parameters: {'pid': projectId},
+    );
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO telegram_link_tokens (token_hash, project_id, expires_at)
+        VALUES (@hash, @pid, now() + interval '15 minutes')
+      '''),
+      parameters: {'hash': hashToken(token), 'pid': projectId},
+    );
+    return token;
+  }
+
+  /// Returns the project id and deletes the token. Null when missing, expired, or already used.
+  Future<String?> consumeTelegramLink(String token) async {
+    final conn = await db.connect();
+    final hash = hashToken(token);
+    final rows = await conn.execute(
+      Sql.named('''
+        DELETE FROM telegram_link_tokens
+        WHERE token_hash = @hash AND expires_at > now()
+        RETURNING project_id
+      '''),
+      parameters: {'hash': hash},
+    );
+    if (rows.isNotEmpty) return rows.first[0] as String?;
+    await conn.execute(
+      Sql.named('DELETE FROM telegram_link_tokens WHERE token_hash = @hash'),
+      parameters: {'hash': hash},
+    );
+    return null;
+  }
+
+  Future<void> bindTelegramChat(String projectId, {required String chatId, required String chatTitle}) async {
+    final current = await getConfig(projectId);
+    final plain = chatId.trim();
+    final rules = [
+      for (final rule in current.rules)
+        if (rule.enabled && !rule.channels.contains('telegram'))
+          NotificationRule(
+            id: rule.id,
+            enabled: rule.enabled,
+            categories: rule.categories,
+            channels: [...rule.channels, 'telegram'],
+            environments: rule.environments,
+          )
+        else
+          rule,
+    ];
+    await _writeConfig(
+      projectId,
+      current.copyWith(
+        rules: rules,
+        telegram: TelegramChannelConfig(
+          enabled: true,
+          chatIdEnc: plain.isEmpty ? current.telegram.chatIdEnc : (_cipher?.encrypt(plain) ?? plain),
+          chatTitle: chatTitle,
+          pausedUntil: current.telegram.pausedUntil,
+        ),
+      ),
+    );
+    if (plain.isEmpty) return;
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('DELETE FROM telegram_chats WHERE project_id = @pid OR chat_id = @chat'),
+      parameters: {'pid': projectId, 'chat': plain},
+    );
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO telegram_chats (chat_id, project_id, updated_at)
+        VALUES (@chat, @pid, now())
+      '''),
+      parameters: {'chat': plain, 'pid': projectId},
+    );
+  }
+
+  Future<void> clearTelegramChat(String projectId) async {
+    final conn = await db.connect();
+    await conn.execute(
+      Sql.named('DELETE FROM telegram_link_tokens WHERE project_id = @pid'),
+      parameters: {'pid': projectId},
+    );
+    await conn.execute(
+      Sql.named('DELETE FROM telegram_chats WHERE project_id = @pid'),
+      parameters: {'pid': projectId},
+    );
+    final current = await getConfig(projectId);
+    await _writeConfig(projectId, current.copyWith(telegram: const TelegramChannelConfig()));
+  }
+
+  Future<void> _writeConfig(String projectId, ProjectNotificationConfig next) async {
+    final conn = await db.connect();
+    final rows = await conn.execute(
+      Sql.named('''
+        UPDATE projects SET settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{notifications}',
+          @notifications::jsonb,
+          true
+        )
+        WHERE id = @id
+      '''),
+      parameters: {'id': projectId, 'notifications': jsonEncode(next.toJson())},
+    );
+    if (rows.affectedRows == 0) throw ArgumentError('Project not found');
   }
 }

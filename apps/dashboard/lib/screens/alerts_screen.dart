@@ -170,6 +170,7 @@ class _AlertTile extends StatelessWidget {
         'slack' => Icons.tag,
         'whatsapp' => Icons.chat,
         'email' => Icons.mail_outline,
+        'telegram' => Icons.send_outlined,
         _ => Icons.notifications_outlined,
       };
 
