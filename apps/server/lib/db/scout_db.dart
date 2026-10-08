@@ -164,6 +164,7 @@ Future<void> _migrate(Connection conn, Directory dir, {required bool concurrent}
     );
     if (applied.isNotEmpty) continue;
 
+    stdout.writeln('Applying migration $name...');
     final sql = await file.readAsString();
     if (name.endsWith('.concurrent.sql')) {
       if (!concurrent) {

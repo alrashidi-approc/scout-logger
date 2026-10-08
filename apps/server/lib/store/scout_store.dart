@@ -2385,8 +2385,8 @@ class ScoutStore {
     };
   }
 
-  /// Search the raw event JSON. Kept off [listEvents] so that list keeps the
-  /// smaller `events_search_trgm` index. `payload::text` must match migration 040.
+  /// Search the raw event JSON. No trigram index: a gin index on `payload::text`
+  /// is too large to build during deploy. [ScoutDb.search] caps this at 5s.
   Future<Map<String, dynamic>> searchLogs(
     String projectId, {
     required String q,

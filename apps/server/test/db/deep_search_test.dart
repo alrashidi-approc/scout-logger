@@ -1,7 +1,6 @@
 @Tags(['db'])
 library;
 
-import 'package:postgres/postgres.dart';
 import 'package:scout_models/scout_models.dart';
 import 'package:scout_server/store/scout_store.dart';
 import 'package:scout_server/util/dates.dart';
@@ -14,7 +13,7 @@ Future<void> main() async {
   if (db == null) return skipDbTests();
   final store = ScoutStore(db);
 
-  test('searchLogs matches raw event JSON and uses events_payload_trgm', () async {
+  test('searchLogs matches raw event JSON', () async {
     await (await db.connect()).execute("INSERT INTO projects (id, name, slug) VALUES ('deep', 'deep', 'deep')");
     final now = DateTime.now().toUtc();
     await store.ingestBatch(projectId: 'deep', keyId: 'k', enrichment: const {}, events: [
@@ -46,15 +45,5 @@ Future<void> main() async {
     expect((response['events'] as List).single['matchSnippet'], contains('REF-4412-JSON'));
     expect((phone['events'] as List).single['matchSnippet'], contains('511122233'));
     expect(miss['events'], isEmpty);
-
-    final plan = await db.pool.runTx((tx) async {
-      await tx.execute('SET LOCAL enable_seqscan = off');
-      final rows = await tx.execute(
-        Sql.named("EXPLAIN SELECT 1 FROM events WHERE payload::text ILIKE '%' || @q::text || '%'"),
-        parameters: {'q': 'zzznomatch'},
-      );
-      return rows.map((r) => r[0]).join('\n');
-    });
-    expect(plan, contains('events_payload_trgm'));
   });
 }
