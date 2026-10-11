@@ -539,17 +539,17 @@ Handler apiRoutes(
         offset: int.tryParse(q['offset'] ?? '') ?? 0,
         window: _searchWindow(q, defaultDays: 7),
       );
+      final indexing = await store.searchTextBackfillPending();
       return Response.ok(
         jsonEncode({
           'ok': true,
+          'indexing': indexing,
           'events': page['events'],
           'pagination': {
             'total': page['total'],
             'limit': page['limit'],
             'offset': page['offset'],
             'hasMore': page['hasMore'],
-            'partial': page['partial'] == true,
-            'scanned': page['scanned'],
           },
         }),
         headers: {'Content-Type': 'application/json'},

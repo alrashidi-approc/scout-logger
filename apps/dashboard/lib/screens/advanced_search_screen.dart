@@ -39,8 +39,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
   bool _loadingMore = false;
   bool _hasData = false;
   bool _hasMore = false;
-  bool _partial = false;
-  int _scanned = 0;
+  bool _indexing = false;
   Object? _error;
   late PeriodFilter _period = widget.initialPeriod;
   late String _search = widget.initialQuery?.trim() ?? '';
@@ -67,8 +66,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
     if (events is! List) return false;
     _events = [for (final e in events) Map<String, dynamic>.from(e as Map)];
     _hasMore = cached['hasMore'] == true;
-    _partial = cached['partial'] == true;
-    _scanned = cached['scanned'] as int? ?? 0;
+    _indexing = cached['indexing'] == true;
     _hasData = true;
     _loading = false;
     _refreshing = false;
@@ -81,8 +79,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
     ScreenCache.instance.write(_cacheKey, <String, Object>{
       'events': _events,
       'hasMore': _hasMore,
-      'partial': _partial,
-      'scanned': _scanned,
+      'indexing': _indexing,
     });
   }
 
@@ -122,8 +119,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
       setState(() {
         _events = more ? [..._events, ...events] : events;
         _hasMore = page['hasMore'] == true;
-        _partial = page['partial'] == true;
-        _scanned = page['scanned'] as int? ?? 0;
+        _indexing = page['indexing'] == true;
         _hasData = true;
         _loading = false;
         _refreshing = false;
@@ -150,6 +146,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
       setState(() {
         _events = [];
         _hasMore = false;
+        _indexing = false;
         _loading = false;
         _refreshing = false;
         _error = null;
@@ -182,7 +179,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
   Widget build(BuildContext context) {
     final count = _events.length;
     final subtitle = !_ready
-        ? 'Searches event JSON in this project, newest events first'
+        ? 'Searches request bodies, responses, phones, and the rest of each event'
         : '$count${_hasMore ? '+' : ''} matches for “$_search”';
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(
@@ -204,12 +201,12 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
           onSearch: _applySearch,
         ),
       ),
-      if (_ready && _partial)
+      if (_ready && _indexing)
         Padding(
           padding: pageInsets(context, top: 8),
-          child: Text(
-            'Checked the latest $_scanned events in this range. Narrow the dates to search further back.',
-            style: const TextStyle(fontSize: 12, color: AppTheme.warning),
+          child: const Text(
+            'Older events are still being indexed. New events are searchable now.',
+            style: TextStyle(fontSize: 12, color: AppTheme.warning),
           ),
         ),
       Expanded(
@@ -226,14 +223,10 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
                       ? 'Search this project’s logs'
                       : !_ready
                           ? 'Type at least 3 characters'
-                          : _partial
-                              ? 'No match in the latest events'
-                              : 'No events contain that text',
+                          : 'No events contain that text',
                   subtitle: !_ready
                       ? 'Matches request bodies, responses, user numbers, and anything else stored on the event.'
-                      : _partial
-                          ? 'Nothing in the latest $_scanned events. Narrow the dates around when it happened.'
-                          : 'Try a wider date range, or a shorter unique string from the JSON.',
+                      : 'Try a wider date range, or a shorter unique string from the event.',
                 )
               : null,
           builder: (context) => RefreshIndicator(
@@ -270,7 +263,7 @@ class _AdvancedSearchScreenState extends State<AdvancedSearchScreen> {
                         border: Border.all(color: AppTheme.border),
                       ),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        const Text('Matched in event JSON', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.muted)),
+                        const Text('Matched in event', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.muted)),
                         const SizedBox(height: 6),
                         SelectableText(snippet, style: const TextStyle(fontSize: 12, fontFamily: 'monospace', height: 1.4)),
                       ]),

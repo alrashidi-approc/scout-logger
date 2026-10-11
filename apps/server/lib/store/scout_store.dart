@@ -10,6 +10,7 @@ import '../services/geo_enricher.dart';
 import '../services/key_cipher.dart';
 import '../util/dates.dart';
 import '../util/event_filters.dart';
+import '../util/event_search_text.dart';
 import '../util/event_trend.dart';
 import '../util/ids.dart';
 import '../util/identity_rollups.dart';
@@ -31,6 +32,19 @@ const _sqlStoredEventCount = r'''
          CASE WHEN ed IS NULL THEN 90 WHEN ed = '0' THEN 365 WHEN ed ~ '^[0-9]{1,3}$' THEN GREATEST(ed::int, 1) ELSE 1 END
        ) AS day
        FROM (SELECT p.settings #>> '{retention,routineDays}' AS rd, p.settings #>> '{retention,errorDays}' AS ed) s) w)''';
+
+/// [needle] is already lowercased. Empty when [text] does not contain it.
+String _jsonSearchSnippet(String text, String needle) {
+  if (text.isEmpty || needle.isEmpty) return '';
+  final i = text.toLowerCase().indexOf(needle);
+  if (i < 0) return '';
+  final start = i > 48 ? i - 48 : 0;
+  final end = i + needle.length + 48;
+  final clipEnd = end < text.length ? end : text.length;
+  final prefix = start > 0 ? '…' : '';
+  final suffix = clipEnd < text.length ? '…' : '';
+  return '$prefix${text.substring(start, clipEnd)}$suffix';
+}
 
 bool _qualifiesForIssue(String type, Map<String, dynamic> payload) {
   final level = (payload['level']?.toString() ?? '').toLowerCase();
@@ -968,6 +982,13 @@ class ScoutStore {
         'region': region,
         'city': city,
         'msg': message,
+        'search': eventSearchText(
+          payload,
+          message: message,
+          userId: userId,
+          sessionId: sessionId,
+          installId: installId,
+        ),
         'payload': jsonEncode(payload),
         'enrich': jsonEncode({...eventEnrichment, 'ingestKeyId': keyId}),
       },
@@ -1131,11 +1152,11 @@ class ScoutStore {
           INSERT INTO events (
             id, project_id, issue_id, type, occurred_at,
             user_id, session_id, install_id, release, environment, platform, app_version,
-            country, region, city, message, payload, enrichment
+            country, region, city, message, payload, enrichment, search_text
           ) VALUES (
             @id, @pid, @iid, @type, @at,
             @uid, @sid, @iid_install, @rel, @env, @plat, @aver,
-            @country, @region, @city, @msg, @payload::jsonb, @enrich::jsonb
+            @country, @region, @city, @msg, @payload::jsonb, @enrich::jsonb, @search
           )
         '''),
         parameters: {...event.params, 'iid': issue?.id},
@@ -2323,7 +2344,9 @@ class ScoutStore {
     }
 
     // Skip COUNT(*) over 30d of events — that alone was multi-second. Use limit+1.
-    final rows = await db.search(q, (s) => s.execute(
+    // Without a text query this is an index read on events_project_time_nohb.
+    // A seq scan of the bloated heap (search-text backfill) blows the 30s cap.
+    Future<Result> loadRows(Session s) => s.execute(
       Sql.named('''
         SELECT id, type, occurred_at, issue_id, user_id, release, country, message,
                platform, environment, app_version,
@@ -2340,7 +2363,13 @@ class ScoutStore {
         ORDER BY occurred_at DESC LIMIT @lim OFFSET @off
       '''),
       parameters: {...params, 'lim': lim + 1, 'off': off},
-    ));
+    );
+    final rows = (q == null || q.isEmpty)
+        ? await db.pool.runTx((tx) async {
+            await tx.execute('SET LOCAL enable_seqscan = off');
+            return loadRows(tx);
+          })
+        : await db.search(q, loadRows);
     final hasMore = rows.length > lim;
     final pageRows = hasMore ? rows.sublist(0, lim) : rows;
     final events = pageRows
@@ -2385,9 +2414,7 @@ class ScoutStore {
     };
   }
 
-  /// Search raw event JSON without a payload trigram index (that build blocks deploy).
-  /// Walks newest-first on `events_project_time_nohb`, one bounded batch per
-  /// statement, so a busy project stays inside the 5s search timeout.
+  /// Advanced search over `events.search_text` (`events_search_text_trgm`).
   Future<Map<String, dynamic>> searchLogs(
     String projectId, {
     required String q,
@@ -2395,51 +2422,46 @@ class ScoutStore {
     int offset = 0,
     TimeWindow? window,
   }) async {
-    const batch = 1000;
-    const maxBatches = 10;
     final query = q.trim();
+    final needle = query.toLowerCase();
     final lim = limit.clamp(1, 100);
     final off = offset < 0 ? 0 : offset;
     final w = window ?? TimeWindow.lastDays(7);
+    final until = w.until ?? '9999-12-31T00:00:00.000Z';
     final since = w.since ?? '1970-01-01T00:00:00.000Z';
-    var upper = w.until ?? '9999-12-31T00:00:00.000Z';
-    var upperId = '';
-    final want = off + lim + 1;
-    final matched = <List<dynamic>>[];
-    var scanned = 0;
-    var partial = false;
-
-    for (var i = 0; i < maxBatches && matched.length < want; i++) {
-      final rows = await _searchLogBatch(
-        projectId: projectId,
-        query: query,
-        since: since,
-        upper: upper,
-        upperId: upperId,
-        batch: batch,
-      );
-      if (rows.isEmpty) break;
-      final n = rows.first[17] as int? ?? 0;
-      scanned += n;
-      for (final r in rows) {
-        if (r[0] == null) continue;
-        matched.add([for (var c = 0; c < 15; c++) r[c]]);
-      }
-      if (n < batch) break;
-      final oldest = rows.first[15];
-      final oldestId = rows.first[16]?.toString();
-      if (oldest is! DateTime || oldestId == null || oldestId.isEmpty) break;
-      final nextUpper = oldest.toUtc().toIso8601String();
-      if (nextUpper == upper && oldestId == upperId) break;
-      upper = nextUpper;
-      upperId = oldestId;
-      if (i == maxBatches - 1) partial = true;
-    }
-
-    final pageRows = matched.skip(off).take(lim + 1).toList();
-    final hasMore = pageRows.length > lim;
+    final rows = await db.search(query, (s) => s.execute(
+      Sql.named('''
+        SELECT id, type, occurred_at, user_id, message,
+               payload->'screen'->>'currentRoute',
+               COALESCE(payload->'device'->>'deviceName', payload->'device'->>'model'),
+               payload->'network'->>'url',
+               payload->'network'->>'statusCode',
+               payload->>'level',
+               payload->>'category',
+               platform, environment, app_version,
+               search_text
+        FROM events
+        WHERE project_id = @pid
+          AND $sqlHideSessionHeartbeat
+          AND search_text ILIKE '%' || @q::text || '%'
+          AND occurred_at >= @since::timestamptz
+          AND occurred_at < @until::timestamptz
+        ORDER BY occurred_at DESC
+        LIMIT @lim OFFSET @off
+      '''),
+      parameters: {
+        'pid': projectId,
+        'q': query,
+        'since': since,
+        'until': until,
+        'lim': lim + 1,
+        'off': off,
+      },
+    ));
+    final hasMore = rows.length > lim;
+    final pageRows = hasMore ? rows.sublist(0, lim) : rows;
     final events = [
-      for (final r in hasMore ? pageRows.sublist(0, lim) : pageRows)
+      for (final r in pageRows)
         {
           'id': r[0],
           'type': r[1],
@@ -2455,7 +2477,7 @@ class ScoutStore {
           'platform': r[11],
           'environment': r[12],
           'appVersion': r[13],
-          'matchSnippet': r[14]?.toString() ?? '',
+          'matchSnippet': _jsonSearchSnippet(r[14]?.toString() ?? '', needle),
         },
     ];
     return {
@@ -2464,71 +2486,86 @@ class ScoutStore {
       'limit': lim,
       'offset': off,
       'hasMore': hasMore,
-      'partial': partial,
-      'scanned': scanned,
     };
   }
 
-  Future<Result> _searchLogBatch({
-    required String projectId,
-    required String query,
-    required String since,
-    required String upper,
-    required String upperId,
-    required int batch,
-  }) {
-    return db.search(query, (s) => s.execute(
-      Sql.named('''
-        WITH recent AS MATERIALIZED (
-          SELECT id, type, occurred_at, user_id, message, payload,
-                 platform, environment, app_version
+  static const _searchTextLock = 842150451;
+  static const _searchTextBackfill = 'event_search_text';
+
+  /// One batch of historical events. Returns -1 when the index is not ready yet
+  /// or another process holds the lock.
+  ///
+  /// Uses its own connection so this rewrite cannot occupy a dashboard pool
+  /// slot. Waits until `events_search_text_trgm` is valid so it does not write
+  /// the table while that index is still building.
+  Future<int> backfillSearchText({int limit = 20}) async {
+    final conn = await Connection.open(
+      db.endpoint,
+      settings: const ConnectionSettings(sslMode: SslMode.disable),
+    );
+    try {
+      await conn.execute("SET statement_timeout = '8s'");
+      final ready = await conn.execute('''
+        SELECT i.indisvalid
+        FROM pg_class c
+        JOIN pg_index i ON i.indexrelid = c.oid
+        WHERE c.relname = 'events_search_text_trgm'
+      ''');
+      if (ready.isEmpty || ready.first[0] != true) return -1;
+      final lock = await conn.execute('SELECT pg_try_advisory_lock($_searchTextLock)');
+      if (lock.first[0] != true) return -1;
+      final rows = await conn.execute(
+        Sql.named('''
+          SELECT id, message, user_id, session_id, install_id, payload
           FROM events
-          WHERE project_id = @pid
-            AND $sqlHideSessionHeartbeat
-            AND occurred_at >= @since::timestamptz
-            AND (occurred_at, id) < (@upper::timestamptz, @upperId::text)
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT @batch
-        ),
-        bound AS (
-          SELECT count(*)::int AS n,
-                 (SELECT occurred_at FROM recent ORDER BY occurred_at ASC, id ASC LIMIT 1) AS oldest,
-                 (SELECT id FROM recent ORDER BY occurred_at ASC, id ASC LIMIT 1) AS oldest_id
-          FROM recent
-        )
-        SELECT r.id, r.type, r.occurred_at, r.user_id, r.message,
-               r.payload->'screen'->>'currentRoute',
-               COALESCE(r.payload->'device'->>'deviceName', r.payload->'device'->>'model'),
-               r.payload->'network'->>'url',
-               r.payload->'network'->>'statusCode',
-               r.payload->>'level',
-               r.payload->>'category',
-               r.platform, r.environment, r.app_version,
-               CASE WHEN strpos(lower(r.payload::text), lower(@q::text)) > 48 THEN '…' ELSE '' END
-               || substring(
-                    r.payload::text
-                    from greatest(strpos(lower(r.payload::text), lower(@q::text)) - 48, 1)
-                    for char_length(@q::text) + 96
-                  )
-               || CASE
-                    WHEN strpos(lower(r.payload::text), lower(@q::text)) + char_length(@q::text) + 47
-                         < char_length(r.payload::text)
-                    THEN '…' ELSE ''
-                  END,
-               b.oldest, b.oldest_id, b.n
-        FROM bound b
-        LEFT JOIN recent r ON r.payload::text ILIKE '%' || @q::text || '%'
-        ORDER BY r.occurred_at DESC NULLS LAST, r.id DESC NULLS LAST
-      '''),
-      parameters: {
-        'pid': projectId,
-        'q': query,
-        'since': since,
-        'upper': upper,
-        'upperId': upperId,
-        'batch': batch,
-      },
-    ));
+          WHERE search_text IS NULL
+          LIMIT @lim
+        '''),
+        parameters: {'lim': limit},
+      );
+      if (rows.isEmpty) return 0;
+      final updates = <({Object? id, String text})>[];
+      for (final r in rows) {
+        final raw = _jsonField(r[5]);
+        final payload = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+        updates.add((
+          id: r[0],
+          text: eventSearchText(
+            payload,
+            message: r[1]?.toString(),
+            userId: r[2]?.toString(),
+            sessionId: r[3]?.toString(),
+            installId: r[4]?.toString(),
+          ),
+        ));
+      }
+      await conn.runTx((tx) async {
+        for (final row in updates) {
+          await tx.execute(
+            Sql.named('UPDATE events SET search_text = @t WHERE id = @id AND search_text IS NULL'),
+            parameters: {'id': row.id, 't': row.text},
+          );
+        }
+      });
+      return rows.length;
+    } finally {
+      await conn.close();
+    }
+  }
+
+  Future<void> markSearchTextBackfillDone() async {
+    await db.pool.execute(
+      Sql.named('INSERT INTO backfills (name) VALUES (@n) ON CONFLICT (name) DO NOTHING'),
+      parameters: {'n': _searchTextBackfill},
+    );
+  }
+
+  Future<bool> searchTextBackfillPending() async {
+    final rows = await db.pool.execute(
+      Sql.named('SELECT 1 FROM backfills WHERE name = @n'),
+      parameters: {'n': _searchTextBackfill},
+    );
+    return rows.isEmpty;
   }
 
   /// WAF rejects with curl + response body for branded PDF export (max 500).
@@ -3230,6 +3267,7 @@ class ScoutStore {
           Sql.named('''
             UPDATE events
             SET payload = @payload::jsonb,
+                search_text = @search,
                 issue_id = NULL
             WHERE id = @id AND project_id = @pid
           '''),
@@ -3237,6 +3275,7 @@ class ScoutStore {
             'id': id,
             'pid': projectId,
             'payload': jsonEncode(nextPayload),
+            'search': eventSearchText(nextPayload),
           },
         );
         updated++;

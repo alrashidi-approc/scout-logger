@@ -1,6 +1,7 @@
 @Tags(['db'])
 library;
 
+import 'package:postgres/postgres.dart';
 import 'package:scout_models/scout_models.dart';
 import 'package:scout_server/store/scout_store.dart';
 import 'package:scout_server/util/dates.dart';
@@ -45,5 +46,15 @@ Future<void> main() async {
     expect((response['events'] as List).single['matchSnippet'], contains('REF-4412-JSON'));
     expect((phone['events'] as List).single['matchSnippet'], contains('511122233'));
     expect(miss['events'], isEmpty);
+
+    final plan = await db.pool.runTx((tx) async {
+      await tx.execute('SET LOCAL enable_seqscan = off');
+      final rows = await tx.execute(
+        Sql.named("EXPLAIN SELECT 1 FROM events WHERE search_text ILIKE '%' || @q::text || '%'"),
+        parameters: {'q': 'zzznomatch'},
+      );
+      return rows.map((r) => r[0]).join('\n');
+    });
+    expect(plan, contains('events_search_text_trgm'));
   });
 }

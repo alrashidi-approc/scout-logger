@@ -15,6 +15,7 @@ import 'package:scout_server/notifications/monitor_scheduler.dart';
 import 'package:scout_server/health_check/uptime_monitor.dart';
 import 'package:scout_server/retention/issue_signals_scheduler.dart';
 import 'package:scout_server/retention/retention_scheduler.dart';
+import 'package:scout_server/retention/search_text_backfill.dart';
 import 'package:scout_server/reports/report_service.dart';
 import 'package:scout_server/store/scout_store.dart';
 import 'package:shelf/shelf_io.dart';
@@ -61,6 +62,7 @@ Future<void> main() async {
       config: config,
     ).start();
     RetentionScheduler(store: store).start();
+    SearchTextBackfill(store: store).start();
     IssueSignalsScheduler(store: store).start();
     final handler = createApp(
       config: config,

@@ -5,6 +5,7 @@ import 'package:postgres/postgres.dart';
 import 'package:scout_models/scout_models.dart';
 import 'package:scout_server/config/server_config.dart';
 import 'package:scout_server/db/scout_db.dart';
+import 'package:scout_server/util/event_search_text.dart';
 
 /// One-shot: compute `network.readable.fault` for historical network events
 /// that were ingested before fault enrichment existed. Respects per-project
@@ -42,8 +43,8 @@ Future<void> main(List<String> args) async {
         network['readable'] = networkReadableFrom(network, faultOverrides: overridesByProject[pid]);
         payload['network'] = network;
         await conn.execute(
-          Sql.named('UPDATE events SET payload = @p::jsonb WHERE id = @id'),
-          parameters: {'p': jsonEncode(payload), 'id': id},
+          Sql.named('UPDATE events SET payload = @p::jsonb, search_text = @t WHERE id = @id'),
+          parameters: {'p': jsonEncode(payload), 't': eventSearchText(payload), 'id': id},
         );
       }
       total += rows.length;
